@@ -72,6 +72,43 @@ macro_rules! indexset {
     };
 }
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[macro_export]
+/// Create an `IndexMap` from a list of key-value pairs
+///
+/// ## Example
+///
+/// ```
+/// use indexmap::indexmap;
+///
+/// let map = indexmap!{
+///     "a" => 1,
+///     "b" => 2,
+/// };
+/// assert_eq!(map["a"], 1);
+/// assert_eq!(map["b"], 2);
+/// assert_eq!(map.get("c"), None);
+///
+/// // "a" is the first key
+/// assert_eq!(map.keys().next(), Some(&"a"));
+/// ```
+macro_rules! indexmultimap {
+    ($($key:expr => $value:expr,)+) => { $crate::indexmap!($($key => $value),+) };
+    ($($key:expr => $value:expr),*) => {
+        {
+            // Note: `stringify!($key)` is just here to consume the repetition,
+            // but we throw away that string literal during constant evaluation.
+            const CAP: usize = <[()]>::len(&[$({ stringify!($key); }),*]);
+            let mut map = $crate::IndexMultimap::<_, _, ::std::collections::hash_map::RandomState, Vec<usize>>::with_capacity(CAP, CAP);
+            $(
+                map.insert_append($key, $value);
+            )*
+            map
+        }
+    };
+}
+
 // generate all the Iterator methods by just forwarding to the underlying
 // self.iter and mapping its element.
 macro_rules! iterator_methods {

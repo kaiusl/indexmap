@@ -164,3 +164,81 @@ where
         SeqDeserializer::new(self.into_iter())
     }
 }
+
+use crate::multimap::IndexStorage;
+use crate::IndexMultimap;
+
+impl<K, V, S, Indices> Serialize for IndexMultimap<K, V, S, Indices>
+where
+    K: Serialize + Hash + Eq,
+    V: Serialize,
+    Indices: IndexStorage,
+    S: BuildHasher,
+{
+    fn serialize<T>(&self, serializer: T) -> Result<T::Ok, T::Error>
+    where
+        T: Serializer,
+    {
+        serializer.collect_map(self)
+    }
+}
+
+struct IndexMultimapVisitor<K, V, S, Indices>(PhantomData<(K, V, S, Indices)>);
+
+impl<'de, K, V, S, Indices> Visitor<'de> for IndexMultimapVisitor<K, V, S, Indices>
+where
+    K: Deserialize<'de> + Eq + Hash,
+    V: Deserialize<'de>,
+    Indices: IndexStorage,
+    S: Default + BuildHasher,
+{
+    type Value = IndexMultimap<K, V, S, Indices>;
+
+    fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        write!(formatter, "a map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let size = map.size_hint().unwrap_or(0);
+        let mut values = IndexMultimap::with_capacity_and_hasher(size, size, S::default());
+
+        while let Some((key, value)) = map.next_entry()? {
+            values.insert_append(key, value);
+        }
+
+        Ok(values)
+    }
+}
+
+impl<'de, K, V, S, Indices> Deserialize<'de> for IndexMultimap<K, V, S, Indices>
+where
+    K: Deserialize<'de> + Eq + Hash,
+    V: Deserialize<'de>,
+    Indices: IndexStorage,
+    S: Default + BuildHasher,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(IndexMultimapVisitor(PhantomData))
+    }
+}
+
+impl<'de, K, V, S, Indices, E> IntoDeserializer<'de, E> for IndexMultimap<K, V, S, Indices>
+where
+    K: IntoDeserializer<'de, E> + Eq + Hash,
+    V: IntoDeserializer<'de, E>,
+    Indices: IndexStorage,
+    S: BuildHasher,
+    E: Error,
+{
+    type Deserializer = MapDeserializer<'de, <Self as IntoIterator>::IntoIter, E>;
+
+    fn into_deserializer(self) -> Self::Deserializer {
+        MapDeserializer::new(self.into_iter())
+    }
+}

@@ -44,7 +44,7 @@ pub struct Iter<'a, K, V> {
 }
 
 impl<'a, K, V> Iter<'a, K, V> {
-    pub(super) fn new(entries: &'a [Bucket<K, V>]) -> Self {
+    pub(crate) fn new(entries: &'a [Bucket<K, V>]) -> Self {
         Self {
             iter: entries.iter(),
         }
@@ -104,7 +104,7 @@ pub struct IterMut<'a, K, V> {
 }
 
 impl<'a, K, V> IterMut<'a, K, V> {
-    pub(super) fn new(entries: &'a mut [Bucket<K, V>]) -> Self {
+    pub(crate) fn new(entries: &'a mut [Bucket<K, V>]) -> Self {
         Self {
             iter: entries.iter_mut(),
         }
@@ -227,7 +227,7 @@ pub struct IntoIter<K, V> {
 }
 
 impl<K, V> IntoIter<K, V> {
-    pub(super) fn new(entries: Vec<Bucket<K, V>>) -> Self {
+    pub(crate) fn new(entries: Vec<Bucket<K, V>>) -> Self {
         Self {
             iter: entries.into_iter(),
         }
@@ -286,7 +286,7 @@ pub struct Drain<'a, K, V> {
 }
 
 impl<'a, K, V> Drain<'a, K, V> {
-    pub(super) fn new(iter: vec::Drain<'a, Bucket<K, V>>) -> Self {
+    pub(crate) fn new(iter: vec::Drain<'a, Bucket<K, V>>) -> Self {
         Self { iter }
     }
 
@@ -330,7 +330,7 @@ pub struct Keys<'a, K, V> {
 }
 
 impl<'a, K, V> Keys<'a, K, V> {
-    pub(super) fn new(entries: &'a [Bucket<K, V>]) -> Self {
+    pub(crate) fn new(entries: &'a [Bucket<K, V>]) -> Self {
         Self {
             iter: entries.iter(),
         }
@@ -452,7 +452,7 @@ pub struct IntoKeys<K, V> {
 }
 
 impl<K, V> IntoKeys<K, V> {
-    pub(super) fn new(entries: Vec<Bucket<K, V>>) -> Self {
+    pub(crate) fn new(entries: Vec<Bucket<K, V>>) -> Self {
         Self {
             iter: entries.into_iter(),
         }
@@ -501,7 +501,7 @@ pub struct Values<'a, K, V> {
 }
 
 impl<'a, K, V> Values<'a, K, V> {
-    pub(super) fn new(entries: &'a [Bucket<K, V>]) -> Self {
+    pub(crate) fn new(entries: &'a [Bucket<K, V>]) -> Self {
         Self {
             iter: entries.iter(),
         }
@@ -556,7 +556,7 @@ pub struct ValuesMut<'a, K, V> {
 }
 
 impl<'a, K, V> ValuesMut<'a, K, V> {
-    pub(super) fn new(entries: &'a mut [Bucket<K, V>]) -> Self {
+    pub(crate) fn new(entries: &'a mut [Bucket<K, V>]) -> Self {
         Self {
             iter: entries.iter_mut(),
         }
@@ -605,7 +605,7 @@ pub struct IntoValues<K, V> {
 }
 
 impl<K, V> IntoValues<K, V> {
-    pub(super) fn new(entries: Vec<Bucket<K, V>>) -> Self {
+    pub(crate) fn new(entries: Vec<Bucket<K, V>>) -> Self {
         Self {
             iter: entries.into_iter(),
         }

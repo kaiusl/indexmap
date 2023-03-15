@@ -121,6 +121,7 @@ mod serde;
 mod util;
 
 pub mod map;
+pub mod multimap;
 pub mod set;
 
 // Placed after `map` and `set` so new `rayon` methods on the types
@@ -132,6 +133,7 @@ mod rayon;
 mod rustc;
 
 pub use crate::map::IndexMap;
+pub use crate::multimap::IndexMultimap;
 pub use crate::set::IndexSet;
 pub use equivalent::Equivalent;
 
