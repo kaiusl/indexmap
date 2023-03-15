@@ -45,6 +45,7 @@ std = []
 
 # for testing only, of course
 test_debug = []
+more_debug_assertions = []
 
 [profile.bench]
 debug = true

@@ -27,15 +27,15 @@ pub struct Slice<K, V> {
 // and reference lifetimes are bound together in function signatures.
 #[allow(unsafe_code)]
 impl<K, V> Slice<K, V> {
-    pub(super) fn from_slice(entries: &[Bucket<K, V>]) -> &Self {
+    pub(crate) fn from_slice(entries: &[Bucket<K, V>]) -> &Self {
         unsafe { &*(entries as *const [Bucket<K, V>] as *const Self) }
     }
 
-    pub(super) fn from_mut_slice(entries: &mut [Bucket<K, V>]) -> &mut Self {
+    pub(crate) fn from_mut_slice(entries: &mut [Bucket<K, V>]) -> &mut Self {
         unsafe { &mut *(entries as *mut [Bucket<K, V>] as *mut Self) }
     }
 
-    pub(super) fn from_boxed(entries: Box<[Bucket<K, V>]>) -> Box<Self> {
+    pub(crate) fn from_boxed(entries: Box<[Bucket<K, V>]>) -> Box<Self> {
         unsafe { Box::from_raw(Box::into_raw(entries) as *mut Self) }
     }
 
