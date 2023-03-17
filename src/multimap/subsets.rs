@@ -59,7 +59,7 @@ where
         }
     }
 
-    /// Returns number the number of pairs in this subset
+    /// Returns the number of pairs in this subset
     pub fn len(&self) -> usize {
         self.indices.len()
     }
@@ -73,7 +73,7 @@ where
         &self.indices
     }
 
-    /// Returns a reference to an `n`th pair in this subset or `None` if `n >= self.len()`.
+    /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
     pub fn get(&self, n: usize) -> Option<(usize, &K, &V)> {
         match self.indices.get(n) {
             Some(&index) => {
@@ -193,7 +193,7 @@ impl<'a, K, V, Indices> SubsetMut<'a, K, V, Indices>
 where
     Indices: SubsetIndexStorage,
 {
-    /// Returns number the number of pairs in this subset
+    /// Returns the number of pairs in this subset.
     pub fn len(&self) -> usize {
         self.indices.len()
     }
@@ -484,8 +484,6 @@ pub struct SubsetKeys<'a, K, V, I> {
     pairs: &'a [Bucket<K, V>],
     indices: I,
 }
-
-//subpair_iter_impls!(SubsetKeys<'a, K, V, I>, &'a K, Bucket::key_ref);
 
 iter_methods!(SubsetKeys<'a, K, V, I>, &'a K, index, pair, &pair.key);
 

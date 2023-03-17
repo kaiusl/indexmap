@@ -173,8 +173,8 @@ impl<K, V> IndexMultimap<K, V> {
         Self::with_capacity(0, 0)
     }
 
-    /// Create a new map with capacity for `keys` unique keys and `entries` total entries. (Does not
-    /// allocate if both `keys` and `entries` are zero.)
+    /// Create a new map with capacity for `keys` unique keys and `pairs` total
+    /// key-value pairs. (Does not allocate if both `keys` and `pairs` are zero.)
     ///
     /// Computes in **O(n)** time.
     #[inline]
@@ -184,8 +184,8 @@ impl<K, V> IndexMultimap<K, V> {
 }
 
 impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
-    /// Create a new map with capacity for `keys` unique keys and `entries` total entries. (Does not
-    /// allocate if both `keys` and `entries` are zero.)
+    /// Create a new map with capacity for `keys` unique keys and `pairs` total
+    /// key-value pairs. (Does not allocate if both `keys` and `entries` are zero.)
     ///
     /// Computes in **O(n)** time.
     #[inline]
@@ -202,8 +202,7 @@ impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
 
     /// Create a new map with `hash_builder`.
     ///
-    /// This function is `const`, so it
-    /// can be called in `static` contexts.
+    /// This function is `const`, so it can be called in `static` contexts.
     #[inline]
     pub const fn with_hasher(hash_builder: S) -> Self {
         IndexMultimap {
@@ -222,7 +221,7 @@ impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
         self.core.capacity_pairs()
     }
 
-    /// Return a reference to the map's `BuildHasher`.
+    /// Return a reference to the map's [`BuildHasher`].
     pub fn hasher(&self) -> &S {
         &self.hash_builder
     }
@@ -235,7 +234,7 @@ impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
         self.core.len_keys()
     }
 
-    /// Return the total number of entries in the map.
+    /// Return the total number of key-value pairs in the map.
     ///
     /// Computes in **O(1)** time.
     #[inline]
@@ -243,7 +242,7 @@ impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
         self.core.len_pairs()
     }
 
-    /// Returns `true` if the map contains no elements.
+    /// Returns `true` if the map contains no key-value pairs.
     ///
     /// Computes in **O(1)** time.
     #[inline]
@@ -270,16 +269,16 @@ impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
 
     /// Return an iterator over the keys of the map, in their order.
     ///
-    /// Note that the iterator contains a key for every entry, that is there
-    /// may be duplicates.
+    /// Note that the iterator contains a key for every key-value pair, that is
+    /// there may be duplicates.
     pub fn keys(&self) -> Keys<'_, K, V> {
         Keys::new(self.core.as_pairs())
     }
 
     /// Return an owning iterator over the keys of the map, in their order.
     ///
-    /// Note that the iterator contains a key for every entry, that is there
-    /// may be duplicates.
+    /// Note that the iterator contains a key for every key-value pair, that is
+    /// there may be duplicates.
     pub fn into_keys(self) -> IntoKeys<K, V> {
         IntoKeys::new(self.core.into_pairs())
     }
@@ -366,10 +365,7 @@ where
     }
 
     /// Reserve capacity for `additional_keys` more unique keys and
-    /// `additional_entries` more entries.
-    ///
-    /// If you know that the keys are already in the map, you can set the
-    /// `additional_keys=0` and only set `additional_entries`.
+    /// `additional_pairs` more key-value pairs.
     ///
     /// Computes in **O(n)** time.
     pub fn reserve(&mut self, additional_keys: usize, additional_pairs: usize) {
@@ -377,15 +373,12 @@ where
     }
 
     /// Reserve capacity for `additional_keys` more unique keys and
-    /// `additional_entries` more entries, without over-allocating.
+    /// `additional_pairs` more key-value pairs, without over-allocating.
     ///
     /// Unlike [`reserve`], this does not deliberately over-allocate the entry capacity to avoid
     /// frequent re-allocations. However, the underlying data structures may still have internal
     /// capacity requirements, and the allocator itself may give more space than requested, so this
     /// cannot be relied upon to be precisely minimal.
-    ///
-    /// If you know that the keys are already in the map, you can set the
-    /// `additional_keys=0` and only set `additional_entries`.
     ///
     /// Computes in **O(n)** time.
     ///
@@ -395,10 +388,7 @@ where
     }
 
     /// Try to reserve capacity for `additional_keys` more unique keys and
-    /// `additional_entries` more entries.
-    ///
-    /// If you know that the keys are already in the map, you can set the
-    /// `additional_keys=0` and only set `additional_entries`.
+    /// `additional_pairs` more key-value pairs.
     ///
     /// Computes in **O(n)** time.
     pub fn try_reserve(
@@ -410,15 +400,12 @@ where
     }
 
     /// Try to reserve capacity for `additional_keys` more unique keys and
-    /// `additional_entries` more entries, without over-allocating.
+    /// `additional_pairs` more key-value pairs, without over-allocating.
     ///
     /// Unlike [`try_reserve`], this does not deliberately over-allocate the entry capacity to avoid
     /// frequent re-allocations. However, the underlying data structures may still have internal
     /// capacity requirements, and the allocator itself may give more space than requested, so this
     /// cannot be relied upon to be precisely minimal.
-    ///
-    /// If you know that the keys are already in the map, you can set the
-    /// `additional_keys=0` and only set `additional_entries`.
     ///
     /// Computes in **O(n)** time.
     ///
@@ -441,7 +428,7 @@ where
 
     /// Shrink the capacity of the map with a lower limit.
     ///
-    /// Note that this function does not shrink the capacity of the indices
+    /// Note that this method does not shrink the capacity of the indices
     /// related to a single key.
     ///
     /// Computes in **O(n)** time.
@@ -479,7 +466,7 @@ where
     /// Computes in **O(1)** time (amortized average).
     ///
     /// See also [`entry`](#method.entry) if you you want to insert *or* modify
-    /// or if you need to get the index of the corresponding key-value pair.
+    /// the corresponding key-value pair.
     pub fn insert_append(&mut self, key: K, value: V) -> usize {
         let hash = self.hash(&key);
         self.core.insert_append_full(hash, key, value)
@@ -501,11 +488,12 @@ where
     where
         Q: Hash + Equivalent<K>,
     {
-        self.get_indices_of(key).is_some()
+        !self.get_indices_of(key).is_empty()
     }
 
-    /// Return a iterator over all the values stored for `key`, if it is present,
-    /// otherwise [`None`].
+    /// Return a subset of key-value pairs corresponding to given `key`.
+    ///
+    /// If the `key` has no equivalent in the map, then the returned subset is empty.
     ///
     /// Computes in **O(1)** time (average).
     pub fn get<Q>(&self, key: &Q) -> Subset<'_, K, V, &'_ [usize]>
@@ -520,8 +508,9 @@ where
         }
     }
 
-    /// Return a mutable iterator over all the values stored for `key`, if it is present,
-    /// otherwise [`None`].
+    /// Return a mutable subset of key-value pairs corresponding to given `key`.
+    ///
+    /// If the `key` has no equivalent in the map, then the returned subset is empty.
     ///
     /// Computes in **O(1)** time (average).
     pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> SubsetMut<'_, K, V, &'_ [usize]>
@@ -536,22 +525,24 @@ where
         }
     }
 
-    /// Return all the indices for `key`, if it exists in the map, otherwise [`None`].
+    /// Return all the indices for `key`.
+    ///
+    /// If the `key` has no equivalent in the map, then the returned slice is empty.
     ///
     /// Computes in **O(1)** time (average).
-    pub fn get_indices_of<Q>(&self, key: &Q) -> Option<&[usize]>
+    pub fn get_indices_of<Q>(&self, key: &Q) -> &[usize]
     where
         Q: Hash + Equivalent<K> + ?Sized,
     {
         if self.is_empty() {
-            None
+            &[]
         } else {
             let hash = self.hash(key);
             self.core.get_indices_of(hash, key)
         }
     }
 
-    /// Remove all the key-value pairs equivalent to `key`.
+    /// Remove all the key-value pairs with key equivalent to given `key`.
     ///
     /// Like [`Vec::swap_remove`], the pairs are removed by swapping them with the
     /// last element of the map and popping them off.
@@ -571,8 +562,8 @@ where
         self.core.swap_remove(hash, key)
     }
 
-    /// Remove all the key-value pairs equivalent to `key` and return them and
-    /// the indices they had.
+    /// Remove all the key-value pairs with key equivalent to given `key` and 
+    /// return them and the indices they had.
     ///
     /// Like [`Vec::swap_remove`], the pairs are removed by swapping them with the
     /// last element of the map and popping them off.
@@ -592,7 +583,7 @@ where
         self.core.swap_remove_full(hash, key)
     }
 
-    /// Remove all the key-value pairs equivalent to `key`.
+    /// Remove all the key-value pairs with key equivalent to given `key`.
     ///
     /// Like [`Vec::remove`], the pairs are removed by shifting all of the
     /// elements that follow them, preserving their relative order.
@@ -612,8 +603,8 @@ where
         self.core.shift_remove(hash, key)
     }
 
-    /// Remove all the key-value pairs equivalent to `key` and return them and
-    /// the indices they had.
+    /// Remove all the key-value pairs with key equivalent to given `key` and 
+    /// return them and the indices they had.
     ///
     /// Like [`Vec::remove`], the pairs are removed by shifting all of the
     /// elements that follow them, preserving their relative order.
@@ -1090,7 +1081,7 @@ where
     ///
     /// This is equivalent to calling [`insert_append`](#method.insert_append) for each of
     /// them in order, which means that for keys that already existed
-    /// in the map, the new value is added to the back behind the existing key.
+    /// in the map, the new value is added to the back behind the equivalent key.
     ///
     /// New keys are inserted in the order they appear in the sequence. If
     /// equivalents of a key occur more than once, the last corresponding value
@@ -1131,7 +1122,11 @@ where
     where
         I: IntoIterator<Item = (&'a K, &'a V)>,
     {
-        self.extend(pairs_iterable.into_iter().map(|(&key, &value)| (key, value)));
+        self.extend(
+            pairs_iterable
+                .into_iter()
+                .map(|(&key, &value)| (key, value)),
+        );
     }
 }
 
