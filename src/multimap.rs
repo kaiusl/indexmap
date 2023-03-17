@@ -313,30 +313,38 @@ where
         self.core.truncate(len);
     }
 
-    /// Clears the [`IndexMultimap`] in the given index range, returning those
-    /// key-value pairs as a drain iterator.
-    ///
-    /// The range may be any type that implements [`RangeBounds`]`<usize>`,
-    /// including all of the [`std::ops`]`::Range*` types, or even a tuple pair of
-    /// [`Bound`] start and end values. To drain the map entirely, use [`RangeFull`]
-    /// like `self.`[`drain`](Self::drain)`(..)`.
-    ///
-    /// This shifts down all entries following the drained range to fill the
-    /// gap, and keeps the allocated memory for reuse.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the starting point is greater than the end point or if
-    /// the end point is greater than the length of the map.
-    ///
-    /// [`RangeFull`]: ::core::ops::RangeFull
-    /// [`Bound`]: ::core::ops::Bound
-    pub fn drain<R>(&mut self, range: R) -> Drain<'_, K, V>
-    where
-        R: RangeBounds<usize>,
-    {
-        Drain::new(self.core.drain(range))
-    }
+    // /// Clears the [`IndexMultimap`] in the given index range, returning those
+    // /// key-value pairs as a drain iterator.
+    // ///
+    // /// The range may be any type that implements [`RangeBounds`]`<usize>`,
+    // /// including all of the [`std::ops`]`::Range*` types, or even a tuple pair of
+    // /// [`Bound`] start and end values. To drain the map entirely, use [`RangeFull`]
+    // /// like `self.`[`drain`](Self::drain)`(..)`.
+    // ///
+    // /// This shifts down all entries following the drained range to fill the
+    // /// gap, and keeps the allocated memory for reuse.
+    // ///
+    // /// # Panics
+    // ///
+    // /// Panics if the starting point is greater than the end point or if
+    // /// the end point is greater than the length of the map.
+    // ///
+    // /// # Leaking
+    // ///
+    // /// If the returned iterator goes out of scope without being dropped (due
+    // /// to [`mem::forget`], for example), the map may have lost and leaked
+    // /// elements arbitrarily, including elements outside the range. This may
+    // /// lead to unexpected panics.
+    // ///
+    // /// [`RangeFull`]: ::core::ops::RangeFull
+    // /// [`Bound`]: ::core::ops::Bound
+    // /// [`mem::forget`]: ::core::mem::forget
+    // pub fn drain<R>(&mut self, range: R) -> Drain<'_, K, V>
+    // where
+    //     R: RangeBounds<usize>,
+    // {
+    //     Drain::new(self.core.drain(range))
+    // }
 
     /// Splits the collection into two at the given index.
     ///

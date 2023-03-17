@@ -148,18 +148,18 @@ quickcheck_limit! {
         map.capacity_pairs() >= cap_entries && map.capacity_keys() < 10
     }
 
-    fn drain_full(insert: Vec<u8>) -> bool {
-        let mut map = IndexMultimap::new();
-        for &key in &insert {
-            map.insert_append(key, ());
-        }
-        let mut clone = map.clone();
-        let drained = clone.drain(..);
-        for (key, _) in drained {
-            map.swap_remove(&key);
-        }
-        map.is_empty()
-    }
+    // fn drain_full(insert: Vec<u8>) -> bool {
+    //     let mut map = IndexMultimap::new();
+    //     for &key in &insert {
+    //         map.insert_append(key, ());
+    //     }
+    //     let mut clone = map.clone();
+    //     let drained = clone.drain(..);
+    //     for (key, _) in drained {
+    //         map.swap_remove(&key);
+    //     }
+    //     map.is_empty()
+    // }
 
     // fn drain_bounds(insert: Vec<u8>, range: (Bound<usize>, Bound<usize>)) -> TestResult {
     //     let mut map = IndexMultimap::new();

@@ -257,16 +257,6 @@ where
         }
     }
 
-    pub(crate) fn drain<R>(&mut self, range: R) -> Drain<'_, Bucket<K, V>>
-    where
-        R: ops::RangeBounds<usize>,
-        K: Eq,
-    {
-        let range = simplify_range(range, self.pairs.len());
-        self.erase_indices(range.start, range.end);
-        self.pairs.drain(range)
-    }
-
     #[cfg(feature = "rayon")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
     pub(crate) fn par_drain<R>(&mut self, range: R) -> rayon::vec::Drain<'_, Bucket<K, V>>

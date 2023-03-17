@@ -1119,55 +1119,55 @@ fn into_values() {
     assert!(values.contains(&'c'));
 }
 
-#[test]
-fn drain_all() {
-    let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
-    let mut map = IndexMultimapVec::new();
-    map.extend(items);
+// #[test]
+// fn drain_all() {
+//     let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+//     let mut map = IndexMultimapVec::new();
+//     map.extend(items);
 
-    let drained = map.drain(..).collect::<Vec<_>>();
-    assert_eq!(&drained, &items);
-    assert!(map.is_empty());
-}
+//     let drained = map.drain(..).collect::<Vec<_>>();
+//     assert_eq!(&drained, &items);
+//     assert!(map.is_empty());
+// }
 
-#[test]
-fn drain_start_to_mid() {
-    let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
-    let mut map = IndexMultimapVec::new();
-    map.extend(items);
+// #[test]
+// fn drain_start_to_mid() {
+//     let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+//     let mut map = IndexMultimapVec::new();
+//     map.extend(items);
 
-    let drained = map.drain(..3).collect::<Vec<_>>();
-    assert_eq!(&drained, &items[..3]);
+//     let drained = map.drain(..3).collect::<Vec<_>>();
+//     assert_eq!(&drained, &items[..3]);
 
-    let remaining = &items[3..];
-    assert_map_eq(&map, remaining);
-}
+//     let remaining = &items[3..];
+//     assert_map_eq(&map, remaining);
+// }
 
-#[test]
-fn drain_mid_to_end() {
-    let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
-    let mut map = IndexMultimapVec::new();
-    map.extend(items);
+// #[test]
+// fn drain_mid_to_end() {
+//     let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+//     let mut map = IndexMultimapVec::new();
+//     map.extend(items);
 
-    let drained = map.drain(3..).collect::<Vec<_>>();
-    assert_eq!(&drained, &items[3..]);
+//     let drained = map.drain(3..).collect::<Vec<_>>();
+//     assert_eq!(&drained, &items[3..]);
 
-    let remaining = &items[..3];
-    assert_map_eq(&map, remaining);
-}
+//     let remaining = &items[..3];
+//     assert_map_eq(&map, remaining);
+// }
 
-#[test]
-fn drain_mid_to_mid() {
-    let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
-    let mut map = IndexMultimapVec::new();
-    map.extend(items);
+// #[test]
+// fn drain_mid_to_mid() {
+//     let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+//     let mut map = IndexMultimapVec::new();
+//     map.extend(items);
 
-    let drained = map.drain(3..6).collect::<Vec<_>>();
-    assert_eq!(&drained, &items[3..6]);
+//     let drained = map.drain(3..6).collect::<Vec<_>>();
+//     assert_eq!(&drained, &items[3..6]);
 
-    let remaining = [&items[0..3], &items[6..]].concat();
-    assert_map_eq(&map, &remaining);
-}
+//     let remaining = [&items[0..3], &items[6..]].concat();
+//     assert_map_eq(&map, &remaining);
+// }
 
 #[test]
 fn split_off() {
