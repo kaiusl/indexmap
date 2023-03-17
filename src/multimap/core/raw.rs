@@ -2,7 +2,7 @@
 //! This module encapsulates the `unsafe` access to `hashbrown::raw::RawTable`,
 //! mostly in dealing with its bucket "pointers".
 
-use core::fmt;
+use core::{fmt, ops};
 
 use crate::{
     util::{is_sorted, is_unique_sorted},
@@ -11,7 +11,7 @@ use crate::{
 
 use super::super::{Subset, SubsetMut};
 use super::{equivalent, Bucket, Entry, HashValue, IndexMultimapCore, IndexStorage, VacantEntry};
-use alloc::{format, vec::Vec};
+use alloc::{format, vec::Vec, vec::Drain};
 use hashbrown::raw::RawTable;
 
 type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
@@ -262,6 +262,26 @@ where
         // SAFETY: we just inserted the bucket, it can only have one index in it.
         //         It also must be valid as we just inserted the pair into self.pairs
         unsafe { SubsetMut::new_unchecked(&mut self.pairs, indices) }
+    }
+
+
+    /// This is unsafe because it can violate our maps assumptions about self.indices.
+    /// Which can lead to unsoundness down the line in mutable subsets and their iterators.
+    /// 
+    /// This happens if the returned Drain is leaked. This leaks all the pairs in
+    /// the range `range.start..`. Thus first self.indices can contain out of bounds indices.
+    /// This is ok by itself as it will only lead to panics.
+    /// However if after the leaking there is an insertion, we insert a duplicate index into indices.
+    /// If that insertion happens to be behind an existing key, get_mut will return a SubsetMut which 
+    /// inturn return aliased mutable references. 
+    pub(crate) unsafe fn _drain<R>(&mut self, range: R) -> Drain<'_, Bucket<K, V>>
+    where
+        R: ops::RangeBounds<usize>,
+        K: Eq,
+    {
+        let range = simplify_range(range, self.pairs.len());
+        self.erase_indices(range.start, range.end);
+        self.pairs.drain(range)
     }
 }
 
