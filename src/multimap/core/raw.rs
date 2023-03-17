@@ -5,7 +5,7 @@
 use core::{fmt, ops};
 
 use crate::{
-    util::{is_sorted, is_unique_sorted},
+    util::{is_sorted, is_unique_sorted, simplify_range},
     Equivalent,
 };
 
@@ -16,7 +16,7 @@ use hashbrown::raw::RawTable;
 
 type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
 
-/// Inserts many pairs into a raw table without reallocating.
+/// Inserts multiple pairs into a raw table without reallocating.
 ///
 /// ***Panics*** if there is not sufficient capacity already.
 ///
@@ -238,8 +238,8 @@ where
         }
     }
 
-    /// Append a key-value pair, *without* checking whether it already exists,
-    /// and return the pair's new index.
+    /// Push a key-value pair, *without* checking whether it already exists,
+    /// and return the Subset over all the pairs for given key.
     pub(crate) fn push_full(
         &mut self,
         hash: HashValue,
@@ -285,7 +285,7 @@ where
     }
 }
 
-/// A view into an occupied pair in a [`IndexMultimap`].
+/// A view into an occupied entry in a [`IndexMultimap`].
 /// It is part of the [`Entry`] enum.
 ///
 /// [`Entry`]: super::Entry
@@ -335,14 +335,14 @@ where
         }
     }
 
-    /// Returns the number of key-value pairs associated with this pair.
+    /// Returns the number of key-value pairs in this entry.
     #[allow(clippy::len_without_is_empty)] // There is always at least one pair
     pub fn len(&self) -> usize {
         self.indices().len()
     }
 
-    /// Appends a new key-value pair to the existing pair by cloning the key
-    /// used to find this pair. This allows to keep using this pair if it's
+    /// Appends a new key-value pair to this entry by cloning the key
+    /// used to find this pair. This allows to keep using this entry if it's
     /// needed.
     pub fn insert_append(&mut self, value: V)
     where
@@ -360,7 +360,7 @@ where
         self.map.debug_assert_invariants();
     }
 
-    /// Appends a new key-value pair to the existing pair by taking the owned key.
+    /// Appends a new key-value pair to this entry by taking the owned key.
     ///
     /// This method should only be called once after creation of pair enum.
     /// Panics otherwise.
@@ -380,11 +380,11 @@ where
         self.map.debug_assert_invariants();
     }
 
-    /// Gets a reference to the pair's first key in the map.
+    /// Gets a reference to the entry's first key in the map.
     ///
     /// Other keys can be accessed through [`get`](Self::get) method.
     ///
-    /// Note that this is not the key that was used to find the pair.
+    /// Note that this may not be the key that was used to find the pair.
     /// There may be an observable difference if the key type has any
     /// distinguishing features outside of [`Hash`] and [`Eq`], like
     /// extra fields or the memory address of an allocation.
@@ -414,12 +414,12 @@ where
         }
     }
 
-    /// Returns a slice like construct with all the values associated with this pair in the map.
+    /// Returns a slice like construct with all the values associated with this entry in the map.
     pub fn get(&self) -> Subset<'_, K, V, &'_ [usize]> {
         Subset::new(&self.map.pairs, self.indices())
     }
 
-    /// Returns a slice like construct with all values associated with this pair in the map.
+    /// Returns a slice like construct with all values associated with this entry in the map.
     ///
     /// If you need a reference which may outlive the destruction of the
     /// pair, see [`into_mut`](Self::into_mut).
@@ -429,7 +429,7 @@ where
         unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, indices) }
     }
 
-    /// Returns the indices of all the pairs associated with this pair in the map.
+    /// Returns the indices of all the pairs associated with this entry in the map.
     #[inline]
     pub fn indices(&self) -> &[usize] {
         // SAFETY: we have &mut map keep keeping the bucket stable
@@ -447,7 +447,7 @@ where
         unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, self.raw_bucket.as_ref()) }
     }
 
-    /// Remove all the values stored in the map for this pair.
+    /// Remove all the values stored in the map for this entry.
     ///
     /// Like [`Vec::swap_remove`], the values are removed by swapping it with the
     /// last element of the map and popping it off. **This perturbs
@@ -462,7 +462,7 @@ where
         self.map.debug_assert_invariants();
     }
 
-    /// Remove and return all the values stored in the map for this pair
+    /// Remove and return all the values stored in the map for this entry.
     ///
     /// Like [`Vec::swap_remove`], the values are removed by swapping it with the
     /// last element of the map and popping it off. **This perturbs
@@ -480,7 +480,7 @@ where
         (indices, removed)
     }
 
-    /// Remove all the values stored in the map for this pair
+    /// Remove all the values stored in the map for this entry.
     ///
     /// Like [`Vec::remove`], the values are removed by shifting all of the
     /// elements that follow it, preserving their relative order.
@@ -495,7 +495,7 @@ where
         self.map.debug_assert_invariants();
     }
 
-    /// Remove and return all the values stored in the map for this pair
+    /// Remove and return all the values stored in the map for this entry.
     ///
     /// Like [`Vec::remove`], the values are removed by shifting all of the
     /// elements that follow it, preserving their relative order.
@@ -513,8 +513,6 @@ where
 }
 
 impl<'a, K, V, Indices> VacantEntry<'a, K, V, Indices> {
-    /// Inserts the entry's key and the given value into the map,
-    /// and returns a mutable reference to the value.
     pub(super) fn insert_entry(self, value: V) -> OccupiedEntry<'a, K, V, Indices>
     where
         Indices: IndexStorage,
@@ -561,24 +559,5 @@ mod tests {
             &[[0, 1, 2, 4].as_slice(), [3].as_slice()]
         );
         pairs.extend(new_pairs);
-    }
-
-    #[test]
-    fn fish() {
-        let mut map = IndexMultimapCore::<i32, i32, Vec<usize>>::new();
-        map.push(HashValue(1), 1, 11);
-        map.push(HashValue(2), 2, 21);
-        map.push(HashValue(1), 1, 12);
-        map.push(HashValue(1), 1, 13);
-        map.push(HashValue(3), 3, 31);
-        map.push(HashValue(1), 1, 14);
-
-        // let [mut a, mut b] = map.get_many_mut_arr([&[1, 2], &[4, 5]]);
-        // let a = a.iter_mut().collect::<Vec<_>>();
-        // let b = b.iter_mut().collect::<Vec<_>>();
-
-        // for it in a.iter().chain(b.iter()) {
-        //     println!("{it:#?}");
-        // }
     }
 }

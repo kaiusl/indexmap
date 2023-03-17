@@ -27,11 +27,12 @@ use super::{Subset, SubsetMut};
 /// Core of the map that does not depend on S
 ///
 pub(crate) struct IndexMultimapCore<K, V, Indices> {
+    // ---
     // IMPL DETAILS:
     //
-    // The implementation assumes that the indices in the `self.indices` are unique,
-    // sorted and valid after every complete operation.
-    //
+    // The implementation assumes that the indices in the `self.indices` are unique
+    // and sorted after every complete operation.
+    // ---
     /// indices mapping from the entry hash to its index.
     indices: RawTable<Indices>,
     /// pairs is a dense vec of key-value pairs in their order.
@@ -379,12 +380,15 @@ where
     }
 
     /// Return the index in `entries` where an equivalent key can be found
-    pub(crate) fn get_indices_of<Q>(&self, hash: HashValue, key: &Q) -> Option<&[usize]>
+    pub(crate) fn get_indices_of<Q>(&self, hash: HashValue, key: &Q) -> &[usize]
     where
         Q: ?Sized + Equivalent<K>,
     {
         let eq = equivalent(key, &self.pairs);
-        self.indices.get(hash.get(), eq).map(IndexStorage::as_slice)
+        self.indices
+            .get(hash.get(), eq)
+            .map(IndexStorage::as_slice)
+            .unwrap_or_default()
     }
 
     pub(crate) fn get<Q>(&self, hash: HashValue, key: &Q) -> Subset<'_, K, V, &'_ [usize]>

@@ -202,7 +202,7 @@ fn get() {
         let mut get_mut = map.get_mut(&key);
         check_subentries_mut(&mut get_mut, &[(index, &key, &mut val)]);
 
-        assert!(map.get_indices_of(&key).unwrap().contains(&index));
+        assert!(map.get_indices_of(&key).contains(&index));
     }
 
     for &elt in &not_present {
@@ -255,7 +255,7 @@ fn get() {
             _ => {}
         }
 
-        assert!(map.get_indices_of(&key).unwrap().contains(&index));
+        assert!(map.get_indices_of(&key).contains(&index));
     }
 }
 
