@@ -950,7 +950,7 @@ fn entry() {
     assert_eq!(e.indices(), &[1]);
     assert_eq!(e.key(), &2);
     match e {
-        Entry::Occupied(ref e) => assert_eq!(e.get().first(), Some((1, &2, &"2"))),
+        Entry::Occupied(ref e) => assert_eq!(e.as_subset().first(), Some((1, &2, &"2"))),
         Entry::Vacant(_) => panic!(),
     }
     assert_eq!(e.or_insert("4").first_mut(), Some((1, &2, &mut "2")));
@@ -1003,15 +1003,15 @@ fn entry_insert_append() {
     let mut map = IndexMultimapVec::new();
     map.insert_append(1, "1");
     let mut entry = map.entry(1).insert_append("11");
-    check_subentries(&entry.get(), &[(0, &1, &"1"), (1, &1, &"11")]);
+    check_subentries(&entry.as_subset(), &[(0, &1, &"1"), (1, &1, &"11")]);
     entry.insert_append("12");
     check_subentries(
-        &entry.get(),
+        &entry.as_subset(),
         &[(0, &1, &"1"), (1, &1, &"11"), (2, &1, &"12")],
     );
 
     let entry = map.entry(2).insert_append("21");
-    check_subentries(&entry.get(), &[(3, &2, &"21")]);
+    check_subentries(&entry.as_subset(), &[(3, &2, &"21")]);
 
     match map.entry(3) {
         Entry::Occupied(_) => unreachable!(),

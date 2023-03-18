@@ -503,7 +503,7 @@ pub struct SubsetValues<'a, K, V, I> {
 
 iter_methods!(SubsetValues<'a, K, V, I>, &'a V, index, pair, &pair.value);
 
-mod internal {
+pub(super) mod internal {
     pub struct Guard;
     pub trait Sealed {}
     pub struct Bounds<T>(T);
