@@ -341,17 +341,19 @@ where
         self.indices().len()
     }
 
-    /// Appends a new key-value pair to this entry by cloning the key
-    /// used to find this pair. This allows to keep using this entry if it's
-    /// needed.
+    /// Appends a new key-value pair to this entry.
+    ///
+    /// This method will clone the key if self doesn't own the key, but
+    /// moves the owned key if it has one.
     pub fn insert_append(&mut self, value: V)
     where
         K: Clone,
     {
         let index = self.map.pairs.len();
+        let key = self.take_or_clone_key();
         self.map.pairs.push(Bucket {
             hash: self.hash,
-            key: self.clone_key(),
+            key,
             value,
         });
 
@@ -400,6 +402,26 @@ where
     {
         match self.key.as_ref() {
             Some(k) => k.clone(),
+            None => {
+                // The only way we don't have owned key is if we already inserted it.
+                // (either by Entry::insert_append or VacantEntry::insert).
+                // The key that was used to get this entry thus must be in the last pair
+                self.map
+                    .pairs
+                    .last()
+                    .expect("expected occupied pair to have at least one key-value pair")
+                    .key
+                    .clone()
+            }
+        }
+    }
+
+    fn take_or_clone_key(&mut self) -> K
+    where
+        K: Clone,
+    {
+        match self.key.take() {
+            Some(k) => k,
             None => {
                 // The only way we don't have owned key is if we already inserted it.
                 // (either by Entry::insert_append or VacantEntry::insert).

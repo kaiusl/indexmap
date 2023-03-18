@@ -929,10 +929,10 @@ where
     /// Otherwise a mutable iterator over an already existent values is returned.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert(self, default: V) -> SubsetMut<'a, K, V, &'a [usize]> {
+    pub fn or_insert(self, default: V) -> OccupiedEntry<'a, K, V, Indices> {
         match self {
-            Entry::Occupied(entry) => entry.into_subset_mut(),
-            Entry::Vacant(entry) => entry.insert_subset_mut(default),
+            Entry::Occupied(entry) => entry,
+            Entry::Vacant(entry) => entry.insert_entry(default),
         }
     }
 
@@ -942,13 +942,13 @@ where
     /// Otherwise a mutable iterator over an already existent values is returned.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert_with<F>(self, call: F) -> SubsetMut<'a, K, V, &'a [usize]>
+    pub fn or_insert_with<F>(self, call: F) -> OccupiedEntry<'a, K, V, Indices>
     where
         F: FnOnce() -> V,
     {
         match self {
-            Entry::Occupied(entry) => entry.into_subset_mut(),
-            Entry::Vacant(entry) => entry.insert_subset_mut(call()),
+            Entry::Occupied(entry) => entry,
+            Entry::Vacant(entry) => entry.insert_entry(call()),
         }
     }
 
@@ -958,16 +958,16 @@ where
     /// Otherwise a mutable iterator over an already existent values is returned.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert_with_key<F>(self, call: F) -> SubsetMut<'a, K, V, &'a [usize]>
+    pub fn or_insert_with_key<F>(self, call: F) -> OccupiedEntry<'a, K, V, Indices>
     where
         F: FnOnce(&K) -> V,
     {
         match self {
-            Entry::Occupied(entry) => entry.into_subset_mut(),
+            Entry::Occupied(entry) => entry,
 
             Entry::Vacant(entry) => {
                 let value = call(&entry.key);
-                entry.insert_subset_mut(value)
+                entry.insert_entry(value)
             }
         }
     }
@@ -978,13 +978,13 @@ where
     /// Otherwise a mutable iterator over an already existent values is returned.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn or_default(self) -> SubsetMut<'a, K, V, &'a [usize]>
+    pub fn or_default(self) -> OccupiedEntry<'a, K, V, Indices>
     where
         V: Default,
     {
         match self {
-            Entry::Occupied(entry) => entry.into_subset_mut(),
-            Entry::Vacant(entry) => entry.insert_subset_mut(V::default()),
+            Entry::Occupied(entry) => entry,
+            Entry::Vacant(entry) => entry.insert_entry(V::default()),
         }
     }
 
