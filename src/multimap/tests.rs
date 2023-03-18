@@ -943,7 +943,7 @@ fn entry() {
         assert!(matches!(e, Entry::Vacant(..)));
         assert_eq!(e.indices(), &[2]);
         let mut e = e.or_insert("3");
-        assert_eq!(e.first_mut(), Some((2, &3, &mut "3")));
+        assert_eq!(e.first_mut(), (2, &3, &mut "3"));
     }
 
     let e = map.entry(2);
@@ -953,7 +953,7 @@ fn entry() {
         Entry::Occupied(ref e) => assert_eq!(e.as_subset().first(), Some((1, &2, &"2"))),
         Entry::Vacant(_) => panic!(),
     }
-    assert_eq!(e.or_insert("4").first_mut(), Some((1, &2, &mut "2")));
+    assert_eq!(e.or_insert("4").first_mut(), (1, &2, &mut "2"));
 }
 
 #[test]
@@ -989,11 +989,11 @@ fn entry_or_default() {
 
     map.insert_append(1, TestEnum::NonDefaultValue);
     assert_eq!(
-        Some((0, &1, &mut TestEnum::NonDefaultValue)),
+        (0, &1, &mut TestEnum::NonDefaultValue),
         map.entry(1).or_default().first_mut()
     );
     assert_eq!(
-        Some((1, &2, &mut TestEnum::DefaultValue)),
+        (1, &2, &mut TestEnum::DefaultValue),
         map.entry(2).or_default().first_mut()
     );
 }
