@@ -916,7 +916,7 @@ where
     {
         match self {
             Entry::Occupied(mut entry) => {
-                f(entry.get_mut());
+                f(entry.as_subset_mut());
                 Entry::Occupied(entry)
             }
             x => x,
@@ -931,7 +931,7 @@ where
     /// Computes in **O(1)** time (amortized average).
     pub fn or_insert(self, default: V) -> SubsetMut<'a, K, V, &'a [usize]> {
         match self {
-            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Occupied(entry) => entry.into_subset_mut(),
             Entry::Vacant(entry) => entry.insert_subset_mut(default),
         }
     }
@@ -947,7 +947,7 @@ where
         F: FnOnce() -> V,
     {
         match self {
-            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Occupied(entry) => entry.into_subset_mut(),
             Entry::Vacant(entry) => entry.insert_subset_mut(call()),
         }
     }
@@ -963,7 +963,7 @@ where
         F: FnOnce(&K) -> V,
     {
         match self {
-            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Occupied(entry) => entry.into_subset_mut(),
 
             Entry::Vacant(entry) => {
                 let value = call(&entry.key);
@@ -983,7 +983,7 @@ where
         V: Default,
     {
         match self {
-            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Occupied(entry) => entry.into_subset_mut(),
             Entry::Vacant(entry) => entry.insert_subset_mut(V::default()),
         }
     }
@@ -1066,7 +1066,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct(stringify!(OccupiedEntry))
             .field("key", self.key())
-            .field("pairs", &self.get().iter())
+            .field("pairs", &self.as_subset().iter())
             .finish()
     }
 }

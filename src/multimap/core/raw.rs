@@ -2,16 +2,17 @@
 //! This module encapsulates the `unsafe` access to `hashbrown::raw::RawTable`,
 //! mostly in dealing with its bucket "pointers".
 
-use core::{fmt, ops};
+use core::{fmt, iter::Copied, ops, slice};
 
 use crate::{
+    multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut},
     util::{is_sorted, is_unique_sorted, simplify_range},
     Equivalent,
 };
 
 use super::super::{Subset, SubsetMut};
 use super::{equivalent, Bucket, Entry, HashValue, IndexMultimapCore, IndexStorage, VacantEntry};
-use alloc::{format, vec::Vec, vec::Drain};
+use alloc::{format, vec::Drain, vec::Vec};
 use hashbrown::raw::RawTable;
 
 type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
@@ -264,16 +265,15 @@ where
         unsafe { SubsetMut::new_unchecked(&mut self.pairs, indices) }
     }
 
-
     /// This is unsafe because it can violate our maps assumptions about self.indices.
     /// Which can lead to unsoundness down the line in mutable subsets and their iterators.
-    /// 
+    ///
     /// This happens if the returned Drain is leaked. This leaks all the pairs in
     /// the range `range.start..`. Thus first self.indices can contain out of bounds indices.
     /// This is ok by itself as it will only lead to panics.
     /// However if after the leaking there is an insertion, we insert a duplicate index into indices.
-    /// If that insertion happens to be behind an existing key, get_mut will return a SubsetMut which 
-    /// inturn return aliased mutable references. 
+    /// If that insertion happens to be behind an existing key, get_mut will return a SubsetMut which
+    /// inturn return aliased mutable references.
     pub(crate) unsafe fn _drain<R>(&mut self, range: R) -> Drain<'_, Bucket<K, V>>
     where
         R: ops::RangeBounds<usize>,
@@ -414,21 +414,6 @@ where
         }
     }
 
-    /// Returns a slice like construct with all the values associated with this entry in the map.
-    pub fn get(&self) -> Subset<'_, K, V, &'_ [usize]> {
-        Subset::new(&self.map.pairs, self.indices())
-    }
-
-    /// Returns a slice like construct with all values associated with this entry in the map.
-    ///
-    /// If you need a reference which may outlive the destruction of the
-    /// pair, see [`into_mut`](Self::into_mut).
-    pub fn get_mut(&mut self) -> SubsetMut<'_, K, V, &'_ [usize]> {
-        let indices = unsafe { self.raw_bucket.as_ref() };
-        // SAFETY: indices come from the map, thus must be valid for pairs and unique
-        unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, indices) }
-    }
-
     /// Returns the indices of all the pairs associated with this entry in the map.
     #[inline]
     pub fn indices(&self) -> &[usize] {
@@ -436,15 +421,54 @@ where
         unsafe { self.raw_bucket.as_ref() }.as_slice()
     }
 
-    /// Converts into  a slice like construct with all the values associated with
-    /// this pair in the map, with a lifetime bound to the map itself.
-    pub fn into_mut(self) -> SubsetMut<'a, K, V, &'a [usize]> {
-        // SAFETY:
-        //  * we have &mut map keep keeping the bucket stable
-        //    SubsetMut will take the &'a mut map.pairs and keep it,
-        //    keeping the map mutably borrowed for 'a
-        //  * indices come from the map, thus must be valid for pairs and unique
-        unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, self.raw_bucket.as_ref()) }
+    /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
+    pub fn nth(&self, n: usize) -> Option<(usize, &K, &V)> {
+        match self.indices().get(n) {
+            Some(&index) => {
+                let Bucket { key, value, .. } = &self.map.pairs[index];
+                Some((index, key, value))
+            }
+            None => None,
+        }
+    }
+
+    /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
+    pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
+        match self.indices().get(n) {
+            Some(&index) => {
+                let Bucket { key, value, .. } = &mut self.map.pairs[index];
+                Some((index, key, value))
+            }
+            None => None,
+        }
+    }
+
+    /// Return a reference to the first pair in this entry.
+    pub fn first(&self) -> (usize, &K, &V) {
+        let index = self.indices()[0];
+        let Bucket { key, value, .. } = &self.map.pairs[index];
+        (index, key, value)
+    }
+
+    /// Return a reference to the first pair in this entry.
+    pub fn first_mut(&mut self) -> (usize, &K, &mut V) {
+        let index = self.indices()[0];
+        let Bucket { key, value, .. } = &mut self.map.pairs[index];
+        (index, key, value)
+    }
+
+    /// Returns a reference to the last pair in this entry.
+    pub fn last(&self) -> (usize, &K, &V) {
+        let index = *self.indices().last().unwrap();
+        let Bucket { key, value, .. } = &self.map.pairs[index];
+        (index, key, value)
+    }
+
+    /// Returns a reference to the last pair in this entry.
+    pub fn last_mut(&mut self) -> (usize, &K, &mut V) {
+        let index = *self.indices().last().unwrap();
+        let Bucket { key, value, .. } = &mut self.map.pairs[index];
+        (index, key, value)
     }
 
     /// Remove all the values stored in the map for this entry.
@@ -509,6 +533,144 @@ where
         let removed = self.map.shift_remove_finish_collect(indices.as_slice());
         self.map.debug_assert_invariants();
         (indices, removed)
+    }
+
+    /// Returns an iterator over all the pairs in this entry.
+    pub fn iter(&self) -> SubsetIter<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+        SubsetIter::new(
+            &self.map.pairs,
+            // SAFETY: we have &mut map keep keeping the bucket stable
+            unsafe { self.raw_bucket.as_ref() }.iter().copied(),
+        )
+    }
+
+    /// Returns a mutable iterator over all the pairs in this entry.
+    pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+        // SAFETY: we have &mut map keep keeping the bucket stable
+        //  indices come from the map and must be unique, valid
+        unsafe {
+            SubsetIterMut::new_unchecked(
+                &mut self.map.pairs,
+                self.raw_bucket.as_ref().iter().copied(),
+            )
+        }
+    }
+
+    /// Returns an iterator over all the keys in this entry.
+    ///
+    /// Note that the iterator yields one key for each pair which are all equivalent.
+    /// But there may be an observable differences if the key type has any
+    /// distinguishing features outside of [`Hash`] and [`Eq`], like
+    /// extra fields or the memory address of an allocation.
+    pub fn keys(&self) -> SubsetKeys<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+        SubsetKeys::new(
+            &self.map.pairs,
+            // SAFETY: we have &mut map keep keeping the bucket stable
+            unsafe { self.raw_bucket.as_ref() }.iter().copied(),
+        )
+    }
+
+    /// Returns an iterator over all the values in this entry.
+    pub fn values(&self) -> SubsetValues<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+        SubsetValues::new(
+            &self.map.pairs,
+            // SAFETY: we have &mut map keep keeping the bucket stable
+            unsafe { self.raw_bucket.as_ref() }.iter().copied(),
+        )
+    }
+
+    /// Returns a mutable iterator over all the values in this entry.
+    pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+        // SAFETY: we have &mut map keep keeping the bucket stable
+        //  indices come from the map and must be unique, valid
+        unsafe {
+            SubsetValuesMut::new_unchecked(
+                &mut self.map.pairs,
+                self.raw_bucket.as_ref().iter().copied(),
+            )
+        }
+    }
+
+    /// Converts into an iterator over all the values in this entry.
+    pub fn into_values(self) -> SubsetValuesMut<'a, K, V, Copied<slice::Iter<'a, usize>>> {
+        // SAFETY:
+        //  * we have &mut map keep keeping the bucket stable
+        //    SubsetValuesMut will take the &'a mut map.pairs and keep it,
+        //    keeping the map mutably borrowed for 'a
+        //  * indices come from the map, thus must be valid for pairs and unique
+        unsafe {
+            SubsetValuesMut::new_unchecked(
+                &mut self.map.pairs,
+                self.raw_bucket.as_ref().iter().copied(),
+            )
+        }
+    }
+
+    /// Returns a slice like construct with all the values associated with this entry in the map.
+    pub fn as_subset(&self) -> Subset<'_, K, V, &'_ [usize]> {
+        Subset::new(&self.map.pairs, self.indices())
+    }
+
+    /// Returns a slice like construct with all values associated with this entry in the map.
+    ///
+    /// If you need a reference which may outlive the destruction of the
+    /// pair, see [`into_mut`](Self::into_mut).
+    pub fn as_subset_mut(&mut self) -> SubsetMut<'_, K, V, &'_ [usize]> {
+        let indices = unsafe { self.raw_bucket.as_ref() };
+        // SAFETY: indices come from the map, thus must be valid for pairs and unique
+        unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, indices) }
+    }
+
+    /// Converts into  a slice like construct with all the values associated with
+    /// this pair in the map, with a lifetime bound to the map itself.
+    pub fn into_subset_mut(self) -> SubsetMut<'a, K, V, &'a [usize]> {
+        // SAFETY:
+        //  * we have &mut map keep keeping the bucket stable
+        //    SubsetMut will take the &'a mut map.pairs and keep it,
+        //    keeping the map mutably borrowed for 'a
+        //  * indices come from the map, thus must be valid for pairs and unique
+        unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, self.raw_bucket.as_ref()) }
+    }
+}
+
+impl<'a, K, V, Indices> IntoIterator for &'a OccupiedEntry<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+{
+    type Item = (usize, &'a K, &'a V);
+    type IntoIter = SubsetIter<'a, K, V, Copied<slice::Iter<'a, usize>>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K, V, Indices> IntoIterator for &'a mut OccupiedEntry<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+{
+    type Item = (usize, &'a K, &'a mut V);
+    type IntoIter = SubsetIterMut<'a, K, V, Copied<slice::Iter<'a, usize>>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl<'a, K, V, Indices> IntoIterator for OccupiedEntry<'a, K, V, Indices>
+where
+    Indices: IndexStorage,
+{
+    type Item = (usize, &'a K, &'a mut V);
+    type IntoIter = SubsetIterMut<'a, K, V, Copied<slice::Iter<'a, usize>>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        unsafe {
+            SubsetIterMut::new_unchecked(
+                &mut self.map.pairs,
+                self.raw_bucket.as_ref().iter().copied(),
+            )
+        }
     }
 }
 
