@@ -19,7 +19,9 @@ use core::ops;
 
 pub use self::raw::OccupiedEntry;
 use crate::equivalent::Equivalent;
-use crate::util::{is_sorted, is_unique, replace_sorted, simplify_range};
+use crate::util::{
+    is_sorted, is_sorted_and_unique, is_unique, is_unique_sorted, replace_sorted, simplify_range,
+};
 use crate::{Bucket, HashValue};
 
 use super::{Subset, SubsetMut};
@@ -155,7 +157,7 @@ where
             index_count += indices.len();
             assert!(is_sorted(indices), "found unsorted indices");
             assert!(
-                indices.last().unwrap_or(&0) < &self.entries.len(),
+                indices.last().unwrap_or(&0) < &self.pairs.len(),
                 "found out of bound index for entries in indices"
             );
             let needed_capacity = used.len() + indices.len();
@@ -170,6 +172,18 @@ where
             index_count,
             "mismatch between entries and indices count"
         );
+    }
+
+    #[inline(always)]
+    #[cfg(any(not(debug_assertions), not(feature = "more_debug_assertions")))]
+    fn debug_assert_indices(&self, _indices: &[usize]) {}
+
+    #[cfg(all(debug_assertions, feature = "more_debug_assertions"))]
+    #[track_caller]
+    fn debug_assert_indices(&self, indices: &[usize]) {
+        assert!(is_sorted_and_unique(indices));
+        assert!(!indices.is_empty());
+        assert!(indices.last().unwrap_or(&0) < &self.pairs.len());
     }
 }
 
@@ -372,7 +386,8 @@ where
             .indices
             .insert(hash.get(), Indices::one(i), get_hash(&self.pairs));
         self.pairs.push(Bucket { hash, key, value });
-        self.debug_assert_invariants();
+        #[allow(unsafe_code)]
+        self.debug_assert_indices(unsafe { bucket.as_ref() });
         (i, bucket)
     }
 
@@ -382,10 +397,18 @@ where
         Q: ?Sized + Equivalent<K>,
     {
         let eq = equivalent(key, &self.pairs);
-        self.indices
+        let indices = self
+            .indices
             .get(hash.get(), eq)
             .map(IndexStorage::as_slice)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if cfg!(debug_assertions) {
+            if !indices.is_empty() {
+                self.debug_assert_indices(indices);
+            }
+        }
+
+        indices
     }
 
     pub(crate) fn get<Q>(&self, hash: HashValue, key: &Q) -> Subset<'_, K, V, &'_ [usize]>
@@ -394,6 +417,7 @@ where
     {
         let eq = equivalent(key, &self.pairs);
         if let Some(indices) = self.indices.get(hash.get(), eq) {
+            self.debug_assert_indices(indices);
             Subset::new(&self.pairs, indices.as_slice())
         } else {
             Subset::new(&self.pairs, [].as_slice())
@@ -410,6 +434,7 @@ where
         match self.indices.get_mut(hash.get(), eq) {
             Some(indices) => {
                 indices.push(i);
+                debug_assert!(is_sorted_and_unique(indices));
             }
             None => {
                 self.indices
@@ -417,7 +442,6 @@ where
             }
         }
         self.pairs.push(Bucket { hash, key, value });
-        self.debug_assert_invariants();
         i
     }
 
@@ -545,9 +569,9 @@ where
     ///     indices [5, 6], get decremented by 2
     ///     indices [8, ...] get decremented by 3
     fn decrement_indices_batched(&mut self, indices: &[usize]) {
+        debug_assert!(is_unique_sorted(indices));
         for (offset, w) in (1..).zip(indices.windows(2)) {
             let (start, end) = (w[0], w[1]);
-            debug_assert!(start < end);
             self.decrement_indices(start + 1, end, offset);
         }
 
@@ -568,7 +592,7 @@ where
         if shifted_pairs.len() > self.indices.buckets() / 2 {
             // Shift all indices in range.
             for indices in self.indices_mut() {
-                debug_assert!(is_sorted(indices));
+                debug_assert!(is_sorted_and_unique(indices));
                 for i in indices.as_mut_slice() {
                     if *i >= end {
                         // early break as we go past end and our indices are sorted

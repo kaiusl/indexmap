@@ -4,9 +4,12 @@ use core::fmt;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
-use crate::Bucket;
+use crate::{
+    util::{is_unique, is_unique_sorted},
+    Bucket,
+};
 
-use super::{SubsetIndexStorage, SubsetIter, SubsetKeys, SubsetValues, ToIndexIter, internal};
+use super::{internal, SubsetIndexStorage, SubsetIter, SubsetKeys, SubsetValues, ToIndexIter};
 
 /// Slice like construct over a subset of all the pairs in the [`IndexMultimap`]
 /// with mutable access to the values.
@@ -44,7 +47,6 @@ where
     ///
     /// SAFETY: `indices` must be unique
     pub(crate) unsafe fn new_unchecked(pairs: &'a mut [Bucket<K, V>], indices: Indices) -> Self {
-        debug_assert!(indices.iter().max().unwrap_or(&0) < &pairs.len());
         Self {
             pairs,
             indices,
@@ -61,19 +63,34 @@ where
         }
     }
 
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    fn debug_assert_invariants(&self) {}
+
+    #[cfg(debug_assertions)]
+    #[track_caller]
+    fn debug_assert_invariants(&self) {
+        debug_assert!(is_unique(&self.indices));
+        debug_assert!(self
+            .indices
+            .iter()
+            .max()
+            .map(|&i| i < self.pairs.len())
+            .unwrap_or(true));
+    }
+
     /// Returns an iterator over all the pairs in this subset.
     pub fn iter(&self) -> SubsetIter<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
         SubsetIter::new(self.pairs, self.indices.index_iter(internal::Guard))
     }
 
     /// Returns a mutable iterator over all the pairs in this subset.
     pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
         // SAFETY: Self's invariants are same as the iterator's
         unsafe {
-            SubsetIterMut::new_unchecked(
-                self.pairs,
-                self.indices.index_iter(internal::Guard),
-            )
+            SubsetIterMut::new_unchecked(self.pairs, self.indices.index_iter(internal::Guard))
         }
     }
 
@@ -82,22 +99,22 @@ where
     /// Note that the iterator yield one key for each pair.
     /// That is there may be duplicate keys.
     pub fn keys(&self) -> SubsetKeys<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
         SubsetKeys::new(self.pairs, self.indices.index_iter(internal::Guard))
     }
 
     /// Returns an iterator over all the values in this subset.
     pub fn values(&self) -> SubsetValues<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
         SubsetValues::new(self.pairs, self.indices.index_iter(internal::Guard))
     }
 
     /// Returns a mutable iterator over all the values in this subset.
     pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
         // SAFETY: Self's invariants are same as the iterator's
         unsafe {
-            SubsetValuesMut::new_unchecked(
-                self.pairs,
-                self.indices.index_iter(internal::Guard),
-            )
+            SubsetValuesMut::new_unchecked(self.pairs, self.indices.index_iter(internal::Guard))
         }
     }
 
@@ -105,6 +122,7 @@ where
     pub fn into_values(
         self,
     ) -> SubsetValuesMut<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
+        self.debug_assert_invariants();
         // SAFETY: Self's invariants are same as the iterator's
         unsafe {
             SubsetValuesMut::new_unchecked(
@@ -138,12 +156,10 @@ where
     type IntoIter = SubsetIterMut<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter>;
 
     fn into_iter(self) -> Self::IntoIter {
+        self.debug_assert_invariants();
         // SAFETY: Self can only be created from the map, which only stores unique and valid indices
         unsafe {
-            SubsetIterMut::new_unchecked(
-                self.pairs,
-                self.indices.into_index_iter(internal::Guard),
-            )
+            SubsetIterMut::new_unchecked(self.pairs, self.indices.into_index_iter(internal::Guard))
         }
     }
 }

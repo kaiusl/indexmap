@@ -79,6 +79,10 @@ pub(crate) fn is_unique_sorted<T: PartialOrd>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] != w[1])
 }
 
+pub(crate) fn is_sorted_and_unique<T: PartialOrd>(slice: &[T]) -> bool {
+    slice.windows(2).all(|w| w[0] < w[1])
+}
+
 
 /// Checks if the slice contains only unique items.
 pub(crate) fn is_unique<T>(slice: &[T]) -> bool
@@ -123,5 +127,14 @@ mod tests {
     fn is_unique_test() {
         assert!(is_unique(&[1, 3, 2]));
         assert!(!is_unique(&[1, 3, 1, 2]));
+    }
+
+    #[test]
+    fn is_sorted_and_unique_test() {
+        assert!(is_sorted_and_unique(&[1, 2, 3]));
+        assert!(!is_sorted_and_unique(&[1, 1, 2, 3]));
+
+        assert!(!is_sorted_and_unique(&[1, 3, 2]));
+        assert!(!is_sorted_and_unique(&[1, 3, 1, 2]));
     }
 }
