@@ -26,7 +26,7 @@ macro_rules! impl_index {
             Indices: IndexStorage
         {
             fn index_mut(&mut self, range: $range) -> &mut Self::Output {
-                Slice::from_mut_slice(&mut self.core.as_pairs_mut()[range])
+                Slice::from_mut_slice(&mut self.core.as_mut_pairs()[range])
             }
         }
     )*}

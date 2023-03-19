@@ -264,7 +264,7 @@ impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
 
     /// Return a mutable iterator over the key-value pairs of the map, in their order.
     pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
-        IterMut::new(self.core.as_pairs_mut())
+        IterMut::new(self.core.as_mut_pairs())
     }
 
     /// Return an iterator over the keys of the map, in their order.
@@ -291,7 +291,7 @@ impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
     /// Return an iterator over mutable references to the values of the map,
     /// in their order
     pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
-        ValuesMut::new(self.core.as_pairs_mut())
+        ValuesMut::new(self.core.as_mut_pairs())
     }
 
     /// Return an owning iterator over the values of the map, in their order.
@@ -562,7 +562,7 @@ where
         self.core.swap_remove(hash, key)
     }
 
-    /// Remove all the key-value pairs with key equivalent to given `key` and 
+    /// Remove all the key-value pairs with key equivalent to given `key` and
     /// return them and the indices they had.
     ///
     /// Like [`Vec::swap_remove`], the pairs are removed by swapping them with the
@@ -603,7 +603,7 @@ where
         self.core.shift_remove(hash, key)
     }
 
-    /// Remove all the key-value pairs with key equivalent to given `key` and 
+    /// Remove all the key-value pairs with key equivalent to given `key` and
     /// return them and the indices they had.
     ///
     /// Like [`Vec::remove`], the pairs are removed by shifting all of the
@@ -762,7 +762,7 @@ where
     ///
     /// Computes in **O(1)** time.
     pub fn as_mut_slice(&mut self) -> &mut Slice<K, V> {
-        Slice::from_mut_slice(self.core.as_pairs_mut())
+        Slice::from_mut_slice(self.core.as_mut_pairs())
     }
 
     /// Converts into a boxed slice of all the key-value pairs in the map.
@@ -791,7 +791,7 @@ where
     ///
     /// [`len_pairs()`]: Self::len_pairs
     pub fn get_index_mut(&mut self, index: usize) -> Option<(&K, &mut V)> {
-        self.core.as_pairs_mut().get_mut(index).map(Bucket::ref_mut)
+        self.core.as_mut_pairs().get_mut(index).map(Bucket::ref_mut)
     }
 
     /// Returns a slice of key-value pairs in the given range of indices.
@@ -815,7 +815,7 @@ where
     ///
     /// [`len_pairs()`]: Self::len_pairs
     pub fn get_range_mut<R: RangeBounds<usize>>(&mut self, range: R) -> Option<&mut Slice<K, V>> {
-        let entries = self.core.as_pairs_mut();
+        let entries = self.core.as_mut_pairs();
         let range = try_simplify_range(range, entries.len())?;
         entries.get_mut(range).map(Slice::from_mut_slice)
     }
@@ -831,7 +831,7 @@ where
     ///
     /// Computes in **O(1)** time.
     pub fn first_mut(&mut self) -> Option<(&K, &mut V)> {
-        self.core.as_pairs_mut().first_mut().map(Bucket::ref_mut)
+        self.core.as_mut_pairs().first_mut().map(Bucket::ref_mut)
     }
 
     /// Get the last key-value pair.
@@ -845,7 +845,7 @@ where
     ///
     /// Computes in **O(1)** time.
     pub fn last_mut(&mut self) -> Option<(&K, &mut V)> {
-        self.core.as_pairs_mut().last_mut().map(Bucket::ref_mut)
+        self.core.as_mut_pairs().last_mut().map(Bucket::ref_mut)
     }
 
     /// Remove the key-value pair by index

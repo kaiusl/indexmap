@@ -51,7 +51,7 @@ pub(super) fn insert_bulk_no_grow<K, V, Indices>(
             None => {
                 // Need to check every time as we don't know how many unique keys are in the `new_pairs`
                 // Cannot use `new_pairs.len()` as regular IndexMap does.
-                assert!(indices.capacity() - indices.len() > 0);
+                assert!(indices.capacity() > indices.len());
                 // SAFETY: we asserted that sufficient capacity exists for this pair and that this pair is not in the table
                 unsafe {
                     indices.insert_no_grow(pair.hash.get(), Indices::one(pair_index));
@@ -62,18 +62,21 @@ pub(super) fn insert_bulk_no_grow<K, V, Indices>(
 }
 
 #[inline]
+/// Binds the mutable borrow of T to the borrow of bucket.
+unsafe fn bucket_as_mut<T>(bucket: &mut RawBucket<T>) -> &mut T {
+    unsafe { bucket.as_mut() }
+}
+
+#[inline]
 pub(super) fn erase_index<Indices>(table: &mut RawTable<Indices>, hash: HashValue, index: usize)
 where
     Indices: IndexStorage,
 {
     match table.find(hash.get(), super::eq_index(index)) {
-        Some(bucket) => {
+        Some(mut bucket) => {
             // SAFETY: we have &mut to table and thus to the bucket
-            let indices = unsafe { bucket.as_mut() };
+            let indices = unsafe { bucket_as_mut(&mut bucket) };
             if indices.len() == 1 {
-                // Drop indices so they won't be used accidentally later
-                #[allow(clippy::drop_ref)]
-                drop(indices);
                 // SAFETY: the bucket cannot escape as &mut to indices is dropped
                 unsafe { table.erase(bucket) };
             } else {
@@ -132,8 +135,8 @@ where
         // SAFETY: we're not letting any of the buckets escape this function
         unsafe {
             let offset = end - start;
-            for bucket in self.indices.iter() {
-                let indices = bucket.as_mut();
+            for mut bucket in self.indices.iter() {
+                let indices = bucket_as_mut(&mut bucket);
                 indices.retain(|i| {
                     if *i >= end {
                         *i -= offset;
@@ -143,9 +146,6 @@ where
                     }
                 });
                 if indices.len() == 0 {
-                    // so we don't use it accidentally later
-                    #[allow(clippy::drop_ref)]
-                    drop(indices);
                     self.indices.erase(bucket);
                 }
             }
@@ -161,7 +161,7 @@ where
             // SAFETY: The entry is created with a live raw bucket, at the same time
             // we have a &mut reference to the map, so it can not be modified further.
             Some(raw_bucket) => Entry::Occupied(unsafe {
-                OccupiedEntry::from_parts(self, raw_bucket, hash, Some(key))
+                OccupiedEntry::new_unchecked(self, raw_bucket, hash, Some(key))
             }),
             None => Entry::Vacant(VacantEntry {
                 map: self,
@@ -249,32 +249,6 @@ where
         }
     }
 
-    /// Push a key-value pair, *without* checking whether it already exists,
-    /// and return the Subset over all the pairs for given key.
-    pub(crate) fn push_full(
-        &mut self,
-        hash: HashValue,
-        key: K,
-        value: V,
-    ) -> SubsetMut<'_, K, V, &'_ [usize]> {
-        let i = self.pairs.len();
-        let bucket = self
-            .indices
-            .insert(hash.get(), Indices::one(i), super::get_hash(&self.pairs));
-        self.pairs.push(Bucket { hash, key, value });
-        // SAFETY: we have &mut to self, thus no one else can have any references to the bucket
-        //         bucket must be valid for at least '_
-        let indices = unsafe { bucket.as_ref() }.as_slice();
-        debug_assert_eq!(indices.len(), 1);
-        debug_assert!(indices[0] < self.pairs.len());
-        if cfg!(debug_assertions) {
-            self.debug_assert_invariants();
-        }
-        // SAFETY: we just inserted the bucket, it can only have one index in it.
-        //         It also must be valid as we just inserted the pair into self.pairs
-        unsafe { SubsetMut::new_unchecked(&mut self.pairs, indices) }
-    }
-
     /// This is unsafe because it can violate our maps assumptions about self.indices.
     /// Which can lead to unsoundness down the line in mutable subsets and their iterators.
     ///
@@ -331,7 +305,7 @@ where
     ///   * `bucket` must be live at the creation moment
     ///   * we must be the only ones with the `bucket` pointer
     #[inline]
-    pub(super) unsafe fn from_parts(
+    pub(super) unsafe fn new_unchecked(
         map: &'a mut IndexMultimapCore<K, V, Indices>,
         bucket: RawBucket<Indices>,
         hash: HashValue,
@@ -435,7 +409,7 @@ where
     pub fn nth(&self, n: usize) -> Option<(usize, &K, &V)> {
         match self.indices().get(n) {
             Some(&index) => {
-                let Bucket { key, value, .. } = &self.map.pairs[index];
+                let Bucket { key, value, .. } = &self.map.as_pairs()[index];
                 Some((index, key, value))
             }
             None => None,
@@ -446,7 +420,7 @@ where
     pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
         match self.indices().get(n) {
             Some(&index) => {
-                let Bucket { key, value, .. } = &mut self.map.pairs[index];
+                let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
                 Some((index, key, value))
             }
             None => None,
@@ -456,28 +430,28 @@ where
     /// Return a reference to the first pair in this entry.
     pub fn first(&self) -> (usize, &K, &V) {
         let index = self.indices()[0];
-        let Bucket { key, value, .. } = &self.map.pairs[index];
+        let Bucket { key, value, .. } = &self.map.as_pairs()[index];
         (index, key, value)
     }
 
     /// Return a reference to the first pair in this entry.
     pub fn first_mut(&mut self) -> (usize, &K, &mut V) {
         let index = self.indices()[0];
-        let Bucket { key, value, .. } = &mut self.map.pairs[index];
+        let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
         (index, key, value)
     }
 
     /// Returns a reference to the last pair in this entry.
     pub fn last(&self) -> (usize, &K, &V) {
         let index = *self.indices().last().unwrap();
-        let Bucket { key, value, .. } = &self.map.pairs[index];
+        let Bucket { key, value, .. } = &self.map.as_pairs()[index];
         (index, key, value)
     }
 
     /// Returns a reference to the last pair in this entry.
     pub fn last_mut(&mut self) -> (usize, &K, &mut V) {
         let index = *self.indices().last().unwrap();
-        let Bucket { key, value, .. } = &mut self.map.pairs[index];
+        let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
         (index, key, value)
     }
 
@@ -691,7 +665,7 @@ impl<'a, K, V, Indices> VacantEntry<'a, K, V, Indices> {
     {
         let (_, bucket) = self.map.push(self.hash, self.key, value);
         // SAFETY: push returns a live, valid bucket from the self.map
-        unsafe { OccupiedEntry::from_parts(self.map, bucket, self.hash, None) }
+        unsafe { OccupiedEntry::new_unchecked(self.map, bucket, self.hash, None) }
     }
 }
 
