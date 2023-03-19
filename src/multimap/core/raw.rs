@@ -6,7 +6,7 @@ use core::{fmt, iter::Copied, ops, slice};
 
 use crate::{
     multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut},
-    util::{is_sorted, is_unique_sorted, simplify_range},
+    util::{is_sorted, is_unique_sorted, replace_sorted, simplify_range},
     Equivalent,
 };
 
@@ -195,22 +195,32 @@ where
         // must use raw buckets to do the swap. This is still safe because we
         // are locally sure they won't dangle, and we write them individually.
         unsafe {
-            let raw_bucket_a = self
-                .find_index(a)
-                .as_mut()
-                .iter_mut()
-                .find(|&&mut i| i == a)
-                .expect("index not found");
-            let raw_bucket_b = self
-                .find_index(b)
-                .as_mut()
-                .iter_mut()
-                .find(|&&mut i| i == b)
-                .expect("index not found");
-            *raw_bucket_a = b;
-            *raw_bucket_b = a;
+            let raw_bucket_a = self.find_index(a);
+            let raw_bucket_b = self.find_index(b);
+            if core::ptr::eq(raw_bucket_a.as_ptr(), raw_bucket_b.as_ptr()) {
+                // both indices belong to the same entry,
+                // if we swap entries indices are still correct
+                // nothing to do
+            } else {
+                let raw_bucket_a = raw_bucket_a.as_mut();
+                let index_a = raw_bucket_a
+                    .iter()
+                    .position(|&i| i == a)
+                    .expect("index not found");
+
+                let raw_bucket_b = raw_bucket_b.as_mut();
+                let index_b = raw_bucket_b
+                    .iter()
+                    .position(|&i| i == b)
+                    .expect("index not found");
+
+                replace_sorted(raw_bucket_a, index_a, b);
+                replace_sorted(raw_bucket_b, index_b, a);
+            }
         }
         self.pairs.swap(a, b);
+
+        self.debug_assert_invariants();
     }
 
     pub(crate) fn shrink_to_fit(&mut self) {

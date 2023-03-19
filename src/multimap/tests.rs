@@ -829,6 +829,11 @@ fn swap_index() {
         map.insert_append(elt, elt * 2);
     }
 
+    map.swap_indices(1, 5);
+    insert.swap(1, 5);
+    let expected = insert.map(|a| (a, a * 2));
+    assert_map_eq(&map, &expected);
+
     map.swap_indices(1, 4);
     insert.swap(1, 4);
     let expected = insert.map(|a| (a, a * 2));
