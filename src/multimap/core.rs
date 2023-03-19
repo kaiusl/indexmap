@@ -230,7 +230,7 @@ impl<K, V, Indices> IndexMultimapCore<K, V, Indices> {
     }
 
     #[inline]
-    pub(super) fn as_pairs_mut(&mut self) -> &mut [Bucket<K, V>] {
+    pub(super) fn as_mut_pairs(&mut self) -> &mut [Bucket<K, V>] {
         &mut self.pairs
     }
 }
@@ -255,22 +255,23 @@ where
         if len < self.len_pairs() {
             self.erase_indices(len, self.pairs.len());
             self.pairs.truncate(len);
+            self.debug_assert_invariants();
         }
     }
 
-    #[cfg(feature = "rayon")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
-    pub(crate) fn par_drain<R>(&mut self, range: R) -> rayon::vec::Drain<'_, Bucket<K, V>>
-    where
-        K: Send + Eq,
-        V: Send,
-        R: ops::RangeBounds<usize>,
-    {
-        use rayon::iter::ParallelDrainRange;
-        let range = simplify_range(range, self.entries.len());
-        self.erase_indices(range.start, range.end);
-        self.entries.par_drain(range)
-    }
+    // #[cfg(feature = "rayon")]
+    // #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+    // pub(crate) fn par_drain<R>(&mut self, range: R) -> rayon::vec::Drain<'_, Bucket<K, V>>
+    // where
+    //     K: Send + Eq,
+    //     V: Send,
+    //     R: ops::RangeBounds<usize>,
+    // {
+    //     use rayon::iter::ParallelDrainRange;
+    //     let range = simplify_range(range, self.entries.len());
+    //     self.erase_indices(range.start, range.end);
+    //     self.entries.par_drain(range)
+    // }
 
     pub(crate) fn split_off(&mut self, at: usize) -> Self
     where
@@ -294,10 +295,8 @@ where
         raw::insert_bulk_no_grow(&mut indices, &[], &pairs);
         let new = Self { indices, pairs };
 
-        if cfg!(debug_assertions) {
-            self.debug_assert_invariants();
-            new.debug_assert_invariants();
-        }
+        self.debug_assert_invariants();
+        new.debug_assert_invariants();
 
         new
     }
@@ -353,9 +352,7 @@ where
         if let Some(entry) = self.pairs.pop() {
             let last_index = self.pairs.len();
             raw::erase_index(&mut self.indices, entry.hash, last_index);
-            if cfg!(debug_assertions) {
-                self.debug_assert_invariants();
-            }
+            self.debug_assert_invariants();
             Some((entry.key, entry.value))
         } else {
             None
@@ -1106,15 +1103,6 @@ impl<'a, K, V, Indices> VacantEntry<'a, K, V, Indices> {
         let (i, _) = self.map.push(self.hash, self.key, value);
         let entry = &mut self.map.pairs[i];
         (i, &entry.key, &mut entry.value)
-    }
-
-    /// Inserts the entry's key and the given value into the map,
-    /// and returns a mutable reference to the value.
-    fn insert_subset_mut(self, value: V) -> SubsetMut<'a, K, V, &'a [usize]>
-    where
-        Indices: IndexStorage,
-    {
-        self.map.push_full(self.hash, self.key, value)
     }
 }
 
