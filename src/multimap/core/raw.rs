@@ -72,6 +72,10 @@ pub(super) fn erase_index<Indices>(table: &mut RawTable<Indices>, hash: HashValu
 where
     Indices: IndexStorage,
 {
+    // TODO: we potentially do binary_search twice.
+    //     First in table.find eq_index(..) and
+    //     secondly in else branch indices.binary_search.
+    //     Cache the index/position from table.find
     match table.find(hash.get(), super::eq_index(index)) {
         Some(mut bucket) => {
             // SAFETY: we have &mut to table and thus to the bucket
@@ -83,6 +87,35 @@ where
                 debug_assert!(is_sorted(indices), "expected indices to be sorted");
                 let idx = indices.binary_search(&index).unwrap();
                 indices.remove(idx);
+            }
+        }
+        None => unreachable!("pair for index not found"),
+    }
+}
+
+/// Erase the index but assumes that it's last in the key's indices.
+/// Avoids the binary_searches of generic erase_index above.
+/// 
+/// Used by .pop() method, since we keep indices sorted and thus the index we 
+/// need to remove must be in the last position. 
+#[inline]
+pub(super) fn erase_index_last<Indices>(
+    table: &mut RawTable<Indices>,
+    hash: HashValue,
+    index: usize,
+) where
+    Indices: IndexStorage,
+{
+    match table.find(hash.get(), super::eq_index_last(index)) {
+        Some(mut bucket) => {
+            // SAFETY: we have &mut to table and thus to the bucket
+            let indices = unsafe { bucket_as_mut(&mut bucket) };
+            debug_assert_eq!(*indices.last().unwrap(), index);
+            if indices.len() == 1 {
+                // SAFETY: the bucket cannot escape as &mut to indices is dropped
+                unsafe { table.erase(bucket) };
+            } else {
+                indices.pop();
             }
         }
         None => unreachable!("pair for index not found"),
