@@ -77,6 +77,14 @@ where
 }
 
 #[inline]
+fn eq_index_last<Indices>(index: usize) -> impl Fn(&Indices) -> bool
+where
+    Indices: IndexStorage,
+{
+    move |indices| *indices.last().unwrap() == index
+}
+
+#[inline]
 fn update_index<Indices>(table: &mut RawTable<Indices>, hash: HashValue, old: usize, new: usize)
 where
     Indices: IndexStorage,
@@ -365,7 +373,10 @@ where
     pub(crate) fn pop(&mut self) -> Option<(K, V)> {
         if let Some(entry) = self.pairs.pop() {
             let last_index = self.pairs.len();
-            raw::erase_index(&mut self.indices, entry.hash, last_index);
+            // last_index must also be last in the key's indices, 
+            // use erase_index_last which assumes that that's the case
+            // and avoids unnecessary binary searches. 
+            raw::erase_index_last(&mut self.indices, entry.hash, last_index);
             self.debug_assert_invariants();
             Some((entry.key, entry.value))
         } else {
@@ -1159,6 +1170,7 @@ where
     ///
     /// Should ***panic*** if `index` is out of bounds.
     fn remove(&mut self, index: usize) -> usize;
+    fn pop(&mut self) -> Option<usize>;
     /// Retains only the elements specified by the predicate, passing a mutable reference to it.
     fn retain<F>(&mut self, f: F)
     where
@@ -1193,6 +1205,10 @@ impl IndexStorage for Vec<usize> {
     #[inline]
     fn remove(&mut self, i: usize) -> usize {
         self.remove(i)
+    }
+    #[inline]
+    fn pop(&mut self) -> Option<usize> {
+        self.pop()
     }
     #[inline]
     fn retain<F>(&mut self, f: F)
