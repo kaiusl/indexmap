@@ -115,6 +115,38 @@ where
     }
 }
 
+/// Update the index old to new in indices table.
+/// Assumes that old is the last index in indices arrays.
+///
+/// This is used by swap_removes where we know that old is the very last index
+/// in the whole map and thus in any indices array as well.
+/// This avoids one binary search to find the position of old in indices array.
+#[inline]
+fn update_index_last<Indices>(
+    table: &mut RawTable<Indices>,
+    hash: HashValue,
+    old: usize,
+    new: usize,
+) where
+    Indices: IndexStorage,
+{
+    // Index to `old` in the indices
+    let indices = table
+        .get_mut(hash.get(), eq_index_last(old))
+        .expect("index not found")
+        .as_mut_slice();
+
+    debug_assert_eq!(indices.last(), Some(&old));
+    if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
+        // The position of the index cannot change
+        *indices.last_mut().unwrap() = new;
+    } else {
+        replace_sorted(indices, indices.len() - 1, new);
+        debug_assert!(is_sorted(indices));
+        debug_assert!(is_unique(indices));
+    }
+}
+
 impl<K, V, Indices> IndexMultimapCore<K, V, Indices>
 where
     Indices: IndexStorage,
@@ -667,7 +699,7 @@ where
         }
 
         // Change the sentinal index to its final position.
-        update_index(&mut self.indices, from_hash, usize::MAX, to);
+        update_index_last(&mut self.indices, from_hash, usize::MAX, to);
         self.debug_assert_invariants();
     }
 
@@ -735,7 +767,7 @@ where
             // was not last element
             // examine new element in `index` and find it in indices
             let last = self.pairs.len();
-            update_index(&mut self.indices, moved_pair.hash, last, index);
+            update_index_last(&mut self.indices, moved_pair.hash, last, index);
         }
 
         (removed_pair.key, removed_pair.value)
@@ -757,7 +789,7 @@ where
                 // was not last element
                 // examine new element in `index` and find it in indices
                 let last = self.pairs.len();
-                update_index(&mut self.indices, moved_pair.hash, last, index)
+                update_index_last(&mut self.indices, moved_pair.hash, last, index)
             }
             removed.push((key, value));
         }
@@ -779,7 +811,7 @@ where
                 // was not last element
                 // examine new element in `index` and find it in indices
                 let last = self.pairs.len();
-                update_index(&mut self.indices, moved_pair.hash, last, index);
+                update_index_last(&mut self.indices, moved_pair.hash, last, index);
             }
         }
     }
