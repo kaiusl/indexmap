@@ -6,7 +6,7 @@ use core::{fmt, iter::Copied, ops, slice};
 
 use crate::{
     multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut},
-    util::{is_sorted, is_unique, is_unique_sorted, replace_sorted, simplify_range},
+    util::{is_sorted, is_unique, is_unique_sorted, replace_sorted, simplify_range, is_sorted_and_unique},
     Equivalent,
 };
 
@@ -72,11 +72,20 @@ pub(super) fn erase_index<Indices>(table: &mut RawTable<Indices>, hash: HashValu
 where
     Indices: IndexStorage,
 {
-    // TODO: we potentially do binary_search twice.
-    //     First in table.find eq_index(..) and
-    //     secondly in else branch indices.binary_search.
-    //     Cache the index/position from table.find
-    match table.find(hash.get(), super::eq_index(index)) {
+    // Cache the index in indices as we find the bucket,
+    // so that we don't need to find it again for indices.remove below
+    let mut index_in_indices = None;
+    let eq_index = |indices: &Indices| {
+        debug_assert!(is_sorted_and_unique(indices), "expected indices to be sorted and unique");
+        match indices.binary_search(&index) {
+            Ok(i) => {
+                index_in_indices = Some(i);
+                true
+            }
+            Err(_) => false,
+        }
+    };
+    match table.find(hash.get(), eq_index) {
         Some(mut bucket) => {
             // SAFETY: we have &mut to table and thus to the bucket
             let indices = unsafe { bucket_as_mut(&mut bucket) };
@@ -84,9 +93,7 @@ where
                 // SAFETY: the bucket cannot escape as &mut to indices is dropped
                 unsafe { table.erase(bucket) };
             } else {
-                debug_assert!(is_sorted(indices), "expected indices to be sorted");
-                let idx = indices.binary_search(&index).unwrap();
-                indices.remove(idx);
+                indices.remove(index_in_indices.expect("expected to find index"));
             }
         }
         None => unreachable!("pair for index not found"),
@@ -95,9 +102,9 @@ where
 
 /// Erase the index but assumes that it's last in the key's indices.
 /// Avoids the binary_searches of generic erase_index above.
-/// 
-/// Used by .pop() method, since we keep indices sorted and thus the index we 
-/// need to remove must be in the last position. 
+///
+/// Used by .pop() method, since we keep indices sorted and thus the index we
+/// need to remove must be in the last position.
 #[inline]
 pub(super) fn erase_index_last<Indices>(
     table: &mut RawTable<Indices>,
