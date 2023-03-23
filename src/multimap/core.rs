@@ -105,7 +105,8 @@ where
         .expect("index not found")
         .as_mut_slice();
 
-    if indices.len() == 1 {
+    if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
+        // The position of the index cannot change
         indices[olds_index] = new;
     } else {
         replace_sorted(indices, olds_index, new);
@@ -373,9 +374,9 @@ where
     pub(crate) fn pop(&mut self) -> Option<(K, V)> {
         if let Some(entry) = self.pairs.pop() {
             let last_index = self.pairs.len();
-            // last_index must also be last in the key's indices, 
+            // last_index must also be last in the key's indices,
             // use erase_index_last which assumes that that's the case
-            // and avoids unnecessary binary searches. 
+            // and avoids unnecessary binary searches.
             raw::erase_index_last(&mut self.indices, entry.hash, last_index);
             self.debug_assert_invariants();
             Some((entry.key, entry.value))
