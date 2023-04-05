@@ -30,9 +30,7 @@ pub use self::subsets::{
     SubsetValuesMut, ToIndexIter,
 };
 
-use crate::map::{
-    Drain, IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut,
-};
+use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
 
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -745,6 +743,56 @@ where
     pub fn reverse(&mut self) {
         self.core.reverse()
     }
+
+    /// Remove the key-value pair by index
+    ///
+    /// Valid indices are `0 <= index < self.`[`len_pairs()`].
+    ///
+    /// Like [`Vec::swap_remove`], the pair is removed by swapping it with the
+    /// last element of the map and popping it off.
+    /// **This perturbs the position of what used to be the last element!**
+    ///
+    /// Computes in **O(1)** time (average).
+    ///
+    /// [`len_pairs()`]: Self::len_pairs
+    pub fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)> {
+        self.core.swap_remove_index(index)
+    }
+
+    /// Remove the key-value pair by index
+    ///
+    /// Valid indices are `0 <= index < self.`[`len_pairs()`].
+    ///
+    /// Like [`Vec::remove`], the pair is removed by shifting all of the
+    /// elements that follow it, preserving their relative order.
+    /// **This perturbs the index of all of those elements!**
+    ///
+    /// Computes in **O(n)** time (average).
+    ///
+    /// [`len_pairs()`]: Self::len_pairs
+    pub fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)> {
+        self.core.shift_remove_index(index)
+    }
+
+    /// Moves the position of a key-value pair from one index to another
+    /// by shifting all other pairs in-between.
+    ///
+    /// * If `from < to`, the other pairs will shift down while the targeted pair moves up.
+    /// * If `from > to`, the other pairs will shift up while the targeted pair moves down.
+    ///
+    /// ***Panics*** if `from` or `to` are out of bounds.
+    ///
+    /// Computes in **O(n)** time (average).
+    pub fn move_index(&mut self, from: usize, to: usize) {
+        self.core.move_index(from, to)
+    }
+
+    /// Swaps the position of two key-value pairs in the map.
+    ///
+    /// ***Panics*** if `a` or `b` are out of bounds.
+    pub fn swap_indices(&mut self, a: usize, b: usize) {
+        self.core.swap_indices(a, b)
+    }
 }
 
 impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices>
@@ -846,56 +894,6 @@ where
     /// Computes in **O(1)** time.
     pub fn last_mut(&mut self) -> Option<(&K, &mut V)> {
         self.core.as_mut_pairs().last_mut().map(Bucket::ref_mut)
-    }
-
-    /// Remove the key-value pair by index
-    ///
-    /// Valid indices are `0 <= index < self.`[`len_pairs()`].
-    ///
-    /// Like [`Vec::swap_remove`], the pair is removed by swapping it with the
-    /// last element of the map and popping it off.
-    /// **This perturbs the position of what used to be the last element!**
-    ///
-    /// Computes in **O(1)** time (average).
-    ///
-    /// [`len_pairs()`]: Self::len_pairs
-    pub fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)> {
-        self.core.swap_remove_index(index)
-    }
-
-    /// Remove the key-value pair by index
-    ///
-    /// Valid indices are `0 <= index < self.`[`len_pairs()`].
-    ///
-    /// Like [`Vec::remove`], the pair is removed by shifting all of the
-    /// elements that follow it, preserving their relative order.
-    /// **This perturbs the index of all of those elements!**
-    ///
-    /// Computes in **O(n)** time (average).
-    ///
-    /// [`len_pairs()`]: Self::len_pairs
-    pub fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)> {
-        self.core.shift_remove_index(index)
-    }
-
-    /// Moves the position of a key-value pair from one index to another
-    /// by shifting all other pairs in-between.
-    ///
-    /// * If `from < to`, the other pairs will shift down while the targeted pair moves up.
-    /// * If `from > to`, the other pairs will shift up while the targeted pair moves down.
-    ///
-    /// ***Panics*** if `from` or `to` are out of bounds.
-    ///
-    /// Computes in **O(n)** time (average).
-    pub fn move_index(&mut self, from: usize, to: usize) {
-        self.core.move_index(from, to)
-    }
-
-    /// Swaps the position of two key-value pairs in the map.
-    ///
-    /// ***Panics*** if `a` or `b` are out of bounds.
-    pub fn swap_indices(&mut self, a: usize, b: usize) {
-        self.core.swap_indices(a, b)
     }
 }
 

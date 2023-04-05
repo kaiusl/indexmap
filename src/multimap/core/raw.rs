@@ -6,7 +6,7 @@ use core::{fmt, iter::Copied, ops, slice};
 
 use crate::{
     multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut},
-    util::{is_sorted, is_unique, is_unique_sorted, replace_sorted, simplify_range, is_sorted_and_unique},
+    util::{is_sorted_and_unique, is_unique_sorted, replace_sorted, simplify_range},
     Equivalent,
 };
 
@@ -76,7 +76,10 @@ where
     // so that we don't need to find it again for indices.remove below
     let mut index_in_indices = None;
     let eq_index = |indices: &Indices| {
-        debug_assert!(is_sorted_and_unique(indices), "expected indices to be sorted and unique");
+        debug_assert!(
+            is_sorted_and_unique(indices),
+            "expected indices to be sorted and unique"
+        );
         match indices.binary_search(&index) {
             Ok(i) => {
                 index_in_indices = Some(i);
@@ -227,7 +230,10 @@ where
             .expect("index not found")
     }
 
-    pub(crate) fn swap_indices(&mut self, a: usize, b: usize) {
+    pub(crate) fn swap_indices(&mut self, a: usize, b: usize)
+    where
+        K: Eq,
+    {
         if a == b {
             return;
         }
@@ -501,7 +507,10 @@ where
     /// the position of what used to be the last element!**
     ///
     /// Computes in **O(1)** time (average).
-    pub fn swap_remove(self) {
+    pub fn swap_remove(self)
+    where
+        K: Eq,
+    {
         // SAFETY: This is safe because it can only happen once (self is consumed)
         // and bucket has not been removed from the map.indices
         let index = unsafe { self.map.indices.remove(self.raw_bucket) };
@@ -516,7 +525,10 @@ where
     /// the position of what used to be the last element!**
     ///
     /// Computes in **O(1)** time (average).
-    pub fn swap_remove_full(self) -> (Indices, Vec<(K, V)>) {
+    pub fn swap_remove_full(self) -> (Indices, Vec<(K, V)>)
+    where
+        K: Eq,
+    {
         // SAFETY: This is safe because it can only happen once (self is consumed)
         // and bucket has not been removed from the map.indices
         let indices = unsafe { self.map.indices.remove(self.raw_bucket) };
@@ -534,7 +546,10 @@ where
     /// **This perturbs the index of all of those elements!**
     ///
     /// Computes in **O(n)** time (average).
-    pub fn shift_remove(self) {
+    pub fn shift_remove(self)
+    where
+        K: Eq,
+    {
         // SAFETY: This is safe because it can only happen once (self is consumed)
         // and bucket has not been removed from the map.indices
         let index = unsafe { self.map.indices.remove(self.raw_bucket) };
@@ -549,7 +564,10 @@ where
     /// **This perturbs the index of all of those elements!**
     ///
     /// Computes in **O(n)** time (average).
-    pub fn shift_remove_full(self) -> (Indices, Vec<(K, V)>) {
+    pub fn shift_remove_full(self) -> (Indices, Vec<(K, V)>)
+    where
+        K: Eq,
+    {
         // SAFETY: This is safe because it can only happen once (self is consumed)
         // and bucket has not been removed from the map.indices
         let indices = unsafe { self.map.indices.remove(self.raw_bucket) };
