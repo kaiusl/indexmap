@@ -12,16 +12,14 @@ mod raw;
 use alloc::format;
 use hashbrown::raw::RawTable;
 
-use crate::vec::{Drain, Vec};
+use crate::vec::Vec;
 use crate::TryReserveError;
 use core::fmt;
 use core::ops;
 
 pub use self::raw::OccupiedEntry;
 use crate::equivalent::Equivalent;
-use crate::util::{
-    is_sorted, is_sorted_and_unique, is_unique, is_unique_sorted, replace_sorted, simplify_range,
-};
+use crate::util::{is_sorted, is_sorted_and_unique, is_unique, is_unique_sorted, replace_sorted};
 use crate::{Bucket, HashValue};
 
 use super::{Subset, SubsetMut};
@@ -32,8 +30,22 @@ pub(crate) struct IndexMultimapCore<K, V, Indices> {
     // ---
     // IMPL DETAILS:
     //
-    // The implementation assumes that the indices in the `self.indices` are unique
-    // and sorted after every complete operation.
+    // # Invariants
+    //
+    // .. that must hold after every complete operation
+    //   (eq after insertion, removal, completed drain etc).
+    //
+    // * Indices in self.indices are all unique
+    // * Indies in self.indices are all valid to index into self.pairs
+    // * Each entry in self.indices has it's indices in sorted order
+    // * Each entry in self.indices has at least one index
+    // * Indices of single entry in self.indices must point to all and only
+    //   of the equivalent key pairs in self.pairs
+    //
+    // There is self.debug_assert_invariants() method which check's that these
+    // invariants hold. It is behind a feature flag `more_debug_assertions`
+    // and is compiled away in release builds in any case.
+    //
     // ---
     /// indices mapping from the entry hash to its index.
     indices: RawTable<Indices>,
@@ -158,29 +170,69 @@ where
     #[allow(unsafe_code)]
     #[cfg(all(debug_assertions, feature = "std", feature = "more_debug_assertions"))]
     #[track_caller]
-    fn debug_assert_invariants(&self) {
-        let mut index_count = 0;
+    fn debug_assert_invariants(&self)
+    where
+        K: Eq,
+    {
+        let mut index_count = 0; // Count the total number of indices in self.indices
         let index_iter = unsafe { self.indices.iter().map(|indices| indices.as_ref()) };
-        let mut used = crate::IndexSet::with_capacity(index_iter.len());
+        let mut seen_indices = crate::IndexSet::with_capacity(index_iter.len());
         for indices in index_iter {
             index_count += indices.len();
+            assert!(!indices.is_empty(), "found empty indices");
             assert!(is_sorted(indices), "found unsorted indices");
             assert!(
-                indices.last().unwrap_or(&0) < &self.pairs.len(),
+                indices.last().unwrap() < &self.pairs.len(),
                 "found out of bound index for entries in indices"
             );
-            used.reserve(indices.len());
+            seen_indices.reserve(indices.len());
 
+            let Bucket { hash, key, .. } = &self.pairs[*indices.first().unwrap()];
+            // Probably redundant check, if for every entry in self.indices
+            // all of those indices point to pairs with equivalent keys and
+            // the indices are all unique and the number of indices matches the
+            // number of pairs, then there must be exactly indices.len() pairs
+            // with given key in self.pairs.
+            let count = self.pairs.iter().filter(|b| b.key_ref() == key).count();
+            assert_eq!(
+                count,
+                indices.len(),
+                "indices do not contain indices to all of the pairs with this key"
+            );
             for i in indices.as_slice() {
-                assert!(used.insert(i), "found duplicate index in `indices`")
+                assert!(seen_indices.insert(i), "found duplicate index in `indices`");
+                let Bucket {
+                    hash: hash2,
+                    key: key2,
+                    ..
+                } = &self.pairs[*i];
+                assert_eq!(
+                    hash, hash2,
+                    "indices of single entry point to different hashes"
+                );
+                assert!(
+                    key == key2,
+                    "indices of single entry point to different keys"
+                );
             }
         }
 
         assert_eq!(
             self.pairs.len(),
             index_count,
-            "mismatch between entries and indices count"
+            "mismatch between pairs and indices count"
         );
+
+        // This is probably unnecessary, if the number of indices in self.indices
+        // equals the number of pairs in self.paris and all of the indices in
+        // self.indices are unique then there must be an index for each pair
+        for (i, Bucket { hash, .. }) in self.pairs.iter().enumerate() {
+            let indices = self.indices.get(hash.get(), eq_index(i));
+            assert!(
+                indices.is_some(),
+                "expected a pair to have a matching entry in indices table"
+            );
+        }
     }
 
     #[allow(unsafe_code)]
@@ -190,29 +242,63 @@ where
         feature = "more_debug_assertions"
     ))]
     #[track_caller]
-    fn debug_assert_invariants(&self) {
+    fn debug_assert_invariants(&self)
+    where
+        K: Eq,
+    {
         let mut index_count = 0;
         let index_iter = unsafe { self.indices.iter().map(|indices| indices.as_ref()) };
-        let mut used = ::alloc::collections::BTreeSet::new();
+        let mut seen_indices = ::alloc::collections::BTreeSet::new();
         for indices in index_iter {
             index_count += indices.len();
+            assert!(!indices.is_empty(), "found empty indices");
             assert!(is_sorted(indices), "found unsorted indices");
             assert!(
-                indices.last().unwrap_or(&0) < &self.pairs.len(),
+                indices.last().unwrap() < &self.pairs.len(),
                 "found out of bound index for entries in indices"
             );
-            let needed_capacity = used.len() + indices.len();
 
+            let Bucket { hash, key, .. } = &self.pairs[*indices.first().unwrap()];
+            let count = self.pairs.iter().filter(|b| b.key_ref() == key).count();
+            assert_eq!(
+                count,
+                indices.len(),
+                "indices do not contain indices to all of the pairs with this key"
+            );
             for i in indices.as_slice() {
-                assert!(used.insert(i), "found duplicate index in `indices`")
+                assert!(seen_indices.insert(i), "found duplicate index in `indices`");
+                let Bucket {
+                    hash: hash2,
+                    key: key2,
+                    ..
+                } = &self.pairs[*i];
+                assert_eq!(
+                    hash, hash2,
+                    "indices of single entry point to different hashes"
+                );
+                assert!(
+                    key == key2,
+                    "indices of single entry point to different keys"
+                );
             }
         }
 
         assert_eq!(
-            self.entries.len(),
+            self.pairs.len(),
             index_count,
-            "mismatch between entries and indices count"
+            "mismatch between pairs and indices count"
         );
+
+        // This is probably unnecessary, if the number of indices in self.indices
+        // equals the number of pairs in self.paris and all of the indices in
+        // self.indices are unique then there must be an index for each pair in self.pairs.
+        for (i, Bucket { hash, .. }) in self.pairs.iter().enumerate() {
+            let indices = self.indices.get(hash.get(), eq_index(i));
+            assert!(
+                indices.is_some(),
+                "expected a pair to have a matching entry in indices table"
+            );
+        }
     }
 
     #[inline(always)]
@@ -403,7 +489,10 @@ where
     }
 
     /// Remove the last key-value pair
-    pub(crate) fn pop(&mut self) -> Option<(K, V)> {
+    pub(crate) fn pop(&mut self) -> Option<(K, V)>
+    where
+        K: Eq,
+    {
         if let Some(entry) = self.pairs.pop() {
             let last_index = self.pairs.len();
             // last_index must also be last in the key's indices,
@@ -446,10 +535,8 @@ where
             .get(hash.get(), eq)
             .map(IndexStorage::as_slice)
             .unwrap_or_default();
-        if cfg!(debug_assertions) {
-            if !indices.is_empty() {
-                self.debug_assert_indices(indices);
-            }
+        if cfg!(debug_assertions) && !indices.is_empty() {
+            self.debug_assert_indices(indices);
         }
 
         indices
@@ -495,6 +582,7 @@ where
     pub(crate) fn shift_remove<Q>(&mut self, hash: HashValue, key: &Q) -> bool
     where
         Q: ?Sized + Equivalent<K>,
+        K: Eq,
     {
         let eq = equivalent(key, &self.pairs);
         match self.indices.remove_entry(hash.get(), eq) {
@@ -515,6 +603,7 @@ where
     ) -> Option<(Indices, Vec<(K, V)>)>
     where
         Q: ?Sized + Equivalent<K>,
+        K: Eq,
     {
         let eq = equivalent(key, &self.pairs);
         match self.indices.remove_entry(hash.get(), eq) {
@@ -528,7 +617,10 @@ where
     }
 
     /// Remove an entry by shifting all entries that follow it
-    pub(crate) fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)> {
+    pub(crate) fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)>
+    where
+        K: Eq,
+    {
         match self.pairs.get(index) {
             Some(pair) => {
                 raw::erase_index(&mut self.indices, pair.hash, index);
@@ -679,7 +771,10 @@ where
         }
     }
 
-    pub(super) fn move_index(&mut self, from: usize, to: usize) {
+    pub(super) fn move_index(&mut self, from: usize, to: usize)
+    where
+        K: Eq,
+    {
         if from == to {
             return;
         }
@@ -709,6 +804,7 @@ where
     pub(crate) fn swap_remove<Q>(&mut self, hash: HashValue, key: &Q) -> bool
     where
         Q: ?Sized + Equivalent<K>,
+        K: Eq,
     {
         let eq = equivalent(key, &self.pairs);
         match self.indices.remove_entry(hash.get(), eq) {
@@ -729,6 +825,7 @@ where
     ) -> Option<(Indices, Vec<(K, V)>)>
     where
         Q: ?Sized + Equivalent<K>,
+        K: Eq,
     {
         let eq = equivalent(key, &self.pairs);
         match self.indices.remove_entry(hash.get(), eq) {
@@ -742,7 +839,10 @@ where
     }
 
     /// Remove an entry by swapping it with the last
-    pub(crate) fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)> {
+    pub(crate) fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)>
+    where
+        K: Eq,
+    {
         match self.pairs.get(index) {
             Some(entry) => {
                 raw::erase_index(&mut self.indices, entry.hash, index);
@@ -881,7 +981,10 @@ where
         raw::insert_bulk_no_grow(&mut self.indices, &[], &self.pairs);
     }
 
-    pub(crate) fn reverse(&mut self) {
+    pub(crate) fn reverse(&mut self)
+    where
+        K: Eq,
+    {
         self.pairs.reverse();
 
         // No need to save hash indices, can easily calculate what they should
