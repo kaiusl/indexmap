@@ -25,7 +25,7 @@ mod subsets;
 mod tests;
 
 pub use self::core::{
-    Entry, EntryIndices, IndexStorage, OccupiedEntry, ShiftRemove, SwapRemove, VacantEntry,
+    Drain, Entry, EntryIndices, IndexStorage, OccupiedEntry, ShiftRemove, SwapRemove, VacantEntry,
 };
 pub use self::subsets::{
     Subset, SubsetIndexStorage, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
@@ -44,9 +44,9 @@ pub mod serde_seq;
 //pub use crate::rayon::multimap as rayon;
 
 use ::core::cmp::Ordering;
-use ::core::fmt;
 use ::core::hash::{BuildHasher, Hash, Hasher};
 use ::core::ops::{Index, IndexMut, RangeBounds};
+use ::core::{fmt, ops};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
@@ -725,6 +725,36 @@ where
     /// Computes in **O(n)** time and **O(1)** space.
     pub fn reverse(&mut self) {
         self.core.reverse()
+    }
+
+    /// Clears the [`IndexMultimap`] in the given index range, returning those
+    /// key-value pairs as a drain iterator.
+    ///
+    /// The range may be any type that implements `RangeBounds<usize>`,
+    /// including all of the `std::ops::Range*` types, or even a tuple pair of
+    /// `Bound` start and end values. To drain the map entirely, use `RangeFull`
+    /// like `map.drain(..)`.
+    ///
+    /// This shifts down all entries following the drained range to fill the
+    /// gap, and keeps the allocated memory for reuse.
+    ///
+    /// # Leaking
+    ///
+    /// If the returned iterator goes out of scope without being dropped
+    /// (due to [`mem::forget`], for example), the map may have lost and
+    /// leaked elements arbitrarily, including elements outside the range.
+    ///
+    /// # Panics
+    ///
+    /// This method panics if the starting point is greater than the end point or if
+    /// the end point is greater than the length of the map.
+    ///
+    /// [`mem::forget`]: ::core::mem::forget
+    pub fn drain<R>(&mut self, range: R) -> Drain<'_, K, V, Indices>
+    where
+        R: ops::RangeBounds<usize>,
+    {
+        self.core.drain(range)
     }
 
     /// Remove the key-value pair by index

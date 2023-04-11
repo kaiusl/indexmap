@@ -3,21 +3,27 @@
 //! mostly in dealing with its bucket "pointers".
 
 use alloc::format;
-use alloc::vec::{Drain, Vec};
+use alloc::vec::{Vec};
 use core::iter::{Copied, FusedIterator};
 use core::ops::{self, Range};
-use core::{fmt, mem, ptr, slice};
+use core::fmt;
+use core::mem;
+use core::slice;
+use core::ptr::{self, addr_of, addr_of_mut, NonNull};
 
-use hashbrown::raw::RawTable;
+use crate::{
+    map::Slice,
+    multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut},
+    util::{is_sorted_and_unique, is_unique_sorted, replace_sorted, simplify_range},
+    Equivalent,
+};
 
 use super::{
     super::{Subset, SubsetMut},
     update_index_last,
 };
 use super::{equivalent, Bucket, Entry, HashValue, IndexMultimapCore, IndexStorage, VacantEntry};
-use crate::multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut};
-use crate::util::{is_sorted_and_unique, is_unique_sorted, replace_sorted, simplify_range};
-use crate::Equivalent;
+use hashbrown::raw::RawTable;
 
 type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
 
@@ -297,23 +303,16 @@ where
         }
     }
 
-    /// This is unsafe because it can violate our maps assumptions about self.indices.
-    /// Which can lead to unsoundness down the line in mutable subsets and their iterators.
-    ///
-    /// This happens if the returned Drain is leaked. This leaks all the pairs in
-    /// the range `range.start..`. Thus first self.indices can contain out of bounds indices.
-    /// This is ok by itself as it will only lead to panics.
-    /// However if after the leaking there is an insertion, we insert a duplicate index into indices.
-    /// If that insertion happens to be behind an existing key, get_mut will return a SubsetMut which
-    /// inturn return aliased mutable references.
-    pub(crate) unsafe fn _drain<R>(&mut self, range: R) -> Drain<'_, Bucket<K, V>>
+    pub(crate) fn drain<R>(&mut self, range: R) -> Drain<'_, K, V, Indices>
     where
         R: ops::RangeBounds<usize>,
         K: Eq,
     {
+        self.debug_assert_invariants();
         let range = simplify_range(range, self.pairs.len());
         self.erase_indices(range.start, range.end);
-        self.pairs.drain(range)
+        // SAFETY: simplify_range panics if given range is invalid for self.pairs
+        unsafe { Drain::new_unchecked(self, range) }
     }
 
     /// Remove an entry by shifting all entries that follow it
@@ -1372,6 +1371,265 @@ where
                 (i, &bucket.key, &bucket.value)
             });
             f.debug_struct("SwapRemove").field("left", &iter).finish()
+        }
+    }
+}
+
+/// A draining iterator over the pairs of a [`IndexMultimap`].
+///
+/// This `struct` is created by the [`drain`] method on [`IndexMultimap`].
+/// See its documentation for more.
+///
+/// [`drain`]: crate::IndexMultimap::drain
+/// [`IndexMultimap`]: crate::IndexMultimap
+pub struct Drain<'a, K, V, Indices>
+where
+    K: Eq,
+    Indices: IndexStorage,
+{
+    /* ---
+    Effectively a copy of `std::vec::Drain` implementation (as of Rust 1.68),
+    with small modifications.
+
+    We must take ownership of map.indices for the duration of this struct's life.
+    This is to leave the map in consistent and valid (but empty) state in the
+    case this struct is leaked. For that reason on construction map.pairs.len 
+    must be set to 0.
+
+    Layout of map.pairs:
+    [head]        [start] ... [end]         [tail_start] [tail_len - 1 items]
+    ^-don't touch \-- to_remove --/         \-----------  tail  ------------/
+                    ^-items to remove/drain   ^- shift left to cover removed items
+
+    Result after drop:
+    [head] [tail], new length of vec = start + tail_len
+    --- */
+    /// Pointer to map.
+    map: NonNull<IndexMultimapCore<K, V, Indices>>,
+    /// map.indices
+    indices_table: RawTable<Indices>,
+    // Index of first item that's drained
+    start: usize,
+    /// Index of tail to preserve
+    tail_start: usize,
+    /// Length of tail
+    tail_len: usize,
+    /// Current remaining range to remove
+    to_remove: slice::Iter<'a, Bucket<K, V>>,
+}
+
+// &self can only read, there is no interior mutability
+unsafe impl<K, V, Indices> Sync for Drain<'_, K, V, Indices>
+where
+    K: Sync + Eq,
+    V: Sync,
+    Indices: Sync + IndexStorage,
+{
+}
+unsafe impl<K, V, Indices> Send for Drain<'_, K, V, Indices>
+where
+    K: Send + Eq,
+    V: Send,
+    Indices: Send + IndexStorage,
+{
+}
+
+impl<'a, K, V, Indices> Drain<'a, K, V, Indices>
+where
+    K: Eq,
+    Indices: IndexStorage,
+{
+    /// # SAFETY
+    ///
+    /// * range must be in bounds for map.pairs
+    /// * range must have start <= end
+    pub(super) unsafe fn new_unchecked(
+        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        range: Range<usize>,
+    ) -> Self {
+        let indices_table = mem::take(&mut map.indices);
+        let len = map.pairs.len();
+        let Range { start, end } = range;
+        debug_assert!(start <= end);
+        debug_assert!(end <= len);
+
+        unsafe {
+            map.pairs.set_len(0);
+            // Convert to pointer early
+            let map = NonNull::from(map);
+            // Go through raw pointer as long as possible
+            let pairs = addr_of!((*map.as_ptr()).pairs);
+            // SAFETY:
+            //   range_slice will be invalidated if map.pairs' buffer is reallocated
+            //   or we create a &mut to at least one element of that slice
+            //   or we write to an element in that slice
+            //     (like `*addr_of_mut!((*map.as_ptr()).pairs).add(start) = something`)
+            // We never do anything from above while we need range_slice/to_remove
+            let range_slice = slice::from_raw_parts((*pairs).as_ptr().add(start), end - start);
+            Self {
+                map,
+                indices_table,
+                start,
+                tail_start: end,
+                tail_len: len - end,
+                to_remove: range_slice.iter(),
+            }
+        }
+    }
+
+    /// Returns the remaining items of this iterator as a slice.
+    #[must_use]
+    pub fn as_slice(&self) -> &Slice<K, V> {
+        Slice::from_slice(self.to_remove.as_slice())
+    }
+}
+
+impl<K, V, Indices> fmt::Debug for Drain<'_, K, V, Indices>
+where
+    K: fmt::Debug + Eq,
+    V: fmt::Debug,
+    Indices: IndexStorage,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Drain").field(&self.as_slice()).finish()
+    }
+}
+
+impl<K, V, Indices> Iterator for Drain<'_, K, V, Indices>
+where
+    K: Eq,
+    Indices: IndexStorage,
+{
+    type Item = (K, V);
+
+    #[inline]
+    fn next(&mut self) -> Option<(K, V)> {
+        self.to_remove
+            .next()
+            // SAFETY: elt is valid, aligned, initialized and we never use the read value again
+            .map(|elt| unsafe { ptr::read(elt as *const Bucket<K, V>) }.key_value())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.to_remove.size_hint()
+    }
+}
+
+impl<K, V, Indices> DoubleEndedIterator for Drain<'_, K, V, Indices>
+where
+    K: Eq,
+    Indices: IndexStorage,
+{
+    #[inline]
+    fn next_back(&mut self) -> Option<(K, V)> {
+        self.to_remove
+            .next_back()
+            // SAFETY: elt is valid, initialized, aligned and we never use the read value again
+            .map(|elt| unsafe { ptr::read(elt as *const Bucket<K, V>) }.key_value())
+    }
+}
+
+impl<K, V, Indices> ExactSizeIterator for Drain<'_, K, V, Indices>
+where
+    K: Eq,
+    Indices: IndexStorage,
+{
+    fn len(&self) -> usize {
+        self.to_remove.len()
+    }
+}
+
+impl<K, V, Indices> FusedIterator for Drain<'_, K, V, Indices>
+where
+    K: Eq,
+    Indices: IndexStorage,
+{
+}
+
+impl<K, V, Indices> Drop for Drain<'_, K, V, Indices>
+where
+    K: Eq,
+    Indices: IndexStorage,
+{
+    fn drop(&mut self) {
+        /// Moves back the un-`Drain`ed elements to restore the original `Vec`.
+        /// Swaps back the indices that we took from the map at construction.
+        struct DropGuard<'r, 'a, K, V, Indices>
+        where
+            K: Eq,
+            Indices: IndexStorage,
+        {
+            drain: &'r mut Drain<'a, K, V, Indices>,
+        }
+
+        impl<'r, 'a, K, V, Indices> Drop for DropGuard<'r, 'a, K, V, Indices>
+        where
+            K: Eq,
+            Indices: IndexStorage,
+        {
+            fn drop(&mut self) {
+                unsafe {
+                    // Only way to get here is if we actually have drained (removed)
+                    // and dropped the given range.
+                    let drain = &mut *self.drain;
+                    let map = drain.map.as_ptr();
+                    let pairs = addr_of_mut!((*map).pairs);
+                    if drain.tail_len > 0 {
+                        // memmove back untouched tail, update to new length
+                        let start = drain.start;
+                        let tail = drain.tail_start;
+                        if tail != start {
+                            // [head] [drained items] [tail]
+                            // ^- ptr ^- start        ^- tail
+                            let ptr = (*pairs).as_mut_ptr();
+                            let src = ptr.add(tail).cast_const();
+                            let dst = ptr.add(start);
+                            ptr::copy(src, dst, drain.tail_len);
+                        }
+                    }
+                    (*pairs).set_len(drain.start + drain.tail_len);
+                    ptr::swap(addr_of_mut!((*map).indices), &mut drain.indices_table);
+                    (*map).debug_assert_invariants();
+                }
+            }
+        }
+
+        let to_drop = mem::replace(&mut self.to_remove, [].iter());
+        let drop_len = to_drop.len();
+
+        // ensure elements are moved back into their appropriate places, even when drop_in_place panics
+        let guard = DropGuard { drain: self };
+
+        if drop_len == 0 {
+            return;
+        }
+
+        // as_slice() must only be called when iter.len() is > 0 because it also
+        // gets touched by vec::Splice which may turn it into a dangling pointer
+        // which would make it and the vec pointer point to different allocations
+        // which would lead to invalid pointer arithmetic below.
+        // (Not important in our case at the moment, but I'll leave the comment
+        // here in case we decide to implement Splice for our map)
+        let drop_ptr = to_drop.as_slice().as_ptr();
+
+        unsafe {
+            // slice::Iter can only gives us a &[T] but for drop_in_place
+            // a pointer with mutable provenance is necessary. Therefore we must reconstruct
+            // it from the original vec but also avoid creating a &mut to the front since that could
+            // invalidate raw pointers to it which some unsafe code might rely on.
+            //
+            // [head]    [drained items] [undrained items] [drained items] [tail]
+            // ^-vec_ptr ^- self.start   ^- drop_ptr                       ^- tail_start
+            //                           \--- to_drop ---/
+
+            // Go through a raw pointer as long as possible
+            let pairs = addr_of_mut!((*guard.drain.map.as_ptr()).pairs);
+            let pairs_start = (*pairs).as_mut_ptr();
+            let drop_offset = drop_ptr.offset_from(pairs_start);
+            // drop_ptr points into pairs, it must be 'greater than' or 'equal to' vec_ptr
+            drop(to_drop); // Next line invalidates iter, make it explicit, that it cannot be used anymore
+            let to_drop = ptr::slice_from_raw_parts_mut(pairs_start.offset(drop_offset), drop_len);
+            ptr::drop_in_place(to_drop);
         }
     }
 }

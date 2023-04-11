@@ -16,7 +16,7 @@ use core::ops;
 
 use hashbrown::raw::RawTable;
 
-pub use self::raw::{OccupiedEntry, ShiftRemove, SwapRemove};
+pub use self::raw::{Drain, OccupiedEntry, ShiftRemove, SwapRemove};
 use super::{Subset, SubsetMut};
 use crate::equivalent::Equivalent;
 use crate::util::{is_sorted, is_sorted_and_unique, is_unique, is_unique_sorted, replace_sorted};

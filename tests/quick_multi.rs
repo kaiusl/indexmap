@@ -8,6 +8,7 @@ use quickcheck::Gen;
 use quickcheck::QuickCheck;
 
 use fnv::FnvHasher;
+use quickcheck::TestResult;
 use std::hash::{BuildHasher, BuildHasherDefault};
 
 type FnvBuilder = BuildHasherDefault<FnvHasher>;
@@ -19,6 +20,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::ops::Bound;
 use std::ops::Deref;
 
 use indexmap::multimap::Entry as OEntry;
@@ -61,7 +63,7 @@ macro_rules! quickcheck_limit {
                         $($code)*
                     }
                     let mut quickcheck = QuickCheck::new()
-                    //.gen(Gen::new(1000)).tests(100).max_tests(100)
+                    .gen(Gen::new(10)).tests(10).max_tests(100)
                     ;
                     if cfg!(miri) {
                         quickcheck = quickcheck
@@ -148,44 +150,45 @@ quickcheck_limit! {
         map.capacity_pairs() >= cap_entries && map.capacity_keys() < 10
     }
 
-    // fn drain_full(insert: Vec<u8>) -> bool {
-    //     let mut map = IndexMultimap::new();
-    //     for &key in &insert {
-    //         map.insert_append(key, ());
-    //     }
-    //     let mut clone = map.clone();
-    //     let drained = clone.drain(..);
-    //     for (key, _) in drained {
-    //         map.swap_remove(&key);
-    //     }
-    //     map.is_empty()
-    // }
+    fn drain_full(insert: Vec<u8>) -> bool {
+        let mut map = IndexMultimap::new();
+        for &key in &insert {
+            map.insert_append(key, ());
+        }
+        let mut clone = map.clone();
+        let drained = clone.drain(..);
+        for (key, _) in drained {
+            map.swap_remove(&key);
+        }
+        map.is_empty() && clone.is_empty()
+    }
 
-    // fn drain_bounds(insert: Vec<u8>, range: (Bound<usize>, Bound<usize>)) -> TestResult {
-    //     let mut map = IndexMultimap::new();
-    //     for &key in &insert {
-    //         map.insert_append(key, ());
-    //     }
+    fn drain_bounds(insert: Vec<u8>, range: (Bound<usize>, Bound<usize>)) -> TestResult {
+        let mut map = IndexMultimap::new();
+        for &key in &insert {
+            map.insert_append(key, ());
+        }
 
-    //     // First see if `Vec::drain` is happy with this range.
-    //     let result = std::panic::catch_unwind(|| {
-    //         let mut keys: Vec<u8> = map.keys().copied().collect();
-    //         keys.drain(range);
-    //         keys
-    //     });
+        // First see if `Vec::drain` is happy with this range.
+        let result = std::panic::catch_unwind(|| {
+            let mut keys: Vec<u8> = map.keys().copied().collect();
+            let drained = keys.drain(range).collect::<Vec<_>>();
+            (keys, drained)
+        });
 
-    //     if let Ok(keys) = result {
-    //         map.drain(range);
-    //         // Check that our `drain` matches the same key order.
-    //         assert!(map.keys().eq(&keys));
-    //         // Check that hash lookups all work too.
-    //         assert!(keys.iter().all(|key| map.contains_key(key)));
-    //         TestResult::passed()
-    //     } else {
-    //         // If `Vec::drain` panicked, so should we.
-    //         TestResult::must_fail(move || { map.drain(range); })
-    //     }
-    // }
+        if let Ok((keys, drained)) = result {
+            let drained_map = map.drain(range).map(|(k, _)| k).collect::<Vec<_>>();
+            assert_eq!(drained, drained_map);
+            // Check that our `drain` matches the same key order.
+            assert!(map.keys().eq(&keys));
+            // Check that hash lookups all work too.
+            assert!(keys.iter().all(|key| map.contains_key(key)));
+            TestResult::passed()
+        } else {
+            // If `Vec::drain` panicked, so should we.
+            TestResult::must_fail(move || { map.drain(range); })
+        }
+    }
 
     fn shift_remove(insert: Vec<u8>, remove: Vec<u8>) -> bool {
         let mut map = IndexMultimap::new();
