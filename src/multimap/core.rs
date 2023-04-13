@@ -10,22 +10,20 @@
 mod raw;
 
 use alloc::format;
-use hashbrown::raw::RawTable;
-
-use crate::vec::Vec;
-use crate::TryReserveError;
 use core::fmt;
+use core::iter::FusedIterator;
 use core::ops;
 
-pub use self::raw::OccupiedEntry;
+use hashbrown::raw::RawTable;
+
+pub use self::raw::{OccupiedEntry, ShiftRemove, SwapRemove};
+use super::{Subset, SubsetMut};
 use crate::equivalent::Equivalent;
 use crate::util::{is_sorted, is_sorted_and_unique, is_unique, is_unique_sorted, replace_sorted};
-use crate::{Bucket, HashValue};
-
-use super::{Subset, SubsetMut};
+use crate::vec::Vec;
+use crate::{Bucket, HashValue, TryReserveError};
 
 /// Core of the map that does not depend on S
-///
 pub(crate) struct IndexMultimapCore<K, V, Indices> {
     // ---
     // IMPL DETAILS:
@@ -576,46 +574,6 @@ where
         i
     }
 
-    /// Remove an entry by shifting all entries that follow it.
-    ///
-    /// Returns `true` is the entry was removed, `false` if not.
-    pub(crate) fn shift_remove<Q>(&mut self, hash: HashValue, key: &Q) -> bool
-    where
-        Q: ?Sized + Equivalent<K>,
-        K: Eq,
-    {
-        let eq = equivalent(key, &self.pairs);
-        match self.indices.remove_entry(hash.get(), eq) {
-            Some(indices) => {
-                self.shift_remove_finish_wo_collect(&indices);
-                self.debug_assert_invariants();
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Remove an entry by shifting all entries that follow it
-    pub(crate) fn shift_remove_full<Q>(
-        &mut self,
-        hash: HashValue,
-        key: &Q,
-    ) -> Option<(Indices, Vec<(K, V)>)>
-    where
-        Q: ?Sized + Equivalent<K>,
-        K: Eq,
-    {
-        let eq = equivalent(key, &self.pairs);
-        match self.indices.remove_entry(hash.get(), eq) {
-            Some(indices) => {
-                let pairs = self.shift_remove_finish_collect(indices.as_slice());
-                self.debug_assert_invariants();
-                Some((indices, pairs))
-            }
-            None => None,
-        }
-    }
-
     /// Remove an entry by shifting all entries that follow it
     pub(crate) fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)>
     where
@@ -643,54 +601,6 @@ where
         // Use Vec::remove to actually remove the entry.
         let Bucket { key, value, .. } = self.pairs.remove(index);
         (key, value)
-    }
-
-    /// Remove all the entries at given indices by shifting all entries that follow them
-    ///
-    /// The index should already be removed from `self.indices`.
-    fn shift_remove_finish_collect(&mut self, indices: &[usize]) -> Vec<(K, V)> {
-        debug_assert!(is_sorted(indices));
-        debug_assert!(is_unique(indices));
-
-        self.decrement_indices_batched(indices);
-
-        let mut removed = Vec::with_capacity(indices.len());
-        // TODO: Use drain_filter if it becomes stable
-        for (shift, index) in indices.iter().enumerate() {
-            // Since we iterate from front to back, every following element is shifted
-            let Bucket { key, value, .. } = self.pairs.remove(index - shift);
-            removed.push((key, value))
-        }
-
-        removed
-    }
-
-    /// Remove all the entries at given indices by shifting all entries that follow them
-    ///
-    /// The index should already be removed from `self.indices`
-    /// but all the entries should be still in `self.entries`
-    fn shift_remove_finish_wo_collect(&mut self, indices: &[usize]) {
-        debug_assert!(is_sorted(indices));
-        debug_assert!(is_unique(indices));
-
-        self.decrement_indices_batched(indices);
-
-        let mut indices = indices.iter();
-        let mut next_remove_index = *indices.next().unwrap();
-        let mut current_iter_index = 0;
-        self.pairs.retain(|_| {
-            let retain = if next_remove_index == current_iter_index {
-                if let Some(&i) = indices.next() {
-                    next_remove_index = i;
-                };
-                false
-            } else {
-                true
-            };
-
-            current_iter_index += 1;
-            retain
-        });
     }
 
     /// Decrements indexes by variable amount determined by how many ranges have been before it,
@@ -799,46 +709,6 @@ where
     }
 
     /// Remove an entry by swapping it with the last
-    ///
-    /// Returns `true` is the entry was removed, `false` if not.
-    pub(crate) fn swap_remove<Q>(&mut self, hash: HashValue, key: &Q) -> bool
-    where
-        Q: ?Sized + Equivalent<K>,
-        K: Eq,
-    {
-        let eq = equivalent(key, &self.pairs);
-        match self.indices.remove_entry(hash.get(), eq) {
-            Some(index) => {
-                self.swap_remove_finish_wo_collect(index.as_slice());
-                self.debug_assert_invariants();
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Remove an entry by swapping it with the last
-    pub(crate) fn swap_remove_full<Q>(
-        &mut self,
-        hash: HashValue,
-        key: &Q,
-    ) -> Option<(Indices, Vec<(K, V)>)>
-    where
-        Q: ?Sized + Equivalent<K>,
-        K: Eq,
-    {
-        let eq = equivalent(key, &self.pairs);
-        match self.indices.remove_entry(hash.get(), eq) {
-            Some(indices) => {
-                let removed = self.swap_remove_finish_collect_ordered(indices.as_slice());
-                self.debug_assert_invariants();
-                Some((indices, removed))
-            }
-            None => None,
-        }
-    }
-
-    /// Remove an entry by swapping it with the last
     pub(crate) fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)>
     where
         K: Eq,
@@ -871,49 +741,6 @@ where
         }
 
         (removed_pair.key, removed_pair.value)
-    }
-
-    /// Finish removing an entries by swapping them with the last
-    ///
-    /// The indices should already be removed from `self.indices`.
-    fn swap_remove_finish_collect_ordered(&mut self, indices: &[usize]) -> Vec<(K, V)> {
-        // use swap_remove, but then we need to update the index that points
-        // to the other entry that has to move
-
-        // TODO: Can we do without reversing?
-        let mut removed = Vec::with_capacity(indices.len());
-        for &index in indices.iter().rev() {
-            let Bucket { key, value, .. } = self.pairs.swap_remove(index);
-            // correct index that points to the entry that had to swap places
-            if let Some(moved_pair) = self.pairs.get(index) {
-                // was not last element
-                // examine new element in `index` and find it in indices
-                let last = self.pairs.len();
-                update_index_last(&mut self.indices, moved_pair.hash, last, index)
-            }
-            removed.push((key, value));
-        }
-        removed.reverse();
-        removed
-    }
-
-    /// Finish removing an entry by swapping it with the last
-    ///
-    /// The index should already be removed from `self.indices`.
-    fn swap_remove_finish_wo_collect(&mut self, indices: &[usize]) {
-        // use swap_remove, but then we need to update the index that points
-        // to the other entry that has to move
-        for &index in indices.iter().rev() {
-            let _removed_pair = self.pairs.swap_remove(index);
-
-            // correct index that points to the entry that had to swap places
-            if let Some(moved_pair) = self.pairs.get(index) {
-                // was not last element
-                // examine new element in `index` and find it in indices
-                let last = self.pairs.len();
-                update_index_last(&mut self.indices, moved_pair.hash, last, index);
-            }
-        }
     }
 
     /// Erase `start..end` from `indices`, and shift `end..` indices down to `start..`
@@ -1321,6 +1148,9 @@ where
     fn reserve_exact(&mut self, additional: usize);
     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError>;
     fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError>;
+
+    type IntoIter: Iterator<Item = usize> + DoubleEndedIterator + ExactSizeIterator + FusedIterator;
+    fn into_iter(self) -> Self::IntoIter;
 }
 
 impl IndexStorage for Vec<usize> {
@@ -1386,6 +1216,12 @@ impl IndexStorage for Vec<usize> {
     fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.try_reserve_exact(additional)
             .map_err(TryReserveError::from_alloc)
+    }
+
+    type IntoIter = alloc::vec::IntoIter<usize>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIterator::into_iter(self)
     }
 }
 

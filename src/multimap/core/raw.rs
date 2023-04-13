@@ -2,18 +2,22 @@
 //! This module encapsulates the `unsafe` access to `hashbrown::raw::RawTable`,
 //! mostly in dealing with its bucket "pointers".
 
-use core::{fmt, iter::Copied, ops, slice};
+use alloc::format;
+use alloc::vec::{Drain, Vec};
+use core::iter::{Copied, FusedIterator};
+use core::ops::{self, Range};
+use core::{fmt, mem, ptr, slice};
 
-use crate::{
-    multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut},
-    util::{is_sorted_and_unique, is_unique_sorted, replace_sorted, simplify_range},
-    Equivalent,
-};
-
-use super::super::{Subset, SubsetMut};
-use super::{equivalent, Bucket, Entry, HashValue, IndexMultimapCore, IndexStorage, VacantEntry};
-use alloc::{format, vec::Drain, vec::Vec};
 use hashbrown::raw::RawTable;
+
+use super::{
+    super::{Subset, SubsetMut},
+    update_index_last,
+};
+use super::{equivalent, Bucket, Entry, HashValue, IndexMultimapCore, IndexStorage, VacantEntry};
+use crate::multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut};
+use crate::util::{is_sorted_and_unique, is_unique_sorted, replace_sorted, simplify_range};
+use crate::Equivalent;
 
 type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
 
@@ -311,6 +315,69 @@ where
         self.erase_indices(range.start, range.end);
         self.pairs.drain(range)
     }
+
+    /// Remove an entry by shifting all entries that follow it
+    pub(crate) fn shift_remove<Q>(
+        &mut self,
+        hash: HashValue,
+        key: &Q,
+    ) -> Option<ShiftRemove<'_, K, V, Indices>>
+    where
+        Q: ?Sized + Equivalent<K>,
+        K: Eq,
+    {
+        let eq = equivalent(key, &self.pairs);
+        match self.indices.remove_entry(hash.get(), eq) {
+            Some(indices) => {
+                // SAFETY: self upholds all the invariant needed
+                let pairs = unsafe { self.shift_remove_finish_collect(indices) };
+                Some(pairs)
+            }
+            None => None,
+        }
+    }
+
+    /// Remove all the entries at given indices by shifting all entries that follow them
+    ///
+    /// The index should already be removed from `self.indices`.
+    ///     
+    /// # Safety
+    ///
+    /// * indices must be valid to index into self.pairs
+    /// * indices must be unique and sorted
+    /// * indices must be non-empty
+    pub(super) unsafe fn shift_remove_finish_collect(
+        &mut self,
+        indices: Indices,
+    ) -> ShiftRemove<'_, K, V, Indices>
+    where
+        K: Eq,
+    {
+        debug_assert!(is_sorted_and_unique(&indices));
+        self.decrement_indices_batched(&indices);
+        unsafe { ShiftRemove::new_unchecked(self, indices) }
+    }
+
+    /// Remove an entry by swapping it with the last
+    pub(crate) fn swap_remove<Q>(
+        &mut self,
+        hash: HashValue,
+        key: &Q,
+    ) -> Option<SwapRemove<'_, K, V, Indices>>
+    where
+        Q: ?Sized + Equivalent<K>,
+        K: Eq,
+    {
+        let eq = equivalent(key, &self.pairs);
+        match self.indices.remove_entry(hash.get(), eq) {
+            Some(indices) => {
+                // SAFETY: self upholds all the invariant needed
+                let removed = unsafe { SwapRemove::new_unchecked(self, indices) };
+                Some(removed)
+            }
+            None => None,
+        }
+    }
 }
 
 /// A view into an occupied entry in a [`IndexMultimap`].
@@ -500,80 +567,68 @@ where
         (index, key, value)
     }
 
-    /// Remove all the values stored in the map for this entry.
+    /// Remove all the key-value pairs for this entry and return an iterator
+    /// over all the removed pairs.
     ///
-    /// Like [`Vec::swap_remove`], the values are removed by swapping it with the
-    /// last element of the map and popping it off. **This perturbs
-    /// the position of what used to be the last element!**
+    /// Like [`Vec::swap_remove`], the pairs are removed by swapping them with the
+    /// last element of the map and popping them off.
+    /// **This perturbs the position of what used to be the last element!**
     ///
-    /// Computes in **O(1)** time (average).
-    pub fn swap_remove(self)
-    where
-        K: Eq,
-    {
-        // SAFETY: This is safe because it can only happen once (self is consumed)
-        // and bucket has not been removed from the map.indices
-        let index = unsafe { self.map.indices.remove(self.raw_bucket) };
-        self.map.swap_remove_finish_wo_collect(index.as_slice());
-        self.map.debug_assert_invariants();
-    }
-
-    /// Remove and return all the values stored in the map for this entry.
+    /// # Laziness
     ///
-    /// Like [`Vec::swap_remove`], the values are removed by swapping it with the
-    /// last element of the map and popping it off. **This perturbs
-    /// the position of what used to be the last element!**
+    /// To avoid any unnecessary allocations the pairs are actually removed when
+    /// the returned iterator is consumed.
+    /// For convenience, dropping the iterator will remove and drop
+    /// all the remaining items that are meant to be removed.
     ///
-    /// Computes in **O(1)** time (average).
-    pub fn swap_remove_full(self) -> (Indices, Vec<(K, V)>)
-    where
-        K: Eq,
-    {
-        // SAFETY: This is safe because it can only happen once (self is consumed)
-        // and bucket has not been removed from the map.indices
-        let indices = unsafe { self.map.indices.remove(self.raw_bucket) };
-        let removed = self
-            .map
-            .swap_remove_finish_collect_ordered(indices.as_slice());
-        self.map.debug_assert_invariants();
-        (indices, removed)
-    }
-
-    /// Remove all the values stored in the map for this entry.
+    /// # Leaking
     ///
-    /// Like [`Vec::remove`], the values are removed by shifting all of the
-    /// elements that follow it, preserving their relative order.
-    /// **This perturbs the index of all of those elements!**
-    ///
-    /// Computes in **O(n)** time (average).
-    pub fn shift_remove(self)
-    where
-        K: Eq,
-    {
-        // SAFETY: This is safe because it can only happen once (self is consumed)
-        // and bucket has not been removed from the map.indices
-        let index = unsafe { self.map.indices.remove(self.raw_bucket) };
-        self.map.shift_remove_finish_wo_collect(index.as_slice());
-        self.map.debug_assert_invariants();
-    }
-
-    /// Remove and return all the values stored in the map for this entry.
-    ///
-    /// Like [`Vec::remove`], the values are removed by shifting all of the
-    /// elements that follow it, preserving their relative order.
-    /// **This perturbs the index of all of those elements!**
-    ///
-    /// Computes in **O(n)** time (average).
-    pub fn shift_remove_full(self) -> (Indices, Vec<(K, V)>)
+    /// If the returned iterator goes out of scope without
+    /// being dropped (is *leaked*),
+    /// the map may have lost and leaked elements arbitrarily,
+    /// including pairs not associated with this entry.
+    pub fn swap_remove(self) -> SwapRemove<'a, K, V, Indices>
     where
         K: Eq,
     {
         // SAFETY: This is safe because it can only happen once (self is consumed)
         // and bucket has not been removed from the map.indices
         let indices = unsafe { self.map.indices.remove(self.raw_bucket) };
-        let removed = self.map.shift_remove_finish_collect(indices.as_slice());
-        self.map.debug_assert_invariants();
-        (indices, removed)
+        self.map.debug_assert_indices(&indices);
+        // SAFETY: self upholds all the invariants that are needed
+        unsafe { SwapRemove::new_unchecked(self.map, indices) }
+    }
+
+    /// Remove all the key-value pairs for this entry and
+    /// return an iterator over all the removed items,
+    /// or [`None`] if the `key` was not in the map.
+    ///
+    /// Like [`Vec::remove`], the pairs are removed by shifting all of the
+    /// elements that follow them, preserving their relative order.
+    /// **This perturbs the index of all of those elements!**
+    ///
+    /// # Laziness
+    ///
+    /// To avoid any unnecessary allocations the pairs are removed when iterator is
+    /// consumed. For convenience, dropping the iterator will remove and drop
+    /// all the remaining items that are meant to be removed.
+    ///
+    /// # Leaking
+    ///
+    /// If the returned iterator goes out of scope without
+    /// being dropped (is *leaked*),
+    /// the map may have lost and leaked elements arbitrarily,
+    /// including pairs not associated with this entry.
+    pub fn shift_remove(self) -> ShiftRemove<'a, K, V, Indices>
+    where
+        K: Eq,
+    {
+        // SAFETY: This is safe because it can only happen once (self is consumed)
+        // and bucket has not been removed from the map.indices
+        let indices = unsafe { self.map.indices.remove(self.raw_bucket) };
+        self.map.debug_assert_indices(&indices);
+        // SAFETY: self upholds all the invariants that are needed
+        unsafe { self.map.shift_remove_finish_collect(indices) }
     }
 
     /// Returns an iterator over all the pairs in this entry.
@@ -729,8 +784,595 @@ impl<'a, K, V, Indices> VacantEntry<'a, K, V, Indices> {
             let indices = unsafe { bucket.as_ref() };
             self.map.debug_assert_indices(indices);
         }
+
         // SAFETY: push returns a live, valid bucket from the self.map
         unsafe { OccupiedEntry::new_unchecked(self.map, bucket, self.hash, None) }
+    }
+}
+
+/// An iterator that shift removes pairs from [`IndexMultimap`].
+///
+/// This struct is created by [`IndexMultimap::shift_remove`] and
+/// [`OccupiedEntry::shift_remove`], see their documentation for more.
+///
+/// [`IndexMultimap`]: crate::IndexMultimap
+/// [`IndexMultimap::shift_remove`]: crate::IndexMultimap::shift_remove
+pub struct ShiftRemove<'a, K, V, Indices>
+where
+    // Needed by Drop impl
+    Indices: IndexStorage,
+    // Needed by map.debug_assert_invariants if cfg!(more_debug_assertions) in Drop impl.
+    // It's a bit annoying but since one cannot reasonably use a map without
+    // `K: Eq`, then I don't mind too much about having this bound here.
+    K: Eq,
+{
+    /* ---
+    Inspired by std's `drain_filter` and `retain` implementations for vec.
+
+    Notable differences are:
+    * we already have exact indices which need to be removed,
+      we don't need to walk every item,
+    * and our predicate cannot panic (since there is none),
+      this simplifies the impl a bit as we don't need to consider a case
+      where predicate panics.
+    * our vec cannot contain ZSTs
+
+    We take ownership of map's indices table.
+    This ensures that an empty table is left if this struct is leaked
+    without dropping. At construction map.pairs length is set to zero.
+    These two things together ensure that in the case this struct is leaked
+    map itself will be left in a valid and safe (but empty) state.
+
+    Correct state will be restored in `Drop` implementation.
+    `Drop` will also remove and drop any remaining items that should be removed
+    but haven't yet.
+
+    # Safety
+
+    * indices must be already removed from map.indices
+    * indices must be valid to index into map.pairs
+    * indices must be unique and sorted
+    * indices must be non-empty
+    * on construction `map.pairs.len` must be set to 0
+    * on construction we must take ownership of `map.indices`
+      and leave an empty table in it's place
+    --- */
+    map: &'a mut IndexMultimapCore<K, V, Indices>,
+    /// map.indices we took ownership of
+    indices_table: RawTable<Indices>,
+    /// The index of pair that was removed previously.
+    prev_removed_idx: Option<usize>,
+    /// The number of items that have been removed thus far.
+    del: usize,
+    /// The original length of `vec` prior to removing.
+    orig_len: usize,
+    /// The indices that will be removed.
+    indices_to_remove: Indices::IntoIter,
+}
+
+impl<'a, K: 'a, V: 'a, Indices: 'a> ShiftRemove<'a, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+    /// # Safety
+    ///
+    /// See the comment in the type definition for safety.
+    pub(super) unsafe fn new_unchecked(
+        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        indices: Indices,
+    ) -> Self {
+        debug_assert!(!indices.is_empty());
+        debug_assert!(is_sorted_and_unique(&indices));
+        debug_assert!(*indices.last().unwrap() < map.pairs.len());
+
+        let old_len = map.pairs.len();
+        unsafe { map.pairs.set_len(0) };
+        let indices_table = mem::take(&mut map.indices);
+        Self {
+            map,
+            indices_table,
+            prev_removed_idx: None,
+            del: 0,
+            orig_len: old_len,
+            indices_to_remove: indices.into_iter(),
+        }
+    }
+
+    /// Shift removes a single element at index `i`.
+    ///
+    /// Parameters are forwarded from self because in Iterator::collect
+    /// we cannot borrow self multiple times so we must
+    /// forward all the necessary components.
+    ///
+    /// `i` must be self.indices_to_remove.next() or equivalent
+    #[inline]
+    unsafe fn shift_remove_index(
+        map: &mut IndexMultimapCore<K, V, Indices>,
+        prev_removed_idx: &mut Option<usize>,
+        del: &mut usize,
+        i: usize,
+    ) -> (usize, K, V) {
+        unsafe {
+            let pairs_start = map.pairs.as_mut_ptr();
+            // IDEA: We can get rid of this branch. It's not taken only on the first call to next().
+            //       If we set prev_idx_to_remove = self.indices.first() - 1 = i - 1 at construction,
+            //       then on first call diff = i - (i - 1) - 1 = i - i + 1 - 1 = 0
+            //       Only issue is if self.indices.first() == 0, we can do saturating_sub(), at construction and here.
+            //       Thus on first call diff == 0 always.
+            //       However benchmarks with it seem inconclusive or even slower.
+            //       If it really doesn't matter, this one is clearer about what we are doing.
+            if let Some(prev_removed_idx) = prev_removed_idx {
+                // Cover the empty slots with valid items that are between
+                // previously removed index and the one that will be removed now.
+                //
+                // [head] [del - 1 empty slots] [prev_index] [   diff items    ] [i] ...
+                //        ^-dst=src-del                      ^-src=prev_idx+1  ^-src+diff
+                //                                           \----------/
+                //                                              ^-shift by del to the start of empty slots
+                // result:
+                // [head] [diff items] [del empty slots] [i] ...
+                // \-----------------/
+                //   ^- contiguous valid items
+                //
+                // SAFETY:
+                //  * src+diff are all valid items to be read,
+                //    we haven't touched them yet so they must be valid
+                //  * dst+diff are all valid to be written to,
+                //    they may however overlap with src+diff
+                //  * after copy the elements at new empty slots will never be read,
+                //    only maybe overwritten
+                let prev_removed_idx = *prev_removed_idx;
+                let diff = i - prev_removed_idx - 1;
+                if diff > 0 {
+                    let src = pairs_start.add(prev_removed_idx + 1).cast_const();
+                    let dst = pairs_start.add(prev_removed_idx + 1 - *del);
+                    ptr::copy(src, dst, diff);
+                }
+            }
+
+            *del += 1;
+            // SAFETY:
+            // * value at `i` must be valid since we haven't touched it yet
+            // * we never read the value at `i` after
+            let Bucket { key, value, .. } = ptr::read(pairs_start.add(i));
+            *prev_removed_idx = Some(i);
+
+            (i, key, value)
+        }
+    }
+}
+
+impl<K, V, Indices> Iterator for ShiftRemove<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+    type Item = (usize, K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.indices_to_remove.next() {
+            Some(i) => Some(unsafe {
+                Self::shift_remove_index(self.map, &mut self.prev_removed_idx, &mut self.del, i)
+            }),
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.indices_to_remove.size_hint()
+    }
+
+    fn collect<B: FromIterator<Self::Item>>(mut self) -> B
+    where
+        Self: Sized,
+    {
+        (&mut self.indices_to_remove)
+            .map(|i| unsafe {
+                Self::shift_remove_index(self.map, &mut self.prev_removed_idx, &mut self.del, i)
+            })
+            .collect()
+    }
+}
+
+impl<K, V, Indices> ExactSizeIterator for ShiftRemove<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+    fn len(&self) -> usize {
+        self.indices_to_remove.len()
+    }
+}
+
+impl<K, V, Indices> FusedIterator for ShiftRemove<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+}
+
+impl<K, V, Indices> Drop for ShiftRemove<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+    fn drop(&mut self) {
+        struct Guard<'a, 'b, K, V, Indices>(&'a mut ShiftRemove<'b, K, V, Indices>)
+        where
+            K: Eq,
+            Indices: IndexStorage;
+
+        impl<'a, 'b, K, V, Indices> Drop for Guard<'a, 'b, K, V, Indices>
+        where
+            K: Eq,
+            Indices: IndexStorage,
+        {
+            fn drop(&mut self) {
+                let inner = &mut *self.0;
+                inner.for_each(drop);
+
+                // Shift back the tail
+                // Only way to get here is if we managed to remove and drop
+                // all the items we needed items
+                let del = inner.del;
+                let orig_len = inner.orig_len;
+                let map = &mut *inner.map;
+
+                let prev_removed_idx = inner
+                    .prev_removed_idx
+                    .expect("expected to remove at least one pair");
+                let tail_len = orig_len - prev_removed_idx - 1;
+                if tail_len > 0 {
+                    unsafe {
+                        // [head] [del - 1 empty slots] [prev_idx] [    tail items    ] [orig_len]
+                        //        ^-dst=src-del                    ^-src=prev_idx+1   ^-src+diff
+                        //                                         \------------------/
+                        //                                              ^-shift by del to the start of empty slots
+                        // result:
+                        // [head] [tail items] [del empty slots] [orig_len]
+                        //
+                        // SAFETY:
+                        //  * src+tail_len are all valid items to be read,
+                        //    we haven't touched them yet so they must be valid
+                        //  * dst+tail_len are all valid to be written to,
+                        //    they may however overlap with src+tail_len
+                        //  * after copy the elements at new empty slots will never be read,
+                        let pairs_start = map.pairs.as_mut_ptr();
+                        let src = pairs_start.add(prev_removed_idx + 1).cast_const();
+                        let dst = pairs_start.add(prev_removed_idx + 1 - del);
+                        ptr::copy(src, dst, tail_len);
+                    }
+                }
+
+                unsafe { map.pairs.set_len(orig_len - del) }
+                mem::swap(&mut inner.indices_table, &mut map.indices);
+                map.debug_assert_invariants();
+            }
+        }
+
+        let guard = Guard(self);
+        // Following may panic if K's or V's drop panics.
+        // If that happens, keep trying to remove and drop items.
+        // If any more panics occur, abort because of double panic.
+        guard.0.for_each(drop);
+    }
+}
+
+impl<'a, K, V, Indices> fmt::Debug for ShiftRemove<'a, K, V, Indices>
+where
+    K: fmt::Debug + Eq,
+    V: fmt::Debug,
+    Indices: fmt::Debug + IndexStorage,
+    Indices::IntoIter: fmt::Debug + Clone,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if cfg!(feature = "test_debug") {
+            f.debug_struct("ShiftRemove")
+                .field("map", &self.map)
+                .field("indices_table", &DebugIndices(&self.indices_table))
+                .field("prev_removed_idx", &self.prev_removed_idx)
+                .field("del", &self.del)
+                .field("orig_len", &self.orig_len)
+                .field("indices_to_remove", &self.indices_to_remove)
+                .finish()
+        } else {
+            let iter = self.indices_to_remove.clone().map(|i| {
+                let bucket = &self.map.pairs[i];
+                (i, &bucket.key, &bucket.value)
+            });
+            f.debug_struct("ShiftRemove").field("left", &iter).finish()
+        }
+    }
+}
+
+/// An iterator that swap removes pairs from [`IndexMultimap`].
+///
+/// This struct is created by [`IndexMultimap::swap_remove`] and
+/// [`OccupiedEntry::swap_remove`], see their documentation for more.
+///
+/// [`IndexMultimap`]: crate::IndexMultimap
+/// [`IndexMultimap::swap_remove`]: crate::IndexMultimap::swap_remove
+pub struct SwapRemove<'a, K, V, Indices>
+where
+    // Needed by Drop impl
+    Indices: IndexStorage,
+    // Needed by map.debug_assert_invariants if cfg!(more_debug_assertions) in Drop impl.
+    // It's a bit annoying but since one cannot reasonably use a map without
+    // `K: Eq`, then I don't mind too much about having this bound here.
+    K: Eq,
+{
+    /* ---
+    We take ownership of map's indices table.
+    This ensures that an empty table is left if this struct is leaked
+    without dropping. At construction map.pairs length is set to zero.
+    These two things together ensure that in the case this struct is leaked
+    map itself will be left in a valid and safe (but empty) state.
+
+    Correct state will be restored in `Drop` implementation.
+    `Drop` will also remove and drop any remaining items that should be removed
+    but haven't yet.
+
+    Implementation idea here is not to swap with the last element in `map.pairs`
+    but with the last one that will be kept in the map.
+
+    # Safety
+
+    * indices must be already removed from map.indices
+    * indices must be valid to index into map.pairs
+    * indices must be unique and sorted
+    * indices must be non-empty
+    * on construction map.pairs.len must be set to 0
+    * on construction we must take ownership of map.indices
+      and leave an empty table in it's place
+    --- */
+    map: &'a mut IndexMultimapCore<K, V, Indices>,
+    indices_table: RawTable<Indices>,
+    /// The original length of `map.pairs` prior to removing.
+    orig_len: usize,
+    /// Indices that need to be removed from `map.pairs`.
+    indices_to_remove: Indices,
+    /// `0..indices.len()`, used to index into `self.indices` to get indices to remove
+    iter_forward: Range<usize>,
+    /// `0..indices.len() - 1`, used to index into `self.indices` backwards to determine which index to swap with
+    iter_backward: Range<usize>,
+    /// `0..map.pairs.len()`, used to determine which index to swap with
+    total_iter: Range<usize>,
+    /// `indices_to_remove[i]` where `i` is the previous index yielded by `self.iter_backward`,
+    /// used to determine which index to swap with
+    prev_backward: usize,
+}
+
+impl<'a, K, V, Indices> SwapRemove<'a, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+    /// # Safety
+    ///
+    /// See the comment in the type definition for safety.
+    pub(super) unsafe fn new_unchecked(
+        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        indices: Indices,
+    ) -> Self {
+        debug_assert!(!indices.is_empty());
+        debug_assert!(is_sorted_and_unique(&indices));
+        debug_assert!(*indices.last().unwrap() < map.pairs.len());
+
+        let orig_len = map.pairs.len();
+        unsafe { map.pairs.set_len(0) };
+        let indices_table = mem::take(&mut map.indices);
+        let indices_len = indices.len();
+        let last = *indices.last().unwrap();
+        Self {
+            map,
+            indices_table,
+            orig_len,
+            indices_to_remove: indices,
+            iter_forward: 0..indices_len,
+            iter_backward: (0..indices_len - 1),
+            total_iter: (0..orig_len),
+            prev_backward: last,
+        }
+    }
+
+    /// Removes the element at map.pairs[index] and swaps it with last element
+    /// that will be kept.
+    ///
+    /// # Safety
+    ///
+    /// * `index` must be in bounds for map.pairs buffer
+    /// * map.pairs[index] must be valid for reads and writes
+    #[inline]
+    unsafe fn swap_remove_index(&mut self, index: usize) -> (usize, K, V) {
+        unsafe {
+            // SAFETY:
+            // * `index` must be in bounds for map.pairs buffer
+            // * map.pairs[index] must be valid for reads and writes
+            // * remove will never be read again => we give ownership away
+            let ptr = self.map.pairs.as_mut_ptr();
+            let remove = ptr.add(index);
+            let Bucket { key, value, .. } = ptr::read(remove);
+
+            let idx_to_swap_with = self.index_to_swap_with(index);
+            if let Some(idx_to_swap_with) = idx_to_swap_with {
+                debug_assert!(index != idx_to_swap_with);
+                // SAFETY:
+                // * src and dst cannot be equal,
+                //   `indices.index_to_swap_with` cannot ever return value equal to i
+                // * src will never be read again
+                let src = ptr.add(idx_to_swap_with);
+                let dst = remove;
+                ptr::copy_nonoverlapping(src, dst, 1);
+
+                let hash = (*dst).hash;
+                update_index_last(&mut self.indices_table, hash, idx_to_swap_with, index);
+            }
+
+            (index, key, value)
+        }
+    }
+
+    /// Return the next index that will be removed.
+    #[inline]
+    fn next_idx_to_remove(&mut self) -> Option<usize> {
+        self.iter_forward.next().map(|i| self.indices_to_remove[i])
+    }
+
+    #[inline]
+    fn next_backward_idx(&mut self) -> Option<usize> {
+        self.iter_backward
+            .next_back()
+            .map(|i| self.indices_to_remove[i])
+    }
+
+    /// Returns the next index from the back that is not to be removed and is
+    /// larger than `current`.
+    ///
+    /// This is an index that `current` can be swapped with in swap_remove.
+    /// Return None if all elements after current are to be removed.
+    /// Thus there is no need to swap with anything.
+
+    fn index_to_swap_with(&mut self, current: usize) -> Option<usize> {
+        if current >= self.orig_len - self.indices_to_remove.len() {
+            // current will never need to be swapped if it's outside of the new
+            return None;
+        }
+
+        while let Some(i) = self.total_iter.next_back() {
+            if i <= current {
+                // I think this branch is never actually taken in real use cases.
+                // It's because the current >= self.new_len would be triggered first
+                // if we keep removing and swapping items in order.
+                // But I'm not 100% sure
+                // panic!("took this branch");
+                return None;
+            }
+
+            #[allow(clippy::comparison_chain)]
+            if i > self.prev_backward {
+                return Some(i);
+            } else if i == self.prev_backward {
+                self.prev_backward = self.next_backward_idx().unwrap_or(0);
+            }
+        }
+        None
+    }
+}
+
+impl<K, V, Indices> Iterator for SwapRemove<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+    type Item = (usize, K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_idx_to_remove() {
+            Some(i) => Some(unsafe { self.swap_remove_index(i) }),
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter_forward.size_hint()
+    }
+
+    fn collect<B: FromIterator<Self::Item>>(mut self) -> B
+    where
+        Self: Sized,
+    {
+        // Nothing else uses self.iter_forward, so we can take it
+        let iter = mem::take(&mut self.iter_forward);
+        iter.map(|i| unsafe {
+            let i = self.indices_to_remove[i];
+            self.swap_remove_index(i)
+        })
+        .collect()
+    }
+}
+
+impl<K, V, Indices> ExactSizeIterator for SwapRemove<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+    fn len(&self) -> usize {
+        self.iter_forward.len()
+    }
+}
+
+impl<K, V, Indices> FusedIterator for SwapRemove<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+}
+
+impl<K, V, Indices> Drop for SwapRemove<'_, K, V, Indices>
+where
+    Indices: IndexStorage,
+    K: Eq,
+{
+    fn drop(&mut self) {
+        struct Guard<'a, 'b, K, V, Indices>(&'a mut SwapRemove<'b, K, V, Indices>)
+        where
+            Indices: IndexStorage,
+            K: Eq;
+
+        impl<'a, 'b, K, V, Indices> Drop for Guard<'a, 'b, K, V, Indices>
+        where
+            Indices: IndexStorage,
+            K: Eq,
+        {
+            fn drop(&mut self) {
+                let inner = &mut *self.0;
+                inner.for_each(drop);
+                // Only way to get here is if we managed to drop all the items we needed to remove
+                let map = &mut *inner.map;
+                unsafe {
+                    map.pairs
+                        .set_len(inner.orig_len - inner.indices_to_remove.len())
+                }
+                mem::swap(&mut inner.indices_table, &mut map.indices);
+                map.debug_assert_invariants();
+            }
+        }
+
+        let guard = Guard(self);
+        // Following may panic if K's or V's drop panics.
+        // Guard will try to keep removing and dropping items.
+        // If any more panic, we abort because of double panic.
+        guard.0.for_each(drop);
+    }
+}
+
+impl<'a, K, V, Indices> fmt::Debug for SwapRemove<'a, K, V, Indices>
+where
+    K: fmt::Debug + Eq,
+    V: fmt::Debug,
+    Indices: fmt::Debug + IndexStorage,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if cfg!(feature = "test_debug") {
+            f.debug_struct("SwapRemove")
+                .field("map", &self.map)
+                .field("indices_table", &DebugIndices(&self.indices_table))
+                .field("orig_len", &self.orig_len)
+                .field("indices", &self.indices_to_remove)
+                .field("iter_forward", &self.iter_forward)
+                .field("iter_backward", &self.iter_backward)
+                .field("total_iter", &self.total_iter)
+                .field("prev_backward", &self.prev_backward)
+                .finish()
+        } else {
+            let iter = self.iter_forward.clone().map(|i| {
+                let i = self.indices_to_remove[i];
+                let bucket = &self.map.pairs[i];
+                (i, &bucket.key, &bucket.value)
+            });
+            f.debug_struct("SwapRemove").field("left", &iter).finish()
+        }
     }
 }
 
@@ -770,5 +1412,55 @@ mod tests {
             &[[0, 1, 2, 4].as_slice(), [3].as_slice()]
         );
         pairs.extend(new_pairs);
+    }
+
+    #[test]
+    fn swap_remove_index_to_swap_with() {
+        // Removes all key=1, expected swap positions are all where key!=1
+        fn test(insert: &[i32], current: usize, expected: &[usize]) {
+            let mut map = IndexMultimapCore::<i32, i32, Vec<usize>>::new();
+            for &k in insert {
+                map.insert_append_full(HashValue(k as usize), k, 0);
+            }
+
+            let mut r = map.swap_remove(HashValue(1), &1).unwrap();
+
+            let mut swaps = Vec::new();
+            while let Some(i) = r.index_to_swap_with(current) {
+                swaps.push(i);
+            }
+
+            assert_eq!(&swaps, &expected);
+            mem::forget(r);
+        }
+
+        let insert = [1, 1, 2, 3, 1, 1, 5, 4, 1];
+        test(&insert, 0, &[7, 6, 3, 2]);
+        test(&insert, 1, &[7, 6, 3, 2]);
+        test(&insert, 4, &[]);
+
+        let insert = [1, 1, 2, 3, 1, 1, 5, 4];
+        test(&insert, 0, &[7, 6, 3, 2]);
+        test(&insert, 1, &[7, 6, 3, 2]);
+        test(&insert, 4, &[]);
+
+        let insert = [1, 1, 2, 3, 5, 4];
+        test(&insert, 0, &[5, 4, 3, 2]);
+
+        let insert = [1, 1, 1, 1, 1, 1, 1, 1];
+        test(&insert, 0, &[]);
+
+        let insert = [1, 1, 2, 3, 1, 1, 5, 4, 1, 1, 1, 1, 1];
+        test(&insert, 0, &[7, 6, 3, 2]);
+        test(&insert, 1, &[7, 6, 3, 2]);
+        test(&insert, 4, &[]);
+
+        let insert = [2, 3, 5, 1, 1, 2, 3, 1, 1, 5, 4, 1];
+        test(&insert, 3, &[10, 9, 6, 5]);
+        test(&insert, 4, &[10, 9, 6, 5]);
+        test(&insert, 7, &[]);
+
+        let insert = [2, 2, 2, 3, 5, 4, 1];
+        test(&insert, 6, &[]);
     }
 }
