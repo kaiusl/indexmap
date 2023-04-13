@@ -61,7 +61,7 @@ macro_rules! quickcheck_limit {
                         $($code)*
                     }
                     let mut quickcheck = QuickCheck::new()
-                    .gen(Gen::new(10)).tests(10).max_tests(100)
+                    //.gen(Gen::new(1000)).tests(100).max_tests(100)
                     ;
                     if cfg!(miri) {
                         quickcheck = quickcheck
@@ -195,18 +195,48 @@ quickcheck_limit! {
         for &key in &remove {
             map.shift_remove(&key);
         }
-        let elements = &set(&insert) - &set(&remove);
+        let remaining = &set(&insert) - &set(&remove);
 
         // Check that order is preserved after removals
-        let mut iter = map.keys().unique();
-        for &key in insert.iter().unique() {
-            if elements.contains(&key) {
+        let mut iter = map.keys();
+        for &key in insert.iter() {
+            if remaining.contains(&key) {
                 assert_eq!(Some(&key), iter.next());
             }
         }
 
-        map.len_keys() == elements.len() &&
-            elements.iter().all(|k| map.get(k).first().is_some())
+        // Number of pairs we expect to see in the map for every key
+        let mut counts = HashMap::new();
+        for r in remaining.iter() {
+            let count = insert.iter().filter(|i| *i == r).count();
+            counts.insert(r, count);
+        }
+
+        map.len_keys() == remaining.len()
+        && remaining.iter().all(|k| map.get(k).len() == *counts.get(k).unwrap())
+        && remove.iter().all(|k| map.get(k).first().is_none())
+    }
+
+    fn swap_remove(insert: Vec<u8>, remove: Vec<u8>) -> bool {
+        let mut map = IndexMultimap::new();
+        for &key in &insert {
+            map.insert_append(key, ());
+        }
+        for &key in &remove {
+            map.swap_remove(&key);
+        }
+        let remaining = &set(&insert) - &set(&remove);
+
+        // Number of pairs we expect to see in the map for every key
+        let mut counts = HashMap::new();
+        for r in remaining.iter() {
+            let count = insert.iter().filter(|i| *i == r).count();
+            counts.insert(r, count);
+        }
+
+        map.len_keys() == remaining.len()
+        && remaining.iter().all(|k| map.get(k).len() == *counts.get(k).unwrap())
+        && remove.iter().all(|k| map.get(k).first().is_none())
     }
 
     fn indexing(insert: Vec<u8>) -> bool {

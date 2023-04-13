@@ -24,7 +24,9 @@ mod subsets;
 #[cfg(test)]
 mod tests;
 
-pub use self::core::{Entry, EntryIndices, IndexStorage, OccupiedEntry, VacantEntry};
+pub use self::core::{
+    Entry, EntryIndices, IndexStorage, OccupiedEntry, ShiftRemove, SwapRemove, VacantEntry,
+};
 pub use self::subsets::{
     Subset, SubsetIndexStorage, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
     SubsetValuesMut, ToIndexIter,
@@ -47,7 +49,6 @@ use ::core::hash::{BuildHasher, Hash, Hasher};
 use ::core::ops::{Index, IndexMut, RangeBounds};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-
 #[cfg(feature = "std")]
 use std::collections::hash_map::RandomState;
 
@@ -540,86 +541,68 @@ where
         }
     }
 
-    /// Remove all the key-value pairs with key equivalent to given `key`.
+    /// Remove all the key-value pairs with key equivalent to given `key` and
+    /// return an iterator over all the removed items,
+    /// or [`None`] if the `key` was not in the map.
     ///
     /// Like [`Vec::swap_remove`], the pairs are removed by swapping them with the
     /// last element of the map and popping them off.
     /// **This perturbs the position of what used to be the last element!**
     ///
-    /// Returns `false` if `key` is not in map and `true` is the removal was successful.
+    /// # Laziness
     ///
-    /// Computes in **O(1)** time (average).
-    pub fn swap_remove<Q: ?Sized>(&mut self, key: &Q) -> bool
+    /// To avoid any unnecessary allocations the pairs are actually removed when
+    /// the returned iterator is consumed.
+    /// For convenience, dropping the iterator will remove and drop
+    /// all the remaining items that are meant to be removed.
+    ///
+    /// # Leaking
+    ///
+    /// If the returned iterator goes out of scope without
+    /// being dropped (is *leaked*),
+    /// the map may have lost and leaked elements arbitrarily,
+    /// including pairs not associated with given key.
+    pub fn swap_remove<Q>(&mut self, key: &Q) -> Option<SwapRemove<'_, K, V, Indices>>
     where
-        Q: Hash + Equivalent<K>,
+        Q: Hash + Equivalent<K> + ?Sized,
     {
         if self.is_empty() {
-            return false;
+            return None;
         }
         let hash = self.hash(key);
         self.core.swap_remove(hash, key)
     }
 
     /// Remove all the key-value pairs with key equivalent to given `key` and
-    /// return them and the indices they had.
-    ///
-    /// Like [`Vec::swap_remove`], the pairs are removed by swapping them with the
-    /// last element of the map and popping them off.
-    /// **This perturbs the position of what used to be the last element!**
-    ///
-    /// Returns [`None`] if `key` is not in map.
-    ///
-    /// Computes in **O(1)** time (average).
-    pub fn swap_remove_full<Q: ?Sized>(&mut self, key: &Q) -> Option<(Indices, Vec<(K, V)>)>
-    where
-        Q: Hash + Equivalent<K>,
-    {
-        if self.is_empty() {
-            return None;
-        }
-        let hash = self.hash(key);
-        self.core.swap_remove_full(hash, key)
-    }
-
-    /// Remove all the key-value pairs with key equivalent to given `key`.
+    /// return an iterator over all the removed items,
+    /// or [`None`] if the `key` was not in the map.
     ///
     /// Like [`Vec::remove`], the pairs are removed by shifting all of the
     /// elements that follow them, preserving their relative order.
     /// **This perturbs the index of all of those elements!**
     ///
-    /// Returns `false` if `key` is not in map and `true` is the removal was successful.
+    /// # Laziness
     ///
-    /// Computes in **O(n)** time (average).
-    pub fn shift_remove<Q: ?Sized>(&mut self, key: &Q) -> bool
+    /// To avoid any unnecessary allocations the pairs are actually removed when
+    /// the returned iterator is consumed.
+    /// For convenience, dropping the iterator will remove and drop
+    /// all the remaining items that are meant to be removed.
+    ///
+    /// # Leaking
+    ///
+    /// If the returned iterator goes out of scope without
+    /// being dropped (is *leaked*),
+    /// the map may have lost and leaked elements arbitrarily,
+    /// including pairs not associated with given key.
+    pub fn shift_remove<Q>(&mut self, key: &Q) -> Option<ShiftRemove<'_, K, V, Indices>>
     where
-        Q: Hash + Equivalent<K>,
+        Q: Hash + Equivalent<K> + ?Sized,
     {
         if self.is_empty() {
-            return false;
+            return None;
         }
         let hash = self.hash(key);
         self.core.shift_remove(hash, key)
-    }
-
-    /// Remove all the key-value pairs with key equivalent to given `key` and
-    /// return them and the indices they had.
-    ///
-    /// Like [`Vec::remove`], the pairs are removed by shifting all of the
-    /// elements that follow them, preserving their relative order.
-    /// **This perturbs the index of all of those elements!**
-    ///
-    /// Return [`None`] if `key` is not in map.
-    ///
-    /// Computes in **O(n)** time (average).
-    pub fn shift_remove_full<Q: ?Sized>(&mut self, key: &Q) -> Option<(Indices, Vec<(K, V)>)>
-    where
-        Q: Hash + Equivalent<K>,
-    {
-        if self.is_empty() {
-            return None;
-        }
-        let hash = self.hash(key);
-        self.core.shift_remove_full(hash, key)
     }
 
     /// Remove the last key-value pair.

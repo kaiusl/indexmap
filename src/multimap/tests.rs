@@ -1,8 +1,12 @@
 #![allow(clippy::bool_assert_comparison)]
 
-use super::*;
 use ::core::fmt::Debug;
+use ::core::panic::AssertUnwindSafe;
+use ::core::sync::atomic::AtomicU32;
+use ::std::panic::catch_unwind;
 use std::string::String;
+
+use super::*;
 
 type IndexMultimapVec<K, V> = IndexMultimap<K, V, RandomState, Vec<usize>>;
 
@@ -400,11 +404,15 @@ fn shrink_to_fit() {
 
 #[test]
 fn swap_remove() {
+    // Test remove twice: a) by using the returned iterator and b) by dropping it.
+    // Both should remove all the needed pairs.
     let insert = [0, 4, 2, 12, 8, 7, 11, 5, 3, 17, 19, 22, 23];
     let mut map = IndexMultimapVec::new();
+    let mut map2 = IndexMultimapVec::new();
 
     for &elt in &insert {
         map.insert_append(elt, elt);
+        map2.insert_append(elt, elt);
     }
 
     assert_eq!(map.keys().count(), map.len_keys());
@@ -417,78 +425,32 @@ fn swap_remove() {
     let remove = [4, 12, 8, 7];
 
     for &key in &remove_fail {
-        assert!(!map.swap_remove(&key));
-    }
-    //println!("{:#?}", map);
-    for key in &remove {
-        assert!(map.swap_remove(key));
-    }
-    assert_map_eq(
-        &map,
-        &[
-            (0, 0),
-            (23, 23),
-            (2, 2),
-            (22, 22),
-            (19, 19),
-            (17, 17),
-            (11, 11),
-            (5, 5),
-            (3, 3),
-        ],
-    );
-
-    for key in &insert {
-        assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
-    }
-    assert_eq!(map.len_keys(), insert.len() - remove.len());
-    assert_eq!(map.keys().count(), insert.len() - remove.len());
-}
-
-#[test]
-fn swap_remove_full() {
-    let insert = [0, 4, 2, 12, 8, 7, 11, 5, 3, 17, 19, 22, 23];
-    let mut map = IndexMultimapVec::new();
-
-    for &elt in &insert {
-        map.insert_append(elt, elt);
+        assert!(map.swap_remove(&key).is_none());
     }
 
-    assert_eq!(map.keys().count(), map.len_keys());
-    assert_eq!(map.keys().count(), insert.len());
-    for (a, b) in insert.iter().zip(map.keys()) {
-        assert_eq!(a, b);
-    }
-
-    let remove_fail = [99, 77];
-    let remove = [4, 12, 8, 7];
-
-    for &key in &remove_fail {
-        assert!(map.swap_remove_full(&key).is_none());
-    }
-    //println!("{:#?}", map);
     for &key in &remove {
-        //println!("{:?}", map);
         let index = map.get(&key).first().unwrap().0;
         assert_eq!(
-            map.swap_remove_full(&key),
-            Some((vec![index], vec![(key, key)]))
+            map.swap_remove(&key).unwrap().collect::<Vec<_>>(),
+            vec![(index, key, key)]
         );
+        assert!(map2.swap_remove(&key).is_some());
     }
-    assert_map_eq(
-        &map,
-        &[
-            (0, 0),
-            (23, 23),
-            (2, 2),
-            (22, 22),
-            (19, 19),
-            (17, 17),
-            (11, 11),
-            (5, 5),
-            (3, 3),
-        ],
-    );
+    let remaining = [
+        (0, 0),
+        (23, 23),
+        (2, 2),
+        (22, 22),
+        (19, 19),
+        (17, 17),
+        (11, 11),
+        (5, 5),
+        (3, 3),
+    ];
+    assert_map_eq(&map, &remaining);
+    assert_map_eq(&map2, &remaining);
+    assert_eq!(map, map2);
+    assert_eq!(map.as_slice(), map2.as_slice());
 
     for key in &insert {
         assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
@@ -509,23 +471,37 @@ fn swap_remove_multientry() {
         (5, 52),
         (5, 53),
     ];
-    let mut map = IndexMultimapVec::new();
-    map.extend(insert);
+    let mut map = IndexMultimapVec::from_iter(insert);
+    let mut map2 = IndexMultimapVec::from_iter(insert);
 
     assert_eq!(map.keys().count(), 8);
     assert_eq!(map.values().count(), insert.len());
 
     let remove_fail = [99, 77];
     for &key in &remove_fail {
-        assert!(!map.swap_remove(&key));
+        assert!(map.swap_remove(&key).is_none());
     }
 
     let remove = [4, 5];
-    assert!(map.swap_remove(&4));
-    assert_map_eq(&map, &[(0, 0), (5, 53), (5, 52), (3, 3), (5, 51)]);
+    let removed_pairs = map.swap_remove(&remove[0]).unwrap().collect::<Vec<_>>();
+    map2.swap_remove(&remove[0]);
+    assert_eq!(removed_pairs, [(1, 4, 41), (2, 4, 42), (5, 4, 43)]);
+    let remaining = [(0, 0), (5, 53), (5, 52), (3, 3), (5, 51)];
+    assert_map_eq(&map, &remaining);
+    assert_map_eq(&map2, &remaining);
+    assert_eq!(map, map2);
+    assert_eq!(map.as_slice(), map2.as_slice());
 
-    assert!(map.swap_remove(&5));
-    assert_map_eq(&map, &[(0, 0), (3, 3)]);
+    //println!("REMOVED 4: {:#?}", map);
+
+    let removed = map.swap_remove(&remove[1]).unwrap().collect::<Vec<_>>();
+    map2.swap_remove(&remove[1]);
+    assert_eq!(removed, [(1, 5, 53), (2, 5, 52), (4, 5, 51)]);
+    let remaining = [(0, 0), (3, 3)];
+    assert_map_eq(&map, &remaining);
+    assert_map_eq(&map2, &remaining);
+    assert_eq!(map, map2);
+    assert_eq!(map.as_slice(), map2.as_slice());
 
     for (key, _) in &insert {
         assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
@@ -535,55 +511,39 @@ fn swap_remove_multientry() {
 }
 
 #[test]
-fn swap_remove_full_multientry() {
+fn swap_remove_multientry2() {
     let insert = [
-        (0, 0),
-        (4, 41),
-        (4, 42),
-        (3, 3),
-        (5, 51),
-        (4, 43),
-        (5, 52),
-        (5, 53),
+        (1, 11),
+        (0, 1),
+        (1, 12),
+        (1, 13),
+        (0, 2),
+        (0, 3),
+        (0, 4),
+        (2, 21),
+        (3, 31),
     ];
-    let mut map = IndexMultimapVec::new();
-    map.extend(insert);
-
-    assert_eq!(map.keys().count(), 8);
-    assert_eq!(map.values().count(), insert.len());
-
-    let remove_fail = [99, 77];
-    for &key in &remove_fail {
-        assert!(map.swap_remove_full(&key).is_none());
-    }
-
-    let remove = [4, 5];
-    let (indices, items) = map.swap_remove_full(&4).unwrap();
-    assert_eq!(indices, [1, 2, 5]);
-    assert_eq!(items, [(4, 41), (4, 42), (4, 43)]);
-    assert_map_eq(&map, &[(0, 0), (5, 53), (5, 52), (3, 3), (5, 51)]);
-
-    //println!("REMOVED 4: {:#?}", map);
-
-    let (indices, items) = map.swap_remove_full(&5).unwrap();
-    assert_eq!(indices, [1, 2, 4]);
-    assert_eq!(items, [(5, 53), (5, 52), (5, 51)]);
-    assert_map_eq(&map, &[(0, 0), (3, 3)]);
-
-    for (key, _) in &insert {
-        assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
-    }
-    assert_eq!(map.len_keys(), 2);
-    assert_eq!(map.len_pairs(), 2);
+    let mut map = IndexMultimapVec::from_iter(insert);
+    let mut map2 = IndexMultimapVec::from_iter(insert);
+    let removed = map.swap_remove(&0).unwrap().collect::<Vec<_>>();
+    map2.swap_remove(&0);
+    assert_eq!(removed, [(1, 0, 1), (4, 0, 2), (5, 0, 3), (6, 0, 4)]);
+    let remaining = [(1, 11), (3, 31), (1, 12), (1, 13), (2, 21)];
+    assert_map_eq(&map, &remaining);
+    assert_map_eq(&map2, &remaining);
+    assert_eq!(map, map2);
+    assert_eq!(map.as_slice(), map2.as_slice());
 }
 
 #[test]
 fn shift_remove() {
     let insert = [0, 4, 2, 3];
     let mut map = IndexMultimapVec::new();
+    let mut map2 = IndexMultimapVec::new();
 
     for &elt in &insert {
         map.insert_append(elt, elt);
+        map2.insert_append(elt, elt);
     }
 
     assert_eq!(map.keys().count(), map.len_keys());
@@ -596,51 +556,22 @@ fn shift_remove() {
     let remove = [4];
 
     for &key in &remove_fail {
-        assert!(!map.shift_remove(&key));
-    }
-
-    for &key in &remove {
-        assert!(map.shift_remove(&key));
-    }
-    assert_map_eq(&map, &[(0, 0), (2, 2), (3, 3)]);
-
-    for key in &insert {
-        assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
-    }
-    assert_eq!(map.len_keys(), insert.len() - remove.len());
-    assert_eq!(map.keys().count(), insert.len() - remove.len());
-}
-
-#[test]
-fn shift_remove_full() {
-    let insert = [0, 4, 2, 3];
-    let mut map = IndexMultimap::new();
-
-    for &elt in &insert {
-        map.insert_append(elt, elt);
-    }
-
-    assert_eq!(map.keys().count(), map.len_keys());
-    assert_eq!(map.keys().count(), insert.len());
-    for (a, b) in insert.iter().zip(map.keys()) {
-        assert_eq!(a, b);
-    }
-
-    let remove_fail = [99, 77];
-    let remove = [4];
-
-    for &key in &remove_fail {
-        assert!(map.shift_remove_full(&key).is_none());
+        assert!(map.shift_remove(&key).is_none());
     }
 
     for &key in &remove {
         let index = map.get(&key).first().unwrap().0;
         assert_eq!(
-            map.shift_remove_full(&key),
-            Some((vec![index], vec![(key, key)]))
+            map.shift_remove(&key).unwrap().collect::<Vec<_>>(),
+            vec![(index, key, key)]
         );
+        assert!(map2.shift_remove(&key).is_some());
     }
-    assert_map_eq(&map, &[(0, 0), (2, 2), (3, 3)]);
+    let remaining = [(0, 0), (2, 2), (3, 3)];
+    assert_map_eq(&map, &remaining);
+    assert_map_eq(&map2, &remaining);
+    assert_eq!(map, map2);
+    assert_eq!(map.as_slice(), map2.as_slice());
 
     for key in &insert {
         assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
@@ -662,65 +593,35 @@ fn shift_remove_multientry() {
         (5, 53),
         (6, 61),
     ];
-    let mut map = IndexMultimapVec::new();
-    map.extend(insert);
+    let mut map = IndexMultimapVec::from_iter(insert);
+    let mut map2 = IndexMultimapVec::from_iter(insert);
 
     assert_eq!(map.keys().count(), 9);
     assert_eq!(map.values().count(), insert.len());
 
     let remove_fail = [99, 77];
     for &key in &remove_fail {
-        assert!(map.shift_remove_full(&key).is_none());
+        assert!(map.shift_remove(&key).is_none());
     }
 
     let remove = [4, 5];
-    assert!(map.shift_remove(&4));
-    assert_map_eq(&map, &[(0, 0), (3, 3), (5, 51), (5, 52), (5, 53), (6, 61)]);
+    let removed = map.shift_remove(&4).unwrap().collect::<Vec<_>>();
+    assert!(map2.shift_remove(&4).is_some());
+    assert_eq!(removed, [(1, 4, 41), (2, 4, 42), (5, 4, 43)]);
+    let remaining = [(0, 0), (3, 3), (5, 51), (5, 52), (5, 53), (6, 61)];
+    assert_map_eq(&map, &remaining);
+    assert_map_eq(&map2, &remaining);
+    assert_eq!(map, map2);
+    assert_eq!(map.as_slice(), map2.as_slice());
 
-    assert!(map.shift_remove(&5));
-    assert_map_eq(&map, &[(0, 0), (3, 3), (6, 61)]);
-
-    for (key, _) in &insert {
-        assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
-    }
-    assert_eq!(map.len_keys(), 3);
-    assert_eq!(map.len_pairs(), 3);
-}
-
-#[test]
-fn shift_remove_full_multientry() {
-    let insert = [
-        (0, 0),
-        (4, 41),
-        (4, 42),
-        (3, 3),
-        (5, 51),
-        (4, 43),
-        (5, 52),
-        (5, 53),
-        (6, 61),
-    ];
-    let mut map = IndexMultimapVec::new();
-    map.extend(insert);
-
-    assert_eq!(map.keys().count(), 9);
-    assert_eq!(map.values().count(), insert.len());
-
-    let remove_fail = [99, 77];
-    for &key in &remove_fail {
-        assert!(map.shift_remove_full(&key).is_none());
-    }
-
-    let remove = [4, 5];
-    let (indices, items) = map.shift_remove_full(&4).unwrap();
-    assert_eq!(indices, [1, 2, 5]);
-    assert_eq!(items, [(4, 41), (4, 42), (4, 43)]);
-    assert_map_eq(&map, &[(0, 0), (3, 3), (5, 51), (5, 52), (5, 53), (6, 61)]);
-
-    let (indices, items) = map.shift_remove_full(&5).unwrap();
-    assert_eq!(indices, [2, 3, 4]);
-    assert_eq!(items, [(5, 51), (5, 52), (5, 53)]);
-    assert_map_eq(&map, &[(0, 0), (3, 3), (6, 61)]);
+    let items = map.shift_remove(&5).unwrap().collect::<Vec<_>>();
+    assert!(map2.shift_remove(&5).is_some());
+    assert_eq!(items, [(2, 5, 51), (3, 5, 52), (4, 5, 53)]);
+    let remaining = [(0, 0), (3, 3), (6, 61)];
+    assert_map_eq(&map, &remaining);
+    assert_map_eq(&map2, &remaining);
+    assert_eq!(map, map2);
+    assert_eq!(map.as_slice(), map2.as_slice());
 
     for (key, _) in &insert {
         assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
@@ -732,19 +633,83 @@ fn shift_remove_full_multientry() {
 #[test]
 fn swap_remove_to_empty() {
     let mut map = indexmultimap! { 0 => 0, 4 => 4, 0=>1, 5 => 5 };
-    assert!(map.swap_remove(&5));
-    assert!(map.swap_remove(&4));
-    assert!(map.swap_remove(&0));
+    assert!(map.swap_remove(&5).is_some());
+    assert!(map.swap_remove(&4).is_some());
+    assert!(map.swap_remove(&0).is_some());
     assert!(map.is_empty());
 }
 
 #[test]
 fn shift_remove_to_empty() {
     let mut map = indexmultimap! { 0 => 0, 4 => 4, 0=>1, 5 => 5 };
-    assert!(map.shift_remove(&5));
-    assert!(map.shift_remove(&4));
-    assert!(map.shift_remove(&0));
+    assert!(map.shift_remove(&5).is_some());
+    assert!(map.shift_remove(&4).is_some());
+    assert!(map.shift_remove(&0).is_some());
     assert!(map.is_empty());
+}
+
+#[test]
+fn shift_remove_drop_panics() {
+    static DROPS: AtomicU32 = AtomicU32::new(0);
+
+    #[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+    struct DropMayPanic(bool, String);
+
+    impl Drop for DropMayPanic {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, ::core::sync::atomic::Ordering::SeqCst);
+
+            if self.0 {
+                panic!("panic in `drop`");
+            }
+        }
+    }
+
+    let mut map = IndexMultimapVec::from_iter([
+        (1, DropMayPanic(false, String::from("a"))),
+        (2, DropMayPanic(false, String::from("a"))),
+        (3, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(true, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+    ]);
+
+    catch_unwind(AssertUnwindSafe(|| drop(map.shift_remove(&1)))).ok();
+    assert_eq!(DROPS.load(::core::sync::atomic::Ordering::SeqCst), 6);
+}
+
+#[test]
+fn swap_remove_drop_panics() {
+    static DROPS: AtomicU32 = AtomicU32::new(0);
+
+    #[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+    struct DropMayPanic(bool, String);
+
+    impl Drop for DropMayPanic {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, ::core::sync::atomic::Ordering::SeqCst);
+
+            if self.0 {
+                panic!("panic in `drop`");
+            }
+        }
+    }
+
+    let mut map = IndexMultimapVec::from_iter([
+        (1, DropMayPanic(false, String::from("a"))),
+        (2, DropMayPanic(false, String::from("a"))),
+        (3, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(true, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+    ]);
+
+    catch_unwind(AssertUnwindSafe(|| drop(map.swap_remove(&1)))).ok();
+    assert_eq!(DROPS.load(::core::sync::atomic::Ordering::SeqCst), 6);
 }
 
 #[test]
