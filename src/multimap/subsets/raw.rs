@@ -4,12 +4,14 @@ use core::fmt;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
+use alloc::vec::Vec;
+
 use crate::{
     util::{is_unique, is_unique_sorted},
     Bucket,
 };
 
-use super::{internal, SubsetIndexStorage, SubsetIter, SubsetKeys, SubsetValues, ToIndexIter};
+use super::{SubsetIter, SubsetKeys, SubsetValues};
 
 /// Slice like construct over a subset of all the pairs in the [`IndexMultimap`]
 /// with mutable access to the values.
@@ -477,6 +479,79 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.inner.fmt(f)
+    }
+}
+
+pub(super) mod internal {
+    pub struct Guard;
+    pub trait Sealed {}
+    pub struct Bounds<T>(T);
+    impl<T> Sealed for Bounds<T> {}
+    impl<'a> Sealed for &'a [usize] {}
+    impl Sealed for alloc::vec::Vec<usize> {}
+}
+
+/// GAT workaround for [`SubsetIndexStorage`] providing an associated `Iter`
+/// type that could borrow from self.
+pub trait ToIndexIter<'a>
+where
+    Self: internal::Sealed,
+{
+    type Iter: Iterator<Item = usize>
+        + DoubleEndedIterator
+        + ExactSizeIterator
+        + FusedIterator
+        + Clone;
+}
+
+/// Used by `Subset` and other similar structs to
+/// be generic over the indices container.
+#[allow(clippy::missing_safety_doc)] // sealed trait, safety is below
+pub unsafe trait SubsetIndexStorage
+where
+    Self: internal::Sealed + for<'a> ToIndexIter<'a> + core::ops::Deref<Target = [usize]> + Default,
+{
+    // # Safety
+    //
+    // Methods must behave like the ones on Vec
+    type IntoIter: Iterator<Item = usize> + DoubleEndedIterator + ExactSizeIterator + FusedIterator;
+
+    #[doc(hidden)]
+    fn into_index_iter(self, _: internal::Guard) -> Self::IntoIter;
+
+    #[doc(hidden)]
+    fn index_iter(&self, _: internal::Guard) -> <Self as ToIndexIter<'_>>::Iter;
+}
+
+impl<'a> ToIndexIter<'a> for &[usize] {
+    type Iter = ::core::iter::Copied<::core::slice::Iter<'a, usize>>;
+}
+
+unsafe impl<'a> SubsetIndexStorage for &'a [usize] {
+    type IntoIter = ::core::iter::Copied<::core::slice::Iter<'a, usize>>;
+
+    fn into_index_iter(self, _: internal::Guard) -> Self::IntoIter {
+        core::iter::IntoIterator::into_iter(self).copied()
+    }
+
+    fn index_iter(&self, _: internal::Guard) -> <Self as ToIndexIter<'_>>::Iter {
+        <[usize]>::iter(self).copied()
+    }
+}
+
+impl<'a> ToIndexIter<'a> for Vec<usize> {
+    type Iter = ::core::iter::Copied<::core::slice::Iter<'a, usize>>;
+}
+
+unsafe impl SubsetIndexStorage for alloc::vec::Vec<usize> {
+    type IntoIter = alloc::vec::IntoIter<usize>;
+
+    fn into_index_iter(self, _: internal::Guard) -> Self::IntoIter {
+        core::iter::IntoIterator::into_iter(self)
+    }
+
+    fn index_iter(&self, _: internal::Guard) -> <Self as ToIndexIter<'_>>::Iter {
+        <[usize]>::iter(self).copied()
     }
 }
 
