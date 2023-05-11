@@ -3,14 +3,15 @@
 //! mostly in dealing with its bucket "pointers".
 
 use alloc::format;
-use alloc::vec::{Vec};
-use core::iter::{Copied, FusedIterator};
-use core::ops::{self, Range};
+use alloc::vec::Vec;
 use core::fmt;
+use core::iter::{Copied, FusedIterator};
 use core::mem;
-use core::slice;
+use core::ops::{self, Range};
 use core::ptr::{self, addr_of, addr_of_mut, NonNull};
+use core::slice;
 
+use crate::TryReserveError;
 use crate::{
     map::Slice,
     multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut},
@@ -22,7 +23,7 @@ use super::{
     super::{Subset, SubsetMut},
     update_index_last,
 };
-use super::{equivalent, Bucket, Entry, HashValue, IndexMultimapCore, IndexStorage, VacantEntry};
+use super::{equivalent, Bucket, Entry, HashValue, IndexMultimapCore, VacantEntry};
 use hashbrown::raw::RawTable;
 
 type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
@@ -1393,7 +1394,7 @@ where
 
     We must take ownership of map.indices for the duration of this struct's life.
     This is to leave the map in consistent and valid (but empty) state in the
-    case this struct is leaked. For that reason on construction map.pairs.len 
+    case this struct is leaked. For that reason on construction map.pairs.len
     must be set to 0.
 
     Layout of map.pairs:
@@ -1633,6 +1634,261 @@ where
         }
     }
 }
+
+/// Vector like types that can be used as a backing storage for [`IndexMultimap`]
+/// to hold the indices of one key.
+///
+/// # Safety
+///
+/// All methods must behave like the ones on [`alloc::vec::Vec`] (this includes panics).
+///
+/// This trait is `unsafe` because the safety of [`IndexMultimap`] depends on the
+/// fact that methods on this trait behave like the ones on [`alloc::vec::Vec`].
+/// However there is no feasibly way for us to check that they do behave as
+/// expected or guard against any funny business.
+///
+/// [`IndexMultimap`]: crate::IndexMultimap
+pub unsafe trait IndexStorage
+where
+    Self: ops::Deref<Target = [usize]> + ops::DerefMut,
+{
+    /// Creates `self` with one element.
+    /// 
+    /// Must
+    fn one(v: usize) -> Self;
+    /// Creates `self` with capacity.
+    fn with_capacity(cap: usize) -> Self;
+    /// Pushes one element to `self`.
+    fn push(&mut self, v: usize);
+    /// Removes one element from `self`.
+    ///
+    /// Should ***panic*** if `index` is out of bounds.
+    fn remove(&mut self, index: usize) -> usize;
+    fn pop(&mut self) -> Option<usize>;
+    /// Retains only the elements specified by the predicate, passing a mutable reference to it.
+    fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&mut usize) -> bool;
+    /// Returns a view into `self` as a slice.
+    fn as_slice(&self) -> &[usize];
+    /// Returns a mutable view into `self` as a slice.
+    fn as_mut_slice(&mut self) -> &mut [usize];
+    fn shrink_to(&mut self, min_capacity: usize);
+    fn shrink_to_fit(&mut self);
+    fn reserve(&mut self, additional: usize);
+    fn reserve_exact(&mut self, additional: usize);
+    fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError>;
+    fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError>;
+
+    type IntoIter: Iterator<Item = usize> + DoubleEndedIterator + ExactSizeIterator + FusedIterator;
+    fn into_iter(self) -> Self::IntoIter;
+}
+
+unsafe impl IndexStorage for Vec<usize> {
+    #[inline]
+    fn one(v: usize) -> Self {
+        alloc::vec![v]
+    }
+
+    #[inline]
+    fn with_capacity(cap: usize) -> Self {
+        Vec::with_capacity(cap)
+    }
+
+    #[inline]
+    fn push(&mut self, v: usize) {
+        self.push(v)
+    }
+
+    #[inline]
+    fn remove(&mut self, i: usize) -> usize {
+        self.remove(i)
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Option<usize> {
+        self.pop()
+    }
+
+    #[inline]
+    fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&mut usize) -> bool,
+    {
+        self.retain_mut(f)
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[usize] {
+        self.as_slice()
+    }
+
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [usize] {
+        self.as_mut_slice()
+    }
+
+    #[inline]
+    fn shrink_to(&mut self, min_capacity: usize) {
+        self.shrink_to(min_capacity)
+    }
+
+    #[inline]
+    fn shrink_to_fit(&mut self) {
+        self.shrink_to_fit()
+    }
+
+    #[inline]
+    fn reserve(&mut self, additional: usize) {
+        self.reserve(additional)
+    }
+
+    #[inline]
+    fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.try_reserve(additional)
+            .map_err(TryReserveError::from_alloc)
+    }
+
+    #[inline]
+    fn reserve_exact(&mut self, additional: usize) {
+        self.reserve_exact(additional)
+    }
+
+    #[inline]
+    fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.try_reserve_exact(additional)
+            .map_err(TryReserveError::from_alloc)
+    }
+
+    type IntoIter = alloc::vec::IntoIter<usize>;
+    
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIterator::into_iter(self)
+    }
+}
+
+// impl<const N: usize> IndexStorage for SmallVec<[usize; N]> {
+//     #[inline]
+//     fn one(v: usize) -> Self {
+//         smallvec::smallvec![v]
+//     }
+
+//     #[inline]
+//     fn with_capacity(cap: usize) -> Self {
+//         SmallVec::with_capacity(cap)
+//     }
+
+//     #[inline]
+//     fn push(&mut self, v: usize) {
+//         self.push(v)
+//     }
+//     #[inline]
+//     fn remove(&mut self, i: usize) -> usize {
+//         self.remove(i)
+//     }
+//     #[inline]
+//     fn retain<F>(&mut self, f: F)
+//     where
+//         F: FnMut(&mut usize) -> bool,
+//     {
+//         self.retain_mut(f)
+//     }
+
+//     fn as_slice(&self) -> &[usize] {
+//         self.as_slice()
+//     }
+
+//     fn as_mut_slice(&mut self) -> &mut [usize] {
+//         self.as_mut_slice()
+//     }
+//     fn shrink_to(&mut self, _min_capacity: usize) {}
+//     fn shrink_to_fit(&mut self) {
+//         self.shrink_to_fit()
+//     }
+
+//     fn reserve(&mut self, additional: usize) {
+//         self.reserve(additional)
+//     }
+
+//     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+//         self.try_reserve(additional).map_err(|e| match e {
+//             smallvec::CollectionAllocErr::CapacityOverflow => TryReserveError::capacity_overflow(),
+//             smallvec::CollectionAllocErr::AllocErr { layout } => TryReserveError::alloc(layout),
+//         })
+//     }
+
+//     fn reserve_exact(&mut self, additional: usize) {
+//         self.reserve_exact(additional)
+//     }
+
+//     fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+//         self.try_reserve_exact(additional).map_err(|e| match e {
+//             smallvec::CollectionAllocErr::CapacityOverflow => TryReserveError::capacity_overflow(),
+//             smallvec::CollectionAllocErr::AllocErr { layout } => TryReserveError::alloc(layout),
+//         })
+//     }
+// }
+
+// impl<const N: usize> IndexStorage for arrayvec::ArrayVec<usize, N> {
+//     #[inline]
+//     fn one(v: usize) -> Self {
+//         let mut s = arrayvec::ArrayVec::new();
+//         s.push(v);
+//         s
+//     }
+
+//     #[inline]
+//     fn with_capacity(cap: usize) -> Self {
+//         arrayvec::ArrayVec::new()
+//     }
+
+//     /// ***Panics*** if the vector is already full.
+//     #[inline]
+//     fn push(&mut self, v: usize) {
+//         self.push(v)
+//     }
+
+//     #[inline]
+//     fn remove(&mut self, i: usize) -> usize {
+//         self.remove(i)
+//     }
+//     #[inline]
+//     fn retain<F>(&mut self, f: F)
+//     where
+//         F: FnMut(&mut usize) -> bool,
+//     {
+//         self.retain(f)
+//     }
+
+//     fn as_slice(&self) -> &[usize] {
+//         self.as_slice()
+//     }
+
+//     fn as_mut_slice(&mut self) -> &mut [usize] {
+//         self.as_mut_slice()
+//     }
+//     fn shrink_to(&mut self, _min_capacity: usize) {}
+//     fn shrink_to_fit(&mut self) {}
+
+//     fn reserve(&mut self, additional: usize) {
+//         assert!(additional == 0, "cannot resize ArrayVec")
+//     }
+
+//     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+//         assert!(additional == 0, "cannot resize ArrayVec");
+//         Ok(())
+//     }
+
+//     fn reserve_exact(&mut self, additional: usize) {
+//         assert!(additional == 0, "cannot resize ArrayVec")
+//     }
+
+//     fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+//         assert!(additional == 0, "cannot resize ArrayVec");
+//         Ok(())
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
