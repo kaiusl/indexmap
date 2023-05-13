@@ -10,18 +10,160 @@
 mod raw;
 
 use alloc::format;
-use core::fmt;
 use core::iter::FusedIterator;
 use core::ops;
+use core::{fmt, slice};
 
 use hashbrown::raw::RawTable;
 
-pub use self::raw::{Drain, OccupiedEntry, ShiftRemove, SwapRemove, IndexStorage};
+use self::raw::{update_index, update_index_last};
+pub use self::raw::{Drain, IndexStorage, OccupiedEntry, ShiftRemove, SwapRemove};
 use super::{Subset, SubsetMut};
 use crate::equivalent::Equivalent;
 use crate::util::{is_sorted, is_sorted_and_unique, is_unique, is_unique_sorted, replace_sorted};
 use crate::vec::Vec;
 use crate::{Bucket, HashValue, TryReserveError};
+
+#[derive(Debug, Clone)]
+pub(crate) struct UniqueSortedIndices<Indices> {
+    inner: Indices,
+}
+
+#[allow(unsafe_code)]
+impl<Indices> UniqueSortedIndices<Indices>
+where
+    Indices: IndexStorage,
+{
+    #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Indices::with_capacity(capacity),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+    
+    #[inline]
+    pub fn push(&mut self, v: usize) {
+        if let Some(last) = self.inner.last() {
+            if v <= *last {
+                panic!()
+            }
+        }
+        self.inner.push(v);
+    }
+
+    /// Unconditionally push a value to the end.
+    ///
+    /// # Safety
+    ///
+    /// `v` must be larger than any value currently in the structure
+    #[inline]
+    pub unsafe fn push_unchecked(&mut self, v: usize) {
+        self.inner.push(v)
+    }
+
+    #[inline]
+    pub fn first(&self) -> Option<&usize> {
+        self.as_slice().first()
+    }
+
+    #[inline]
+    pub fn last(&self) -> Option<&usize> {
+        self.as_slice().last()
+    }
+    
+    #[inline]
+    pub fn remove(&mut self, index: usize) -> usize {
+        self.inner.remove(index)
+    }
+
+    #[inline]
+    pub fn pop(&mut self) -> Option<usize> {
+        self.inner.pop()
+    }
+
+    #[inline]
+    pub fn retain<F>(&mut self, keep: F)
+    where
+        F: FnMut(&mut usize) -> bool,
+    {
+        self.inner.retain(keep);
+    }
+
+    #[inline]
+    pub fn binary_search(&self, x: &usize) -> Result<usize, usize> {
+        self.as_slice().binary_search(x)
+    }
+
+    #[inline]
+    pub fn contains(&self, x: &usize) -> bool {
+        self.inner.contains(x)
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[usize] {
+        self.inner.as_slice()
+    }
+
+    #[inline]
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [usize] {
+        self.inner.as_mut_slice()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> slice::Iter<'_, usize> {
+        self.inner.iter()
+    }
+
+    pub fn replace(&mut self, old_index: usize, new: usize) -> usize {
+        // SAFETY: we keep the slice sorted and unique
+        // TODO: check uniqueness
+        let slice = unsafe { self.as_mut_slice() };
+        let new_sorted_pos = slice.partition_point(|a| a < &new);
+        let old = core::mem::replace(&mut slice[old_index], new);
+        use core::cmp::Ordering;
+        match old_index.cmp(&new_sorted_pos) {
+            Ordering::Less => slice[old_index..new_sorted_pos].rotate_left(1),
+            Ordering::Equal => {}
+            Ordering::Greater => slice[new_sorted_pos..=old_index].rotate_right(1),
+        }
+        old
+    }
+
+    #[inline]
+    pub fn shrink_to_fit(&mut self) {
+        self.inner.shrink_to_fit()
+    }
+}
+
+impl<Indices> ops::Index<usize> for UniqueSortedIndices<Indices>
+where
+    Indices: IndexStorage,
+{
+    type Output = usize;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.inner[index]
+    }
+}
+
+impl<Indices> From<Indices> for UniqueSortedIndices<Indices>
+where
+    Indices: IndexStorage,
+{
+    fn from(value: Indices) -> Self {
+        Self { inner: value }
+    }
+}
 
 /// Core of the map that does not depend on S
 pub(crate) struct IndexMultimapCore<K, V, Indices> {
@@ -46,13 +188,15 @@ pub(crate) struct IndexMultimapCore<K, V, Indices> {
     //
     // ---
     /// indices mapping from the entry hash to its index.
-    indices: RawTable<Indices>,
+    indices: RawTable<UniqueSortedIndices<Indices>>,
     /// pairs is a dense vec of key-value pairs in their order.
     pairs: Vec<Bucket<K, V>>,
 }
 
 #[inline(always)]
-fn get_hash<K, V, Indices>(pairs: &[Bucket<K, V>]) -> impl Fn(&Indices) -> u64 + '_
+fn get_hash<K, V, Indices>(
+    pairs: &[Bucket<K, V>],
+) -> impl Fn(&UniqueSortedIndices<Indices>) -> u64 + '_
 where
     Indices: IndexStorage,
 {
@@ -65,7 +209,7 @@ where
 fn equivalent<'a, K, V, Q, Indices>(
     key: &'a Q,
     pairs: &'a [Bucket<K, V>],
-) -> impl Fn(&Indices) -> bool + 'a
+) -> impl Fn(&UniqueSortedIndices<Indices>) -> bool + 'a
 where
     Q: ?Sized + Equivalent<K>,
     Indices: IndexStorage,
@@ -76,85 +220,25 @@ where
 }
 
 #[inline]
-fn eq_index<Indices>(index: usize) -> impl Fn(&Indices) -> bool
+fn eq_index<Indices>(index: usize) -> impl Fn(&UniqueSortedIndices<Indices>) -> bool
 where
     Indices: IndexStorage,
 {
     move |indices| {
-        debug_assert!(is_sorted(indices), "expected indices to be sorted");
+        debug_assert!(
+            is_sorted(indices.as_slice()),
+            "expected indices to be sorted"
+        );
         indices.binary_search(&index).is_ok()
     }
 }
 
 #[inline]
-fn eq_index_last<Indices>(index: usize) -> impl Fn(&Indices) -> bool
+fn eq_index_last<Indices>(index: usize) -> impl Fn(&UniqueSortedIndices<Indices>) -> bool
 where
     Indices: IndexStorage,
 {
     move |indices| *indices.last().unwrap() == index
-}
-
-#[inline]
-fn update_index<Indices>(table: &mut RawTable<Indices>, hash: HashValue, old: usize, new: usize)
-where
-    Indices: IndexStorage,
-{
-    // Index to `old` in the indices
-    let mut olds_index: usize = 0;
-    let indices = table
-        .get_mut(hash.get(), |indices| {
-            debug_assert!(is_sorted(indices), "expected indices to be sorted");
-            match indices.binary_search(&old) {
-                Ok(i) => {
-                    olds_index = i;
-                    true
-                }
-                Err(_) => false,
-            }
-        })
-        .expect("index not found")
-        .as_mut_slice();
-
-    if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
-        // The position of the index cannot change
-        indices[olds_index] = new;
-    } else {
-        replace_sorted(indices, olds_index, new);
-        debug_assert!(is_sorted(indices));
-        debug_assert!(is_unique(indices));
-    }
-}
-
-/// Update the index old to new in indices table.
-/// Assumes that old is the last index in indices arrays.
-///
-/// This is used by swap_removes where we know that old is the very last index
-/// in the whole map and thus in any indices array as well.
-/// This avoids one binary search to find the position of old in indices array.
-#[inline]
-fn update_index_last<Indices>(
-    table: &mut RawTable<Indices>,
-    hash: HashValue,
-    old: usize,
-    new: usize,
-) where
-    Indices: IndexStorage,
-{
-    // Index to `old` in the indices
-    let indices = table
-        .get_mut(hash.get(), eq_index_last(old))
-        .expect("index not found")
-        .as_mut_slice();
-
-    debug_assert_eq!(indices.last(), Some(&old));
-    if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
-        // The position of the index cannot change
-        *indices.last_mut().unwrap() = new;
-    } else {
-        replace_sorted(indices, indices.len() - 1, new);
-        debug_assert!(is_sorted(indices));
-        debug_assert!(is_unique(indices));
-    }
 }
 
 impl<K, V, Indices> IndexMultimapCore<K, V, Indices>
@@ -511,14 +595,14 @@ where
         hash: HashValue,
         key: K,
         value: V,
-    ) -> (usize, hashbrown::raw::Bucket<Indices>) {
+    ) -> (usize, hashbrown::raw::Bucket<UniqueSortedIndices<Indices>>) {
         let i = self.pairs.len();
         let bucket = self
             .indices
-            .insert(hash.get(), Indices::one(i), get_hash(&self.pairs));
+            .insert(hash.get(), Indices::one(i).into(), get_hash(&self.pairs));
         self.pairs.push(Bucket { hash, key, value });
         #[allow(unsafe_code)]
-        self.debug_assert_indices(unsafe { bucket.as_ref() });
+        self.debug_assert_indices(unsafe { bucket.as_ref().as_slice() });
         (i, bucket)
     }
 
@@ -531,7 +615,7 @@ where
         let indices = self
             .indices
             .get(hash.get(), eq)
-            .map(IndexStorage::as_slice)
+            .map(|i| i.as_slice())
             .unwrap_or_default();
         if cfg!(debug_assertions) && !indices.is_empty() {
             self.debug_assert_indices(indices);
@@ -546,7 +630,7 @@ where
     {
         let eq = equivalent(key, &self.pairs);
         if let Some(indices) = self.indices.get(hash.get(), eq) {
-            self.debug_assert_indices(indices);
+            self.debug_assert_indices(indices.as_slice());
             Subset::new(&self.pairs, indices.as_slice())
         } else {
             Subset::new(&self.pairs, [].as_slice())
@@ -563,11 +647,11 @@ where
         match self.indices.get_mut(hash.get(), eq) {
             Some(indices) => {
                 indices.push(i);
-                debug_assert!(is_sorted_and_unique(indices));
+                debug_assert!(is_sorted_and_unique(indices.as_slice()));
             }
             None => {
                 self.indices
-                    .insert(hash.get(), Indices::one(i), get_hash(&self.pairs));
+                    .insert(hash.get(), Indices::one(i).into(), get_hash(&self.pairs));
             }
         }
         self.pairs.push(Bucket { hash, key, value });
@@ -625,59 +709,6 @@ where
         let last = *indices.last().unwrap();
         if last < self.pairs.len() {
             self.decrement_indices(last + 1, self.pairs.len(), indices.len());
-        }
-    }
-
-    /// Decrement all indices in the range `start..end` by `amount`.
-    ///
-    /// The index `start - amount` should not exist in `self.indices`.
-    /// All entries should still be in their original positions.
-    fn decrement_indices(&mut self, start: usize, end: usize, amount: usize) {
-        // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
-        let shifted_pairs = &self.pairs[start..end];
-        if shifted_pairs.len() > self.indices.buckets() / 2 {
-            // Shift all indices in range.
-            for indices in self.indices_mut() {
-                debug_assert!(is_sorted_and_unique(indices));
-                for i in indices.as_mut_slice() {
-                    if *i >= end {
-                        // early break as we go past end and our indices are sorted
-                        break;
-                    } else if start <= *i {
-                        *i -= amount;
-                    }
-                }
-            }
-        } else {
-            // Find each entry in range to shift its index.
-            for (i, entry) in (start..end).zip(shifted_pairs) {
-                update_index(&mut self.indices, entry.hash, i, i - amount);
-            }
-        }
-    }
-
-    /// Increment all indices in the range `start..end`.
-    ///
-    /// The index `end` should not exist in `self.indices`.
-    /// All entries should still be in their original positions.
-    fn increment_indices(&mut self, start: usize, end: usize) {
-        // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
-        let shifted_pairs = &self.pairs[start..end];
-        if shifted_pairs.len() > self.indices.buckets() / 2 {
-            // Shift all indices in range.
-            for indices in self.indices_mut() {
-                for i in indices.as_mut_slice() {
-                    if start <= *i && *i < end {
-                        *i += 1;
-                    }
-                }
-            }
-        } else {
-            // Find each entry in range to shift its index, updated in reverse so
-            // we never have duplicated indices that might have a hash collision.
-            for (i, entry) in (start..end).zip(shifted_pairs).rev() {
-                update_index(&mut self.indices, entry.hash, i, i + 1);
-            }
         }
     }
 
@@ -806,24 +837,6 @@ where
     {
         self.indices.clear();
         raw::insert_bulk_no_grow(&mut self.indices, &[], &self.pairs);
-    }
-
-    pub(crate) fn reverse(&mut self)
-    where
-        K: Eq,
-    {
-        self.pairs.reverse();
-
-        // No need to save hash indices, can easily calculate what they should
-        // be, given that this is an in-place reversal.
-        let len = self.pairs.len();
-        for indices in self.indices_mut() {
-            for i in indices.as_mut_slice() {
-                *i = len - *i - 1;
-            }
-            indices.reverse();
-        }
-        self.debug_assert_invariants();
     }
 }
 
