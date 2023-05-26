@@ -21,9 +21,11 @@ use core::{fmt, iter::FusedIterator};
 
 use crate::Bucket;
 
-pub use raw::{SubsetIndexStorage, SubsetIterMut, SubsetMut, SubsetValuesMut, ToIndexIter};
+pub use raw::{SubsetIndexStorage, SubsetIterMut, ToIndexIter};
 
-use self::raw::internal;
+pub(crate) use self::raw::internal;
+
+use super::core::Unique;
 
 /// Slice like construct over a subset of all the key-value pairs in the [`IndexMultimap`].
 ///
@@ -186,6 +188,151 @@ where
             .field("pairs", &self.iter())
             .field("indices", &self.indices)
             .finish()
+    }
+}
+
+/// Slice like construct over a subset of all the pairs in the [`IndexMultimap`]
+/// with mutable access to the values.
+///
+/// This `struct` is created by the [`IndexMultimap::get_mut`],
+/// [`OccupiedEntry::get_mut`], [`Entry::or_insert`] and other similar methods.
+/// See their documentation for more.
+///
+/// [`IndexMultimap`]: crate::IndexMultimap
+/// [`IndexMultimap::get_mut`]: crate::IndexMultimap::get_mut
+/// [`OccupiedEntry::get_mut`]: crate::multimap::OccupiedEntry::get_mut
+/// [`Entry::or_insert`]: crate::multimap::Entry::or_insert
+pub struct SubsetMut<'a, K, V, Indices> {
+    pairs: &'a mut [Bucket<K, V>],
+    indices: Unique<Indices>,
+}
+
+impl<'a, K, V, Indices> SubsetMut<'a, K, V, Indices>
+where
+    Indices: SubsetIndexStorage,
+{
+    pub(crate) fn new(pairs: &'a mut [Bucket<K, V>], indices: Unique<Indices>) -> Self {
+        let inner = indices.as_inner();
+        assert!(inner.is_empty() || *indices.last().unwrap() < pairs.len());
+        Self { pairs, indices }
+    }
+
+    // /// Indices should be in bounds for pairs, **panics** can occur otherwise.
+    // ///
+    // /// SAFETY: `indices` must be unique
+    // pub(crate) unsafe fn new_unchecked(pairs: &'a mut [Bucket<K, V>], indices: Indices) -> Self {
+    //     Self {
+    //         pairs,
+    //         indices,
+    //         __non_exhaustive: (),
+    //     }
+    // }
+
+    pub(crate) fn empty() -> Self {
+        // SAFETY: no access will ever be actually performed
+        Self {
+            pairs: Default::default(),
+            indices: Default::default(),
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    fn debug_assert_invariants(&self) {}
+
+    #[cfg(debug_assertions)]
+    #[track_caller]
+    fn debug_assert_invariants(&self) {
+        use crate::util::is_unique;
+
+        debug_assert!(is_unique(&self.indices));
+        debug_assert!(self
+            .indices
+            .iter()
+            .max()
+            .map(|&i| i < self.pairs.len())
+            .unwrap_or(true));
+    }
+
+    /// Returns an iterator over all the pairs in this subset.
+    pub fn iter(&self) -> SubsetIter<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
+        SubsetIter::new(
+            self.pairs,
+            self.indices.as_inner().index_iter(internal::Guard),
+        )
+    }
+
+    /// Returns a mutable iterator over all the pairs in this subset.
+    pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
+        SubsetIterMut::new(
+            self.pairs,
+            self.indices.index_iter(internal::Guard),
+        )
+    }
+
+    /// Returns an iterator over all the keys in this subset.
+    ///
+    /// Note that the iterator yield one key for each pair.
+    /// That is there may be duplicate keys.
+    pub fn keys(&self) -> SubsetKeys<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
+        SubsetKeys::new(
+            self.pairs,
+            self.indices.as_inner().index_iter(internal::Guard),
+        )
+    }
+
+    /// Returns an iterator over all the values in this subset.
+    pub fn values(&self) -> SubsetValues<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
+        SubsetValues::new(
+            self.pairs,
+            self.indices.as_inner().index_iter(internal::Guard),
+        )
+    }
+
+    /// Returns a mutable iterator over all the values in this subset.
+    pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+        self.debug_assert_invariants();
+        SubsetValuesMut::new(self.pairs, self.indices.index_iter(internal::Guard))
+    }
+
+    /// Converts into a mutable iterator over all the values in this subset.
+    pub fn into_values(
+        self,
+    ) -> SubsetValuesMut<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
+        self.debug_assert_invariants();
+        SubsetValuesMut::new(self.pairs, self.indices.into_index_iter(internal::Guard))
+    }
+}
+
+impl<'a, K, V, Indices> fmt::Debug for SubsetMut<'a, K, V, Indices>
+where
+    K: fmt::Debug,
+    V: fmt::Debug,
+    Indices: fmt::Debug + SubsetIndexStorage,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("pairsMut")
+            // Print only pairs that are actually referred to by indices
+            .field("pairs", &self.iter())
+            .field("indices", &self.indices)
+            .finish()
+    }
+}
+
+impl<'a, K, V, Indices> IntoIterator for SubsetMut<'a, K, V, Indices>
+where
+    Indices: SubsetIndexStorage,
+{
+    type Item = (usize, &'a K, &'a mut V);
+    type IntoIter = SubsetIterMut<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.debug_assert_invariants();
+        SubsetIterMut::new(self.pairs, self.indices.into_index_iter(internal::Guard))
     }
 }
 
@@ -502,3 +649,129 @@ pub struct SubsetValues<'a, K, V, I> {
 }
 
 iter_methods!(SubsetValues<'a, K, V, I>, &'a V, index, pair, &pair.value);
+
+/// A mutable iterator over a subset of all the pairs in the [`IndexMultimap`].
+///
+/// This `struct` is created by the [`SubsetMut::values_mut`] method.
+/// See their documentation for more.
+///
+/// [`IndexMultimap`]: crate::IndexMultimap
+/// [`SubsetMut::values_mut`]: crate::multimap::SubsetMut::values_mut
+pub struct SubsetValuesMut<'a, K, V, I> {
+    // SAFETY: see SubsetIterMut's definition
+    inner: SubsetIterMut<'a, K, V, I>,
+}
+
+impl<'a, K, V, I> SubsetValuesMut<'a, K, V, I>
+where
+    I: Iterator<Item = usize>,
+{
+    #[inline]
+    pub(crate) fn new(pairs: &'a mut [Bucket<K, V>], indices: Unique<I>) -> Self {
+        Self {
+            inner: SubsetIterMut::new(pairs, indices),
+        }
+    }
+}
+
+impl<'a, K, V, I> Iterator for SubsetValuesMut<'a, K, V, I>
+where
+    K: 'a,
+    V: 'a,
+    I: Iterator<Item = usize>,
+{
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.inner.next() {
+            Some((_, _, v)) => Some(v),
+            None => None,
+        }
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        match self.inner.nth(n) {
+            Some((_, _, v)) => Some(v),
+            None => None,
+        }
+    }
+
+    fn last(self) -> Option<Self::Item>
+    where
+        Self: Sized,
+    {
+        match self.inner.last() {
+            Some((_, _, v)) => Some(v),
+            None => None,
+        }
+    }
+
+    fn count(self) -> usize
+    where
+        Self: Sized,
+    {
+        self.inner.count()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+
+    fn collect<B: FromIterator<Self::Item>>(self) -> B
+    where
+        Self: Sized,
+    {
+        self.inner.map(|(_, _, v)| v).collect()
+    }
+}
+
+impl<'a, K, V, I> DoubleEndedIterator for SubsetValuesMut<'a, K, V, I>
+where
+    K: 'a,
+    V: 'a,
+    I: Iterator<Item = usize> + DoubleEndedIterator,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self.inner.next_back() {
+            Some((_, _, v)) => Some(v),
+            None => None,
+        }
+    }
+
+    fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
+        match self.inner.nth_back(n) {
+            Some((_, _, v)) => Some(v),
+            None => None,
+        }
+    }
+}
+
+impl<'a, K, V, I> ExactSizeIterator for SubsetValuesMut<'a, K, V, I>
+where
+    K: 'a,
+    V: 'a,
+    I: Iterator<Item = usize> + ExactSizeIterator,
+{
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl<'a, K, V, I> FusedIterator for SubsetValuesMut<'a, K, V, I>
+where
+    K: 'a,
+    V: 'a,
+    I: Iterator<Item = usize> + FusedIterator,
+{
+}
+
+impl<K, V: fmt::Debug, I> fmt::Debug for SubsetValuesMut<'_, K, V, I>
+where
+    K: fmt::Debug,
+    V: fmt::Debug,
+    I: Iterator<Item = usize> + Clone,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}

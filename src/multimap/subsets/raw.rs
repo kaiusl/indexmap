@@ -6,165 +6,8 @@ use core::marker::PhantomData;
 
 use alloc::vec::Vec;
 
-use crate::{
-    util::{is_unique, is_unique_sorted},
-    Bucket,
-};
-
-use super::{SubsetIter, SubsetKeys, SubsetValues};
-
-/// Slice like construct over a subset of all the pairs in the [`IndexMultimap`]
-/// with mutable access to the values.
-///
-/// This `struct` is created by the [`IndexMultimap::get_mut`],
-/// [`OccupiedEntry::get_mut`], [`Entry::or_insert`] and other similar methods.
-/// See their documentation for more.
-///
-/// [`IndexMultimap`]: crate::IndexMultimap
-/// [`IndexMultimap::get_mut`]: crate::IndexMultimap::get_mut
-/// [`OccupiedEntry::get_mut`]: crate::multimap::OccupiedEntry::get_mut
-/// [`Entry::or_insert`]: crate::multimap::Entry::or_insert
-pub struct SubsetMut<'a, K, V, Indices> {
-    // ---
-    // See the comment on top of the super module (subsets.rs) for impl details
-    //
-    // # SAFETY
-    //
-    // * `indices` must be unique
-    //   This is required if we want to make .iter_mut() and other iterators safe
-    //   for end user. See the methods and [`SubsetIterMut`] for details.
-    // ---
-    pub(super) pairs: &'a mut [Bucket<K, V>],
-    pub(super) indices: Indices,
-    // Marker so we cannot construct it from other modules without
-    // going through the constructor methods
-    __non_exhaustive: (),
-}
-
-impl<'a, K, V, Indices> SubsetMut<'a, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
-    /// Indices should be in bounds for pairs, **panics** can occur otherwise.
-    ///
-    /// SAFETY: `indices` must be unique
-    pub(crate) unsafe fn new_unchecked(pairs: &'a mut [Bucket<K, V>], indices: Indices) -> Self {
-        Self {
-            pairs,
-            indices,
-            __non_exhaustive: (),
-        }
-    }
-
-    pub(crate) fn empty() -> Self {
-        // SAFETY: no access will ever be actually performed
-        Self {
-            pairs: Default::default(),
-            indices: Default::default(),
-            __non_exhaustive: (),
-        }
-    }
-
-    #[cfg(not(debug_assertions))]
-    #[inline(always)]
-    fn debug_assert_invariants(&self) {}
-
-    #[cfg(debug_assertions)]
-    #[track_caller]
-    fn debug_assert_invariants(&self) {
-        debug_assert!(is_unique(&self.indices));
-        debug_assert!(self
-            .indices
-            .iter()
-            .max()
-            .map(|&i| i < self.pairs.len())
-            .unwrap_or(true));
-    }
-
-    /// Returns an iterator over all the pairs in this subset.
-    pub fn iter(&self) -> SubsetIter<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
-        self.debug_assert_invariants();
-        SubsetIter::new(self.pairs, self.indices.index_iter(internal::Guard))
-    }
-
-    /// Returns a mutable iterator over all the pairs in this subset.
-    pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
-        self.debug_assert_invariants();
-        // SAFETY: Self's invariants are same as the iterator's
-        unsafe {
-            SubsetIterMut::new_unchecked(self.pairs, self.indices.index_iter(internal::Guard))
-        }
-    }
-
-    /// Returns an iterator over all the keys in this subset.
-    ///
-    /// Note that the iterator yield one key for each pair.
-    /// That is there may be duplicate keys.
-    pub fn keys(&self) -> SubsetKeys<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
-        self.debug_assert_invariants();
-        SubsetKeys::new(self.pairs, self.indices.index_iter(internal::Guard))
-    }
-
-    /// Returns an iterator over all the values in this subset.
-    pub fn values(&self) -> SubsetValues<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
-        self.debug_assert_invariants();
-        SubsetValues::new(self.pairs, self.indices.index_iter(internal::Guard))
-    }
-
-    /// Returns a mutable iterator over all the values in this subset.
-    pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
-        self.debug_assert_invariants();
-        // SAFETY: Self's invariants are same as the iterator's
-        unsafe {
-            SubsetValuesMut::new_unchecked(self.pairs, self.indices.index_iter(internal::Guard))
-        }
-    }
-
-    /// Converts into a mutable iterator over all the values in this subset.
-    pub fn into_values(
-        self,
-    ) -> SubsetValuesMut<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
-        self.debug_assert_invariants();
-        // SAFETY: Self's invariants are same as the iterator's
-        unsafe {
-            SubsetValuesMut::new_unchecked(
-                self.pairs,
-                self.indices.into_index_iter(internal::Guard),
-            )
-        }
-    }
-}
-
-impl<'a, K, V, Indices> fmt::Debug for SubsetMut<'a, K, V, Indices>
-where
-    K: fmt::Debug,
-    V: fmt::Debug,
-    Indices: fmt::Debug + SubsetIndexStorage,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("pairsMut")
-            // Print only pairs that are actually referred to by indices
-            .field("pairs", &self.iter())
-            .field("indices", &self.indices)
-            .finish()
-    }
-}
-
-impl<'a, K, V, Indices> IntoIterator for SubsetMut<'a, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
-    type Item = (usize, &'a K, &'a mut V);
-    type IntoIter = SubsetIterMut<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.debug_assert_invariants();
-        // SAFETY: Self can only be created from the map, which only stores unique and valid indices
-        unsafe {
-            SubsetIterMut::new_unchecked(self.pairs, self.indices.into_index_iter(internal::Guard))
-        }
-    }
-}
+use crate::multimap::core::Unique;
+use crate::Bucket;
 
 /// A mutable iterator over a subset of all the pairs in the [`IndexMultimap`].
 ///
@@ -185,7 +28,7 @@ pub struct SubsetIterMut<'a, K, V, I> {
     // ---
     pairs_start: *mut Bucket<K, V>,
     pairs_len: usize,
-    indices: I,
+    indices: Unique<I>,
     // What self.pairs really is, constructors should take this to bind the lifetime properly
     _marker: PhantomData<&'a mut [Bucket<K, V>]>,
 }
@@ -194,17 +37,7 @@ impl<'a, K, V, I> SubsetIterMut<'a, K, V, I>
 where
     I: Iterator<Item = usize>,
 {
-    /// * `indices` should be in bounds for `pairs`,
-    ///   otherwise the iterator will panic
-    ///
-    /// # SAFETY
-    ///
-    /// * `indices` must be unique,
-    ///   otherwise iterator will return multiple unique references to the same value
-    pub(in crate::multimap) unsafe fn new_unchecked(
-        pairs: &'a mut [Bucket<K, V>],
-        indices: I,
-    ) -> Self {
+    pub(crate) fn new(pairs: &'a mut [Bucket<K, V>], indices: Unique<I>) -> Self {
         Self {
             pairs_start: pairs.as_mut_ptr(),
             pairs_len: pairs.len(),
@@ -346,143 +179,7 @@ where
     }
 }
 
-/// A mutable iterator over a subset of all the pairs in the [`IndexMultimap`].
-///
-/// This `struct` is created by the [`SubsetMut::values_mut`] method.
-/// See their documentation for more.
-///
-/// [`IndexMultimap`]: crate::IndexMultimap
-/// [`SubsetMut::values_mut`]: crate::multimap::SubsetMut::values_mut
-pub struct SubsetValuesMut<'a, K, V, I> {
-    // SAFETY: see SubsetIterMut's definition
-    inner: SubsetIterMut<'a, K, V, I>,
-}
-
-impl<'a, K, V, I> SubsetValuesMut<'a, K, V, I>
-where
-    I: Iterator<Item = usize>,
-{
-    /// * `indices` should be in bounds for `pairs`,
-    ///   otherwise the iterator will panic
-    ///
-    /// # SAFETY
-    ///
-    /// * `indices` must be unique,
-    ///   otherwise iterator will return multiple unique references to the same value
-    pub(in crate::multimap) unsafe fn new_unchecked(
-        pairs: &'a mut [Bucket<K, V>],
-        indices: I,
-    ) -> Self {
-        Self {
-            // SAFETY: we forward the requirements
-            inner: unsafe { SubsetIterMut::new_unchecked(pairs, indices) },
-        }
-    }
-}
-
-impl<'a, K, V, I> Iterator for SubsetValuesMut<'a, K, V, I>
-where
-    K: 'a,
-    V: 'a,
-    I: Iterator<Item = usize>,
-{
-    type Item = &'a mut V;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.inner.next() {
-            Some((_, _, v)) => Some(v),
-            None => None,
-        }
-    }
-
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        match self.inner.nth(n) {
-            Some((_, _, v)) => Some(v),
-            None => None,
-        }
-    }
-
-    fn last(self) -> Option<Self::Item>
-    where
-        Self: Sized,
-    {
-        match self.inner.last() {
-            Some((_, _, v)) => Some(v),
-            None => None,
-        }
-    }
-
-    fn count(self) -> usize
-    where
-        Self: Sized,
-    {
-        self.inner.count()
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
-    }
-
-    fn collect<B: FromIterator<Self::Item>>(self) -> B
-    where
-        Self: Sized,
-    {
-        self.inner.map(|(_, _, v)| v).collect()
-    }
-}
-
-impl<'a, K, V, I> DoubleEndedIterator for SubsetValuesMut<'a, K, V, I>
-where
-    K: 'a,
-    V: 'a,
-    I: Iterator<Item = usize> + DoubleEndedIterator,
-{
-    fn next_back(&mut self) -> Option<Self::Item> {
-        match self.inner.next_back() {
-            Some((_, _, v)) => Some(v),
-            None => None,
-        }
-    }
-
-    fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
-        match self.inner.nth_back(n) {
-            Some((_, _, v)) => Some(v),
-            None => None,
-        }
-    }
-}
-
-impl<'a, K, V, I> ExactSizeIterator for SubsetValuesMut<'a, K, V, I>
-where
-    K: 'a,
-    V: 'a,
-    I: Iterator<Item = usize> + ExactSizeIterator,
-{
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-}
-
-impl<'a, K, V, I> FusedIterator for SubsetValuesMut<'a, K, V, I>
-where
-    K: 'a,
-    V: 'a,
-    I: Iterator<Item = usize> + FusedIterator,
-{
-}
-
-impl<K, V: fmt::Debug, I> fmt::Debug for SubsetValuesMut<'_, K, V, I>
-where
-    K: fmt::Debug,
-    V: fmt::Debug,
-    I: Iterator<Item = usize> + Clone,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.inner.fmt(f)
-    }
-}
-
-pub(super) mod internal {
+pub(crate) mod internal {
     pub struct Guard;
     pub trait Sealed {}
     pub struct Bounds<T>(T);
@@ -557,6 +254,7 @@ unsafe impl SubsetIndexStorage for alloc::vec::Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+    use crate::multimap::core::Unique;
     use crate::{util::is_unique, HashValue};
     use alloc::vec;
     use alloc::vec::Vec;
@@ -581,9 +279,9 @@ mod tests {
             bucket(2, 22),
             bucket(1, 14),
         ];
-        let indices = [0, 2, 3, 5];
+        let indices = unsafe { Unique::new_unchecked([0usize, 2, 3, 5].as_slice()) };
 
-        let _iter1 = unsafe { SubsetIterMut::new_unchecked(&mut pairs, indices.iter().copied()) };
+        let _iter1 = SubsetIterMut::new(&mut pairs, indices.slice_iter().copied());
         //println!("{:#?}", iter1);
         //println!("{:#?}", iter1);
     }
@@ -606,9 +304,9 @@ mod tests {
             bucket(2, 22),
             bucket(1, 14),
         ];
-        let indices = [0, 2, 3, 5];
+        let indices = unsafe { Unique::new_unchecked([0usize, 2, 3, 5].as_slice()) };
 
-        let iter1 = unsafe { SubsetIterMut::new_unchecked(&mut pairs, indices.iter().copied()) };
+        let iter1 = SubsetIterMut::new(&mut pairs, indices.slice_iter().copied());
         //println!("{iter1:#?}");
         //iter.clone();
         let items = iter1.collect::<Vec<_>>();
@@ -616,8 +314,7 @@ mod tests {
         assert!(is_unique(&items));
         assert!(is_unique(&values));
 
-        let mut iter2 =
-            unsafe { SubsetIterMut::new_unchecked(&mut pairs, indices.iter().copied()) };
+        let mut iter2 = SubsetIterMut::new(&mut pairs, indices.slice_iter().copied());
 
         //let b = items[0];
         let items = [

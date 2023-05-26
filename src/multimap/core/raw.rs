@@ -11,19 +11,19 @@ use core::ops::{self, Range};
 use core::ptr::{self, addr_of, addr_of_mut, NonNull};
 use core::slice;
 
-use crate::multimap::core::eq_index_last;
-use crate::util::{is_sorted, is_unique};
+use crate::multimap::core::update_index_last;
 use crate::TryReserveError;
 use crate::{
     map::Slice,
     multimap::{SubsetIter, SubsetIterMut, SubsetKeys, SubsetValues, SubsetValuesMut},
-    util::{is_sorted_and_unique, is_unique_sorted, replace_sorted, simplify_range},
+    util::{is_sorted_and_unique, is_unique_sorted, simplify_range},
     Equivalent,
 };
 
 use super::super::{Subset, SubsetMut};
 use super::{
-    equivalent, Bucket, Entry, HashValue, IndexMultimapCore, UniqueSortedIndices, VacantEntry,
+    equivalent, update_index, Bucket, Entry, HashValue, IndexMultimapCore, Unique, UniqueSorted,
+    VacantEntry,
 };
 use hashbrown::raw::RawTable;
 
@@ -35,7 +35,7 @@ type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
 ///
 /// `current_pairs` must not contain `new_pairs`
 pub(super) fn insert_bulk_no_grow<K, V, Indices>(
-    indices: &mut RawTable<UniqueSortedIndices<Indices>>,
+    indices: &mut RawTable<UniqueSorted<Indices>>,
     current_pairs: &[Bucket<K, V>],
     new_pairs: &[Bucket<K, V>],
 ) where
@@ -45,7 +45,7 @@ pub(super) fn insert_bulk_no_grow<K, V, Indices>(
     let current_num_pairs = current_pairs.len();
     debug_assert_eq!(
         // SAFETY: we have mutable reference to the table and buckets don't escape
-        unsafe { indices.iter().map(|a| a.as_ref().len()) }.sum::<usize>(),
+        unsafe { indices.iter().map(|a| a.as_ref().as_slice().len()) }.sum::<usize>(),
         current_num_pairs,
         "mismatch in the number of current pairs"
     );
@@ -66,84 +66,10 @@ pub(super) fn insert_bulk_no_grow<K, V, Indices>(
                 assert!(indices.capacity() > indices.len());
                 // SAFETY: we asserted that sufficient capacity exists for this pair and that this pair is not in the table
                 unsafe {
-                    indices.insert_no_grow(pair.hash.get(), Indices::one(pair_index).into());
+                    indices.insert_no_grow(pair.hash.get(), UniqueSorted::one(pair_index));
                 }
             }
         }
-    }
-}
-
-#[inline]
-pub(crate) fn update_index<Indices>(
-    table: &mut RawTable<UniqueSortedIndices<Indices>>,
-    hash: HashValue,
-    old: usize,
-    new: usize,
-) where
-    Indices: IndexStorage,
-{
-    // Index to `old` in the indices
-    let mut olds_index: usize = 0;
-    let indices = unsafe {
-        table
-            .get_mut(hash.get(), |indices| {
-                debug_assert!(
-                    is_sorted(indices.as_slice()),
-                    "expected indices to be sorted"
-                );
-                match indices.binary_search(&old) {
-                    Ok(i) => {
-                        olds_index = i;
-                        true
-                    }
-                    Err(_) => false,
-                }
-            })
-            .expect("index not found")
-            .as_mut_slice()
-    };
-
-    if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
-        // The position of the index cannot change
-        indices[olds_index] = new;
-    } else {
-        replace_sorted(indices, olds_index, new);
-        debug_assert!(is_sorted(indices));
-        debug_assert!(is_unique(indices));
-    }
-}
-
-/// Update the index old to new in indices table.
-/// Assumes that old is the last index in indices arrays.
-///
-/// This is used by swap_removes where we know that old is the very last index
-/// in the whole map and thus in any indices array as well.
-/// This avoids one binary search to find the position of old in indices array.
-#[inline]
-pub(crate) fn update_index_last<Indices>(
-    table: &mut RawTable<UniqueSortedIndices<Indices>>,
-    hash: HashValue,
-    old: usize,
-    new: usize,
-) where
-    Indices: IndexStorage,
-{
-    // Index to `old` in the indices
-    let indices = unsafe {
-        table
-            .get_mut(hash.get(), eq_index_last(old))
-            .expect("index not found")
-            .as_mut_slice()
-    };
-
-    debug_assert_eq!(indices.last(), Some(&old));
-    if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
-        // The position of the index cannot change
-        *indices.last_mut().unwrap() = new;
-    } else {
-        replace_sorted(indices, indices.len() - 1, new);
-        debug_assert!(is_sorted(indices));
-        debug_assert!(is_unique(indices));
     }
 }
 
@@ -155,7 +81,7 @@ unsafe fn bucket_as_mut<T>(bucket: &mut RawBucket<T>) -> &mut T {
 
 #[inline]
 pub(super) fn erase_index<Indices>(
-    table: &mut RawTable<UniqueSortedIndices<Indices>>,
+    table: &mut RawTable<UniqueSorted<Indices>>,
     hash: HashValue,
     index: usize,
 ) where
@@ -164,7 +90,7 @@ pub(super) fn erase_index<Indices>(
     // Cache the index in indices as we find the bucket,
     // so that we don't need to find it again for indices.remove below
     let mut index_in_indices = None;
-    let eq_index = |indices: &UniqueSortedIndices<Indices>| {
+    let eq_index = |indices: &UniqueSorted<Indices>| {
         debug_assert!(
             is_sorted_and_unique(indices.as_slice()),
             "expected indices to be sorted and unique"
@@ -199,7 +125,7 @@ pub(super) fn erase_index<Indices>(
 /// need to remove must be in the last position.
 #[inline]
 pub(super) fn erase_index_last<Indices>(
-    table: &mut RawTable<UniqueSortedIndices<Indices>>,
+    table: &mut RawTable<UniqueSorted<Indices>>,
     hash: HashValue,
     index: usize,
 ) where
@@ -221,7 +147,7 @@ pub(super) fn erase_index_last<Indices>(
     }
 }
 
-pub(crate) struct DebugIndices<'a, Indices>(pub &'a RawTable<UniqueSortedIndices<Indices>>);
+pub(crate) struct DebugIndices<'a, Indices>(pub &'a RawTable<UniqueSorted<Indices>>);
 impl<Indices> fmt::Debug for DebugIndices<'_, Indices>
 where
     Indices: fmt::Debug,
@@ -230,7 +156,7 @@ where
         // Use more readable output - each bucket is always one line
         // SAFETY: we're not letting any of the buckets escape this function
         let indices = unsafe { self.0.iter().map(|bucket| bucket.as_ref()) }
-            .map(|a| format!("{:?}", a.inner));
+            .map(|a| format!("{:?}", a.as_inner()));
         f.debug_list().entries(indices).finish()
     }
 }
@@ -303,16 +229,14 @@ where
         }
     }
 
-    pub(super) fn indices_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut UniqueSortedIndices<Indices>> {
+    pub(super) fn indices_mut(&mut self) -> impl Iterator<Item = &mut UniqueSorted<Indices>> {
         // SAFETY: we're not letting any of the buckets escape this function,
         // only the item references that are appropriately bound to `&mut self`.
         unsafe { self.indices.iter().map(|bucket| bucket.as_mut()) }
     }
 
     /// Return the raw bucket for the given index
-    fn find_index(&self, index: usize) -> RawBucket<UniqueSortedIndices<Indices>> {
+    fn find_index(&self, index: usize) -> RawBucket<UniqueSorted<Indices>> {
         // We'll get a "nice" bounds-check from indexing `self.pairs`,
         // and then we expect to find it in the table as well.
         let hash = self.pairs[index].hash.get();
@@ -366,99 +290,6 @@ where
         self.shrink_to(0);
         // SAFETY: we own the RawTable and don't let the bucket's escape
         unsafe { self.indices.iter().for_each(|a| a.as_mut().shrink_to_fit()) };
-    }
-
-    pub(crate) fn get_mut<Q>(
-        &mut self,
-        hash: HashValue,
-        key: &Q,
-    ) -> SubsetMut<'_, K, V, &'_ [usize]>
-    where
-        Q: ?Sized + Equivalent<K>,
-    {
-        let eq = equivalent(key, &self.pairs);
-        if let Some(indices) = self.indices.get(hash.get(), eq) {
-            self.debug_assert_indices(indices.as_slice());
-            // SAFETY: indices come from the map, thus must be valid for pairs and unique
-            unsafe { SubsetMut::new_unchecked(&mut self.pairs, indices.as_slice()) }
-        } else {
-            SubsetMut::empty()
-        }
-    }
-
-    pub(crate) fn drain<R>(&mut self, range: R) -> Drain<'_, K, V, Indices>
-    where
-        R: ops::RangeBounds<usize>,
-        K: Eq,
-    {
-        self.debug_assert_invariants();
-        let range = simplify_range(range, self.pairs.len());
-        self.erase_indices(range.start, range.end);
-        // SAFETY: simplify_range panics if given range is invalid for self.pairs
-        unsafe { Drain::new_unchecked(self, range) }
-    }
-
-    /// Remove an entry by shifting all entries that follow it
-    pub(crate) fn shift_remove<Q>(
-        &mut self,
-        hash: HashValue,
-        key: &Q,
-    ) -> Option<ShiftRemove<'_, K, V, Indices>>
-    where
-        Q: ?Sized + Equivalent<K>,
-        K: Eq,
-    {
-        let eq = equivalent(key, &self.pairs);
-        match self.indices.remove_entry(hash.get(), eq) {
-            Some(indices) => {
-                // SAFETY: self upholds all the invariant needed
-                let pairs = unsafe { self.shift_remove_finish_collect(indices) };
-                Some(pairs)
-            }
-            None => None,
-        }
-    }
-
-    /// Remove all the entries at given indices by shifting all entries that follow them
-    ///
-    /// The index should already be removed from `self.indices`.
-    ///     
-    /// # Safety
-    ///
-    /// * indices must be valid to index into self.pairs
-    /// * indices must be unique and sorted
-    /// * indices must be non-empty
-    pub(super) unsafe fn shift_remove_finish_collect(
-        &mut self,
-        indices: UniqueSortedIndices<Indices>,
-    ) -> ShiftRemove<'_, K, V, Indices>
-    where
-        K: Eq,
-    {
-        debug_assert!(is_sorted_and_unique(&indices.as_slice()));
-        self.decrement_indices_batched(&indices.as_slice());
-        unsafe { ShiftRemove::new_unchecked(self, indices) }
-    }
-
-    /// Remove an entry by swapping it with the last
-    pub(crate) fn swap_remove<Q>(
-        &mut self,
-        hash: HashValue,
-        key: &Q,
-    ) -> Option<SwapRemove<'_, K, V, Indices>>
-    where
-        Q: ?Sized + Equivalent<K>,
-        K: Eq,
-    {
-        let eq = equivalent(key, &self.pairs);
-        match self.indices.remove_entry(hash.get(), eq) {
-            Some(indices) => {
-                // SAFETY: self upholds all the invariant needed
-                let removed = unsafe { SwapRemove::new_unchecked(self, indices) };
-                Some(removed)
-            }
-            None => None,
-        }
     }
 
     /// Decrement all indices in the range `start..end` by `amount`.
@@ -555,7 +386,7 @@ pub struct OccupiedEntry<'a, K, V, Indices> {
     // which means that the internal raw table won't reallocate and the bucket
     // must be alive for the lifetime of self.
     map: &'a mut IndexMultimapCore<K, V, Indices>,
-    raw_bucket: RawBucket<UniqueSortedIndices<Indices>>,
+    raw_bucket: RawBucket<UniqueSorted<Indices>>,
     hash: HashValue,
     key: Option<K>,
 }
@@ -575,7 +406,7 @@ where
     #[inline]
     pub(super) unsafe fn new_unchecked(
         map: &'a mut IndexMultimapCore<K, V, Indices>,
-        bucket: RawBucket<UniqueSortedIndices<Indices>>,
+        bucket: RawBucket<UniqueSorted<Indices>>,
         hash: HashValue,
         key: Option<K>,
     ) -> Self {
@@ -750,10 +581,7 @@ where
     {
         // SAFETY: This is safe because it can only happen once (self is consumed)
         // and bucket has not been removed from the map.indices
-        let indices = unsafe { self.map.indices.remove(self.raw_bucket) };
-        self.map.debug_assert_indices(indices.as_slice());
-        // SAFETY: self upholds all the invariants that are needed
-        unsafe { SwapRemove::new_unchecked(self.map, indices) }
+        unsafe { SwapRemove::new_raw(self.map, self.raw_bucket) }
     }
 
     /// Remove all the key-value pairs for this entry and
@@ -782,10 +610,7 @@ where
     {
         // SAFETY: This is safe because it can only happen once (self is consumed)
         // and bucket has not been removed from the map.indices
-        let indices = unsafe { self.map.indices.remove(self.raw_bucket) };
-        self.map.debug_assert_indices(indices.as_slice());
-        // SAFETY: self upholds all the invariants that are needed
-        unsafe { self.map.shift_remove_finish_collect(indices) }
+        unsafe { ShiftRemove::new_raw(self.map, self.raw_bucket) }
     }
 
     /// Returns an iterator over all the pairs in this entry.
@@ -800,11 +625,8 @@ where
     /// Returns a mutable iterator over all the pairs in this entry.
     pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V, Copied<slice::Iter<'_, usize>>> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        debug_assert!(is_unique_sorted(indices.as_slice()));
-        debug_assert!(indices.last().unwrap_or(&0) < &self.map.pairs.len());
-        // SAFETY: we have &mut map keep keeping the bucket stable
-        //  indices come from the map and must be unique, valid
-        unsafe { SubsetIterMut::new_unchecked(&mut self.map.pairs, indices.iter().copied()) }
+        let indices_iter = Unique::from(indices.slice_iter());
+        SubsetIterMut::new(&mut self.map.pairs, indices_iter.copied())
     }
 
     /// Returns an iterator over all the keys in this entry.
@@ -835,22 +657,15 @@ where
         let indices = unsafe { self.raw_bucket.as_ref() };
         debug_assert!(is_unique_sorted(indices.as_slice()));
         debug_assert!(indices.last().unwrap_or(&0) < &self.map.pairs.len());
-        // SAFETY: we have &mut map keep keeping the bucket stable
-        //  indices come from the map and must be unique, valid
-        unsafe { SubsetValuesMut::new_unchecked(&mut self.map.pairs, indices.iter().copied()) }
+        let indices_iter = Unique::from(indices.slice_iter());
+        SubsetValuesMut::new(&mut self.map.pairs, indices_iter.copied())
     }
 
     /// Converts into an iterator over all the values in this entry.
     pub fn into_values(self) -> SubsetValuesMut<'a, K, V, Copied<slice::Iter<'a, usize>>> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        debug_assert!(is_unique_sorted(indices.as_slice()));
-        debug_assert!(indices.last().unwrap_or(&0) < &self.map.pairs.len());
-        // SAFETY:
-        //  * we have &mut map keep keeping the bucket stable
-        //    SubsetValuesMut will take the &'a mut map.pairs and keep it,
-        //    keeping the map mutably borrowed for 'a
-        //  * indices come from the map, thus must be valid for pairs and unique
-        unsafe { SubsetValuesMut::new_unchecked(&mut self.map.pairs, indices.iter().copied()) }
+        let indices_iter = Unique::from(indices.slice_iter());
+        SubsetValuesMut::new(&mut self.map.pairs, indices_iter.copied())
     }
 
     /// Returns a slice like construct with all the values associated with this entry in the map.
@@ -864,24 +679,14 @@ where
     /// pair, see [`into_mut`](Self::into_mut).
     pub fn as_subset_mut(&mut self) -> SubsetMut<'_, K, V, &'_ [usize]> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        debug_assert!(is_unique_sorted(indices.as_slice()));
-        debug_assert!(indices.last().unwrap_or(&0) < &self.map.pairs.len());
-        // SAFETY: indices come from the map, thus must be valid for pairs and unique
-        unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, indices.as_slice()) }
+        SubsetMut::new(&mut self.map.pairs, indices.into())
     }
 
     /// Converts into  a slice like construct with all the values associated with
     /// this pair in the map, with a lifetime bound to the map itself.
     pub fn into_subset_mut(self) -> SubsetMut<'a, K, V, &'a [usize]> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        debug_assert!(is_unique_sorted(indices.as_slice()));
-        debug_assert!(indices.last().unwrap_or(&0) < &self.map.pairs.len());
-        // SAFETY:
-        //  * we have &mut map keep keeping the bucket stable
-        //    SubsetMut will take the &'a mut map.pairs and keep it,
-        //    keeping the map mutably borrowed for 'a
-        //  * indices come from the map, thus must be valid for pairs and unique
-        unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, indices.as_slice()) }
+        SubsetMut::new(&mut self.map.pairs, indices.into())
     }
 }
 
@@ -917,17 +722,11 @@ where
     type IntoIter = SubsetIterMut<'a, K, V, Copied<slice::Iter<'a, usize>>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        if cfg!(debug_assertions) {
-            let indices = unsafe { self.raw_bucket.as_ref() };
-            debug_assert!(is_unique_sorted(indices.as_slice()));
-            debug_assert!(indices.last().unwrap_or(&0) < &self.map.pairs.len());
-        }
-        unsafe {
-            SubsetIterMut::new_unchecked(
-                &mut self.map.pairs,
-                self.raw_bucket.as_ref().iter().copied(),
-            )
-        }
+        let indices = unsafe { self.raw_bucket.as_ref() };
+        debug_assert!(is_unique_sorted(indices.as_slice()));
+        debug_assert!(indices.last().unwrap_or(&0) < &self.map.pairs.len());
+        let indices_iter = Unique::from(indices.slice_iter());
+        SubsetIterMut::new(&mut self.map.pairs, indices_iter.copied())
     }
 }
 
@@ -988,15 +787,13 @@ where
 
     * indices must be already removed from map.indices
     * indices must be valid to index into map.pairs
-    * indices must be unique and sorted
-    * indices must be non-empty
     * on construction `map.pairs.len` must be set to 0
     * on construction we must take ownership of `map.indices`
       and leave an empty table in it's place
     --- */
     map: &'a mut IndexMultimapCore<K, V, Indices>,
     /// map.indices we took ownership of
-    indices_table: RawTable<UniqueSortedIndices<Indices>>,
+    indices_table: RawTable<UniqueSorted<Indices>>,
     /// The index of pair that was removed previously.
     prev_removed_idx: Option<usize>,
     /// The number of items that have been removed thus far.
@@ -1004,7 +801,7 @@ where
     /// The original length of `vec` prior to removing.
     orig_len: usize,
     /// The indices that will be removed.
-    indices_to_remove: Indices::IntoIter,
+    indices_to_remove: UniqueSorted<Indices::IntoIter>,
 }
 
 impl<'a, K: 'a, V: 'a, Indices: 'a> ShiftRemove<'a, K, V, Indices>
@@ -1012,17 +809,45 @@ where
     Indices: IndexStorage,
     K: Eq,
 {
+    pub(super) fn new<Q>(
+        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        hash: HashValue,
+        key: &Q,
+    ) -> Option<Self>
+    where
+        Q: ?Sized + Equivalent<K>,
+        K: Eq,
+    {
+        let eq = equivalent(key, &map.pairs);
+        match map.indices.remove_entry(hash.get(), eq) {
+            Some(indices) => Some(unsafe { Self::new_unchecked(map, indices) }),
+            None => None,
+        }
+    }
+
+    /// # Safety
+    ///
+    /// * `bucket` must be alive and from the `map`
+    pub(super) unsafe fn new_raw(
+        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        bucket: RawBucket<UniqueSorted<Indices>>,
+    ) -> Self {
+        unsafe {
+            let indices = map.indices.remove(bucket);
+            Self::new_unchecked(map, indices)
+        }
+    }
+
     /// # Safety
     ///
     /// See the comment in the type definition for safety.
-    pub(super) unsafe fn new_unchecked(
+    unsafe fn new_unchecked(
         map: &'a mut IndexMultimapCore<K, V, Indices>,
-        indices: UniqueSortedIndices<Indices>,
+        indices: UniqueSorted<Indices>,
     ) -> Self {
-        debug_assert!(!indices.is_empty());
-        debug_assert!(is_sorted_and_unique(&indices.as_slice()));
-        debug_assert!(*indices.last().unwrap() < map.pairs.len());
+        debug_assert!(indices.is_empty() || *indices.last().unwrap() < map.pairs.len());
 
+        map.decrement_indices_batched(indices.as_slice());
         let old_len = map.pairs.len();
         unsafe { map.pairs.set_len(0) };
         let indices_table = mem::take(&mut map.indices);
@@ -1032,7 +857,7 @@ where
             prev_removed_idx: None,
             del: 0,
             orig_len: old_len,
-            indices_to_remove: indices.inner.into_iter(),
+            indices_to_remove: indices.into_iter(),
         }
     }
 
@@ -1284,11 +1109,11 @@ where
       and leave an empty table in it's place
     --- */
     map: &'a mut IndexMultimapCore<K, V, Indices>,
-    indices_table: RawTable<UniqueSortedIndices<Indices>>,
+    indices_table: RawTable<UniqueSorted<Indices>>,
     /// The original length of `map.pairs` prior to removing.
     orig_len: usize,
     /// Indices that need to be removed from `map.pairs`.
-    indices_to_remove: UniqueSortedIndices<Indices>,
+    indices_to_remove: UniqueSorted<Indices>,
     /// `0..indices.len()`, used to index into `self.indices` to get indices to remove
     iter_forward: Range<usize>,
     /// `0..indices.len() - 1`, used to index into `self.indices` backwards to determine which index to swap with
@@ -1305,15 +1130,44 @@ where
     Indices: IndexStorage,
     K: Eq,
 {
+    pub(super) fn new<Q>(
+        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        hash: HashValue,
+        key: &Q,
+    ) -> Option<Self>
+    where
+        Q: ?Sized + Equivalent<K>,
+        K: Eq,
+    {
+        let eq = equivalent(key, &map.pairs);
+        match map.indices.remove_entry(hash.get(), eq) {
+            Some(indices) => Some(unsafe { Self::new_unchecked(map, indices) }),
+            None => None,
+        }
+    }
+
+    /// # Safety
+    ///
+    /// * `bucket` must be alive and from the `map`
+    pub(super) unsafe fn new_raw(
+        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        bucket: RawBucket<UniqueSorted<Indices>>,
+    ) -> Self {
+        unsafe {
+            let indices = map.indices.remove(bucket);
+            Self::new_unchecked(map, indices)
+        }
+    }
+
     /// # Safety
     ///
     /// See the comment in the type definition for safety.
-    pub(super) unsafe fn new_unchecked(
+    unsafe fn new_unchecked(
         map: &'a mut IndexMultimapCore<K, V, Indices>,
-        indices: UniqueSortedIndices<Indices>,
+        indices: UniqueSorted<Indices>,
     ) -> Self {
         debug_assert!(!indices.is_empty());
-        debug_assert!(is_sorted_and_unique(&indices.as_slice()));
+        debug_assert!(is_sorted_and_unique(indices.as_slice()));
         debug_assert!(*indices.last().unwrap() < map.pairs.len());
 
         let orig_len = map.pairs.len();
@@ -1516,7 +1370,7 @@ where
                 .field("map", &self.map)
                 .field("indices_table", &DebugIndices(&self.indices_table))
                 .field("orig_len", &self.orig_len)
-                .field("indices", &self.indices_to_remove.inner)
+                .field("indices", &self.indices_to_remove.as_inner())
                 .field("iter_forward", &self.iter_forward)
                 .field("iter_backward", &self.iter_backward)
                 .field("total_iter", &self.total_iter)
@@ -1565,7 +1419,7 @@ where
     /// Pointer to map.
     map: NonNull<IndexMultimapCore<K, V, Indices>>,
     /// map.indices
-    indices_table: RawTable<UniqueSortedIndices<Indices>>,
+    indices_table: RawTable<UniqueSorted<Indices>>,
     // Index of first item that's drained
     start: usize,
     /// Index of tail to preserve
@@ -1597,20 +1451,19 @@ where
     K: Eq,
     Indices: IndexStorage,
 {
-    /// # SAFETY
-    ///
-    /// * range must be in bounds for map.pairs
-    /// * range must have start <= end
-    pub(super) unsafe fn new_unchecked(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
-        range: Range<usize>,
-    ) -> Self {
+    pub(super) fn new<R>(map: &'a mut IndexMultimapCore<K, V, Indices>, range: R) -> Self
+    where
+        R: ops::RangeBounds<usize>,
+        K: Eq,
+    {
+        let range = simplify_range(range, map.pairs.len());
+        map.erase_indices(range.start, range.end);
+
         let indices_table = mem::take(&mut map.indices);
         let len = map.pairs.len();
         let Range { start, end } = range;
-        debug_assert!(start <= end);
-        debug_assert!(end <= len);
 
+        // SAFETY: simplify_range panics if given range is invalid for self.pairs
         unsafe {
             map.pairs.set_len(0);
             // Convert to pointer early
@@ -2049,8 +1902,6 @@ unsafe impl IndexStorage for Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-
     use super::*;
 
     // #[test]
