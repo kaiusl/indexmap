@@ -7,162 +7,92 @@
 //!
 //! However, we should probably not let this show in the public API or docs.
 
+mod indices;
 mod raw;
 
 use alloc::format;
-use core::iter::FusedIterator;
+use core::fmt;
 use core::ops;
-use core::{fmt, slice};
 
 use hashbrown::raw::RawTable;
 
-use self::raw::{update_index, update_index_last};
+pub(crate) use self::indices::{Unique, UniqueSorted};
 pub use self::raw::{Drain, IndexStorage, OccupiedEntry, ShiftRemove, SwapRemove};
 use super::{Subset, SubsetMut};
 use crate::equivalent::Equivalent;
-use crate::util::{is_sorted, is_sorted_and_unique, is_unique, is_unique_sorted, replace_sorted};
+use crate::util::{is_sorted, is_sorted_and_unique, is_unique_sorted};
 use crate::vec::Vec;
 use crate::{Bucket, HashValue, TryReserveError};
 
-#[derive(Debug, Clone)]
-pub(crate) struct UniqueSortedIndices<Indices> {
-    inner: Indices,
-}
-
-#[allow(unsafe_code)]
-impl<Indices> UniqueSortedIndices<Indices>
-where
+#[inline]
+pub(crate) fn update_index<Indices>(
+    table: &mut RawTable<UniqueSorted<Indices>>,
+    hash: HashValue,
+    old: usize,
+    new: usize,
+) where
     Indices: IndexStorage,
 {
-    #[inline]
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            inner: Indices::with_capacity(capacity),
-        }
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-    
-    #[inline]
-    pub fn push(&mut self, v: usize) {
-        if let Some(last) = self.inner.last() {
-            if v <= *last {
-                panic!()
+    // Index to `old` in the indices
+    let mut olds_index: usize = 0;
+    let indices = table
+        .get_mut(hash.get(), |indices| {
+            debug_assert!(
+                is_sorted(indices.as_inner()),
+                "expected indices to be sorted"
+            );
+            match indices.binary_search(&old) {
+                Ok(i) => {
+                    olds_index = i;
+                    true
+                }
+                Err(_) => false,
             }
-        }
-        self.inner.push(v);
-    }
+        })
+        .expect("index not found");
+    indices.replace(olds_index, new);
+    // let indices = unsafe { indices.as_mut_slice() };
 
-    /// Unconditionally push a value to the end.
-    ///
-    /// # Safety
-    ///
-    /// `v` must be larger than any value currently in the structure
-    #[inline]
-    pub unsafe fn push_unchecked(&mut self, v: usize) {
-        self.inner.push(v)
-    }
-
-    #[inline]
-    pub fn first(&self) -> Option<&usize> {
-        self.as_slice().first()
-    }
-
-    #[inline]
-    pub fn last(&self) -> Option<&usize> {
-        self.as_slice().last()
-    }
-    
-    #[inline]
-    pub fn remove(&mut self, index: usize) -> usize {
-        self.inner.remove(index)
-    }
-
-    #[inline]
-    pub fn pop(&mut self) -> Option<usize> {
-        self.inner.pop()
-    }
-
-    #[inline]
-    pub fn retain<F>(&mut self, keep: F)
-    where
-        F: FnMut(&mut usize) -> bool,
-    {
-        self.inner.retain(keep);
-    }
-
-    #[inline]
-    pub fn binary_search(&self, x: &usize) -> Result<usize, usize> {
-        self.as_slice().binary_search(x)
-    }
-
-    #[inline]
-    pub fn contains(&self, x: &usize) -> bool {
-        self.inner.contains(x)
-    }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[usize] {
-        self.inner.as_slice()
-    }
-
-    #[inline]
-    pub unsafe fn as_mut_slice(&mut self) -> &mut [usize] {
-        self.inner.as_mut_slice()
-    }
-
-    #[inline]
-    pub fn iter(&self) -> slice::Iter<'_, usize> {
-        self.inner.iter()
-    }
-
-    pub fn replace(&mut self, old_index: usize, new: usize) -> usize {
-        // SAFETY: we keep the slice sorted and unique
-        // TODO: check uniqueness
-        let slice = unsafe { self.as_mut_slice() };
-        let new_sorted_pos = slice.partition_point(|a| a < &new);
-        let old = core::mem::replace(&mut slice[old_index], new);
-        use core::cmp::Ordering;
-        match old_index.cmp(&new_sorted_pos) {
-            Ordering::Less => slice[old_index..new_sorted_pos].rotate_left(1),
-            Ordering::Equal => {}
-            Ordering::Greater => slice[new_sorted_pos..=old_index].rotate_right(1),
-        }
-        old
-    }
-
-    #[inline]
-    pub fn shrink_to_fit(&mut self) {
-        self.inner.shrink_to_fit()
-    }
+    // if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
+    //     // The position of the index cannot change
+    //     indices[olds_index] = new;
+    // } else {
+    //     replace_sorted(indices, olds_index, new);
+    //     debug_assert!(is_sorted(indices));
+    //     debug_assert!(is_unique(indices));
+    // }
 }
 
-impl<Indices> ops::Index<usize> for UniqueSortedIndices<Indices>
-where
+/// Update the index old to new in indices table.
+/// Assumes that old is the last index in indices arrays.
+///
+/// This is used by swap_removes where we know that old is the very last index
+/// in the whole map and thus in any indices array as well.
+/// This avoids one binary search to find the position of old in indices array.
+#[inline]
+pub(crate) fn update_index_last<Indices>(
+    table: &mut RawTable<UniqueSorted<Indices>>,
+    hash: HashValue,
+    old: usize,
+    new: usize,
+) where
     Indices: IndexStorage,
 {
-    type Output = usize;
+    // Index to `old` in the indices
+    let indices = table
+        .get_mut(hash.get(), eq_index_last(old))
+        .expect("index not found");
+    indices.replace(indices.len() - 1, new);
 
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.inner[index]
-    }
-}
-
-impl<Indices> From<Indices> for UniqueSortedIndices<Indices>
-where
-    Indices: IndexStorage,
-{
-    fn from(value: Indices) -> Self {
-        Self { inner: value }
-    }
+    // debug_assert_eq!(indices.last(), Some(&old));
+    // if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
+    //     // The position of the index cannot change
+    //     *indices.last_mut().unwrap() = new;
+    // } else {
+    //     replace_sorted(indices, indices.len() - 1, new);
+    //     debug_assert!(is_sorted(indices));
+    //     debug_assert!(is_unique(indices));
+    // }
 }
 
 /// Core of the map that does not depend on S
@@ -188,15 +118,13 @@ pub(crate) struct IndexMultimapCore<K, V, Indices> {
     //
     // ---
     /// indices mapping from the entry hash to its index.
-    indices: RawTable<UniqueSortedIndices<Indices>>,
+    indices: RawTable<UniqueSorted<Indices>>,
     /// pairs is a dense vec of key-value pairs in their order.
     pairs: Vec<Bucket<K, V>>,
 }
 
 #[inline(always)]
-fn get_hash<K, V, Indices>(
-    pairs: &[Bucket<K, V>],
-) -> impl Fn(&UniqueSortedIndices<Indices>) -> u64 + '_
+fn get_hash<K, V, Indices>(pairs: &[Bucket<K, V>]) -> impl Fn(&UniqueSorted<Indices>) -> u64 + '_
 where
     Indices: IndexStorage,
 {
@@ -209,7 +137,7 @@ where
 fn equivalent<'a, K, V, Q, Indices>(
     key: &'a Q,
     pairs: &'a [Bucket<K, V>],
-) -> impl Fn(&UniqueSortedIndices<Indices>) -> bool + 'a
+) -> impl Fn(&UniqueSorted<Indices>) -> bool + 'a
 where
     Q: ?Sized + Equivalent<K>,
     Indices: IndexStorage,
@@ -219,14 +147,15 @@ where
     move |indices| Q::equivalent(key, &pairs[indices[0]].key)
 }
 
+#[allow(dead_code)]
 #[inline]
-fn eq_index<Indices>(index: usize) -> impl Fn(&UniqueSortedIndices<Indices>) -> bool
+fn eq_index<Indices>(index: usize) -> impl Fn(&UniqueSorted<Indices>) -> bool
 where
     Indices: IndexStorage,
 {
     move |indices| {
         debug_assert!(
-            is_sorted(indices.as_slice()),
+            is_sorted(indices.as_inner()),
             "expected indices to be sorted"
         );
         indices.binary_search(&index).is_ok()
@@ -234,7 +163,7 @@ where
 }
 
 #[inline]
-fn eq_index_last<Indices>(index: usize) -> impl Fn(&UniqueSortedIndices<Indices>) -> bool
+fn eq_index_last<Indices>(index: usize) -> impl Fn(&UniqueSorted<Indices>) -> bool
 where
     Indices: IndexStorage,
 {
@@ -595,14 +524,14 @@ where
         hash: HashValue,
         key: K,
         value: V,
-    ) -> (usize, hashbrown::raw::Bucket<UniqueSortedIndices<Indices>>) {
+    ) -> (usize, hashbrown::raw::Bucket<UniqueSorted<Indices>>) {
         let i = self.pairs.len();
         let bucket = self
             .indices
-            .insert(hash.get(), Indices::one(i).into(), get_hash(&self.pairs));
+            .insert(hash.get(), UniqueSorted::one(i), get_hash(&self.pairs));
         self.pairs.push(Bucket { hash, key, value });
         #[allow(unsafe_code)]
-        self.debug_assert_indices(unsafe { bucket.as_ref().as_slice() });
+        self.debug_assert_indices(unsafe { bucket.as_ref().as_inner() });
         (i, bucket)
     }
 
@@ -615,7 +544,7 @@ where
         let indices = self
             .indices
             .get(hash.get(), eq)
-            .map(|i| i.as_slice())
+            .map(|i| i.as_inner().deref())
             .unwrap_or_default();
         if cfg!(debug_assertions) && !indices.is_empty() {
             self.debug_assert_indices(indices);
@@ -630,10 +559,27 @@ where
     {
         let eq = equivalent(key, &self.pairs);
         if let Some(indices) = self.indices.get(hash.get(), eq) {
-            self.debug_assert_indices(indices.as_slice());
-            Subset::new(&self.pairs, indices.as_slice())
+            self.debug_assert_indices(indices.as_inner());
+            Subset::new(&self.pairs, indices.as_inner())
         } else {
             Subset::new(&self.pairs, [].as_slice())
+        }
+    }
+
+    pub(crate) fn get_mut<Q>(
+        &mut self,
+        hash: HashValue,
+        key: &Q,
+    ) -> SubsetMut<'_, K, V, &'_ [usize]>
+    where
+        Q: ?Sized + Equivalent<K>,
+    {
+        let eq = equivalent(key, &self.pairs);
+        if let Some(indices) = self.indices.get(hash.get(), eq) {
+            self.debug_assert_indices(indices.as_inner());
+            SubsetMut::new(&mut self.pairs, indices.into())
+        } else {
+            SubsetMut::empty()
         }
     }
 
@@ -647,15 +593,30 @@ where
         match self.indices.get_mut(hash.get(), eq) {
             Some(indices) => {
                 indices.push(i);
-                debug_assert!(is_sorted_and_unique(indices.as_slice()));
+                debug_assert!(is_sorted_and_unique(indices.as_inner()));
             }
             None => {
                 self.indices
-                    .insert(hash.get(), Indices::one(i).into(), get_hash(&self.pairs));
+                    .insert(hash.get(), UniqueSorted::one(i), get_hash(&self.pairs));
             }
         }
         self.pairs.push(Bucket { hash, key, value });
         i
+    }
+
+    /// Remove an entry by shifting all entries that follow it
+    #[inline]
+    pub(crate) fn shift_remove<Q>(
+        &mut self,
+        hash: HashValue,
+        key: &Q,
+    ) -> Option<ShiftRemove<'_, K, V, Indices>>
+    where
+        Q: ?Sized + Equivalent<K>,
+        K: Eq,
+    {
+        self.debug_assert_invariants();
+        ShiftRemove::new(self, hash, key)
     }
 
     /// Remove an entry by shifting all entries that follow it
@@ -737,6 +698,21 @@ where
         // Change the sentinal index to its final position.
         update_index_last(&mut self.indices, from_hash, usize::MAX, to);
         self.debug_assert_invariants();
+    }
+
+    /// Remove an entry by swapping it with the last
+    #[inline]
+    pub(crate) fn swap_remove<Q>(
+        &mut self,
+        hash: HashValue,
+        key: &Q,
+    ) -> Option<SwapRemove<'_, K, V, Indices>>
+    where
+        Q: ?Sized + Equivalent<K>,
+        K: Eq,
+    {
+        self.debug_assert_invariants();
+        SwapRemove::new(self, hash, key)
     }
 
     /// Remove an entry by swapping it with the last
@@ -829,6 +805,16 @@ where
             self.rebuild_hash_table();
         }
         self.debug_assert_invariants();
+    }
+
+    #[inline]
+    pub(crate) fn drain<R>(&mut self, range: R) -> Drain<'_, K, V, Indices>
+    where
+        R: ops::RangeBounds<usize>,
+        K: Eq,
+    {
+        self.debug_assert_invariants();
+        Drain::new(self, range)
     }
 
     fn rebuild_hash_table(&mut self)
