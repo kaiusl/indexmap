@@ -1,16 +1,14 @@
 #![allow(unsafe_code)]
 
-use core::iter::FusedIterator;
-use core::{iter, mem, ops, slice};
+use ::core::iter::FusedIterator;
+use ::core::{iter, mem, ops, slice};
 
-use crate::multimap::subsets::internal;
-use crate::multimap::{SubsetIndexStorage, ToIndexIter};
-
+use super::subsets::{internal, SubsetIndexStorage, ToIndexIter};
 use super::IndexStorage;
 
 /// Wrapper that promises that `Inner` only contains unique and sorted items.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct UniqueSorted<Inner> {
+pub(super) struct UniqueSorted<Inner> {
     inner: Inner,
 }
 

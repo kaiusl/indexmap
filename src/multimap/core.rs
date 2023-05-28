@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 //! This is the core implementation that doesn't depend on the hasher at all.
 //!
 //! The methods of `IndexMapCore` don't use any Hash properties of K.
@@ -7,96 +9,35 @@
 //!
 //! However, we should probably not let this show in the public API or docs.
 
-mod indices;
-mod raw;
+use ::alloc::format;
+use ::alloc::vec::Vec;
+use ::core::iter::FusedIterator;
+use ::core::{fmt, ops};
+use core::cmp;
 
-use alloc::format;
-use core::fmt;
-use core::ops;
+use ::hashbrown::raw::RawTable;
 
-use hashbrown::raw::RawTable;
+pub use self::entry::{Entry, EntryIndices, OccupiedEntry, VacantEntry};
+pub use self::remove_iter::{Drain, ShiftRemove, SwapRemove};
+pub use self::subsets::{
+    Subset, SubsetIndexStorage, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
+    SubsetValuesMut, ToIndexIter,
+};
 
-pub(crate) use self::indices::{Unique, UniqueSorted};
-pub use self::raw::{Drain, IndexStorage, OccupiedEntry, ShiftRemove, SwapRemove};
-use super::{Subset, SubsetMut};
+use indices::{Unique, UniqueSorted};
+
 use crate::equivalent::Equivalent;
-use crate::util::{is_sorted, is_sorted_and_unique, is_unique_sorted};
-use crate::vec::Vec;
 use crate::{Bucket, HashValue, TryReserveError};
 
-#[inline]
-pub(crate) fn update_index<Indices>(
-    table: &mut RawTable<UniqueSorted<Indices>>,
-    hash: HashValue,
-    old: usize,
-    new: usize,
-) where
-    Indices: IndexStorage,
-{
-    // Index to `old` in the indices
-    let mut olds_index: usize = 0;
-    let indices = table
-        .get_mut(hash.get(), |indices| {
-            debug_assert!(
-                is_sorted(indices.as_inner()),
-                "expected indices to be sorted"
-            );
-            match indices.binary_search(&old) {
-                Ok(i) => {
-                    olds_index = i;
-                    true
-                }
-                Err(_) => false,
-            }
-        })
-        .expect("index not found");
-    indices.replace(olds_index, new);
-    // let indices = unsafe { indices.as_mut_slice() };
+mod entry;
+mod indices;
+mod remove_iter;
+mod subsets;
 
-    // if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
-    //     // The position of the index cannot change
-    //     indices[olds_index] = new;
-    // } else {
-    //     replace_sorted(indices, olds_index, new);
-    //     debug_assert!(is_sorted(indices));
-    //     debug_assert!(is_unique(indices));
-    // }
-}
-
-/// Update the index old to new in indices table.
-/// Assumes that old is the last index in indices arrays.
-///
-/// This is used by swap_removes where we know that old is the very last index
-/// in the whole map and thus in any indices array as well.
-/// This avoids one binary search to find the position of old in indices array.
-#[inline]
-pub(crate) fn update_index_last<Indices>(
-    table: &mut RawTable<UniqueSorted<Indices>>,
-    hash: HashValue,
-    old: usize,
-    new: usize,
-) where
-    Indices: IndexStorage,
-{
-    // Index to `old` in the indices
-    let indices = table
-        .get_mut(hash.get(), eq_index_last(old))
-        .expect("index not found");
-    indices.replace(indices.len() - 1, new);
-
-    // debug_assert_eq!(indices.last(), Some(&old));
-    // if indices.len() == 1 || usize::abs_diff(old, new) == 1 {
-    //     // The position of the index cannot change
-    //     *indices.last_mut().unwrap() = new;
-    // } else {
-    //     replace_sorted(indices, indices.len() - 1, new);
-    //     debug_assert!(is_sorted(indices));
-    //     debug_assert!(is_unique(indices));
-    // }
-}
+type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
 
 /// Core of the map that does not depend on S
-pub(crate) struct IndexMultimapCore<K, V, Indices> {
+pub(super) struct IndexMultimapCore<K, V, Indices> {
     // ---
     // IMPL DETAILS:
     //
@@ -121,6 +62,161 @@ pub(crate) struct IndexMultimapCore<K, V, Indices> {
     indices: RawTable<UniqueSorted<Indices>>,
     /// pairs is a dense vec of key-value pairs in their order.
     pairs: Vec<Bucket<K, V>>,
+}
+
+/// Inserts multiple pairs into a raw table without reallocating.
+///
+/// # Panics
+///
+/// * if there is not sufficient capacity already.
+/// * potentially panics if `indices` and `current_pairs` don't match.
+fn insert_bulk_no_grow<K, V, Indices>(
+    indices: &mut RawTable<UniqueSorted<Indices>>,
+    current_pairs: &[Bucket<K, V>],
+    new_pairs: &[Bucket<K, V>],
+) where
+    K: Eq,
+    Indices: IndexStorage,
+{
+    let current_num_pairs = current_pairs.len();
+    debug_assert_eq!(
+        // SAFETY: we have mutable reference to the table and buckets don't escape
+        unsafe { indices.iter().map(|a| a.as_ref().as_slice().len()) }.sum::<usize>(),
+        current_num_pairs,
+        "mismatch in the number of current pairs"
+    );
+
+    for (pair_index, pair) in (current_num_pairs..).zip(new_pairs) {
+        match indices.get_mut(pair.hash.get(), |indices| {
+            let i = indices[0];
+            if i < current_num_pairs {
+                current_pairs[i].key == pair.key
+            } else {
+                new_pairs[i - current_num_pairs].key == pair.key
+            }
+        }) {
+            Some(indices) => indices.push(pair_index),
+            None => {
+                // Need to check every time as we don't know how many unique keys are in the `new_pairs`
+                // Cannot use `new_pairs.len()` as regular IndexMap does.
+                assert!(indices.capacity() > indices.len());
+                // SAFETY: we asserted that sufficient capacity exists for this pair and that this pair is not in the table
+                unsafe {
+                    indices.insert_no_grow(pair.hash.get(), UniqueSorted::one(pair_index));
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+/// Binds the mutable borrow of T to the borrow of bucket.
+unsafe fn bucket_as_mut<T>(bucket: &mut RawBucket<T>) -> &mut T {
+    unsafe { bucket.as_mut() }
+}
+
+#[inline]
+fn erase_index<Indices>(table: &mut RawTable<UniqueSorted<Indices>>, hash: HashValue, index: usize)
+where
+    Indices: IndexStorage,
+{
+    // Cache the index in indices as we find the bucket,
+    // so that we don't need to find it again for indices.remove below
+    let mut index_in_indices = None;
+    let eq_index = |indices: &UniqueSorted<Indices>| match indices.binary_search(&index) {
+        Ok(i) => {
+            index_in_indices = Some(i);
+            true
+        }
+        Err(_) => false,
+    };
+    match table.find(hash.get(), eq_index) {
+        Some(mut bucket) => {
+            // SAFETY: we have &mut to table and thus to the bucket
+            let indices = unsafe { bucket_as_mut(&mut bucket) };
+            if indices.len() == 1 {
+                // SAFETY: the bucket cannot escape as &mut to indices is dropped
+                unsafe { table.erase(bucket) };
+            } else {
+                indices.remove(index_in_indices.expect("expected to find index"));
+            }
+        }
+        None => unreachable!("pair for index not found"),
+    }
+}
+
+/// Erase the index but assumes that it's last in the key's indices.
+/// Avoids the binary_searches of generic erase_index above.
+///
+/// Used by .pop() method, since we keep indices sorted and thus the index we
+/// need to remove must be in the last position.
+#[inline]
+fn erase_index_last<Indices>(
+    table: &mut RawTable<UniqueSorted<Indices>>,
+    hash: HashValue,
+    index: usize,
+) where
+    Indices: IndexStorage,
+{
+    match table.find(hash.get(), eq_index_last(index)) {
+        Some(mut bucket) => {
+            // SAFETY: we have &mut to table and thus to the bucket
+            let indices = unsafe { bucket_as_mut(&mut bucket) };
+            debug_assert_eq!(*indices.last().unwrap(), index);
+            if indices.len() == 1 {
+                // SAFETY: the bucket cannot escape as &mut to indices is dropped
+                unsafe { table.erase(bucket) };
+            } else {
+                indices.pop();
+            }
+        }
+        None => unreachable!("pair for index not found"),
+    }
+}
+
+#[inline]
+fn update_index<Indices>(
+    table: &mut RawTable<UniqueSorted<Indices>>,
+    hash: HashValue,
+    old: usize,
+    new: usize,
+) where
+    Indices: IndexStorage,
+{
+    // Index to `old` in the indices
+    let mut olds_index: usize = 0;
+    let indices = table
+        .get_mut(hash.get(), |indices| match indices.binary_search(&old) {
+            Ok(i) => {
+                olds_index = i;
+                true
+            }
+            Err(_) => false,
+        })
+        .expect("index not found");
+    indices.replace(olds_index, new);
+}
+
+/// Update the index old to new in indices table.
+/// Assumes that old is the last index in indices arrays.
+///
+/// This is used by swap_removes where we know that old is the very last index
+/// in the whole map and thus in any indices array as well.
+/// This avoids one binary search to find the position of old in indices array.
+#[inline]
+fn update_index_last<Indices>(
+    table: &mut RawTable<UniqueSorted<Indices>>,
+    hash: HashValue,
+    old: usize,
+    new: usize,
+) where
+    Indices: IndexStorage,
+{
+    // Index to `old` in the indices
+    let indices = table
+        .get_mut(hash.get(), eq_index_last(old))
+        .expect("index not found");
+    indices.replace(indices.len() - 1, new);
 }
 
 #[inline(always)]
@@ -153,13 +249,7 @@ fn eq_index<Indices>(index: usize) -> impl Fn(&UniqueSorted<Indices>) -> bool
 where
     Indices: IndexStorage,
 {
-    move |indices| {
-        debug_assert!(
-            is_sorted(indices.as_inner()),
-            "expected indices to be sorted"
-        );
-        indices.binary_search(&index).is_ok()
-    }
+    move |indices| indices.binary_search(&index).is_ok()
 }
 
 #[inline]
@@ -330,7 +420,7 @@ impl<K, V, Indices> IndexMultimapCore<K, V, Indices> {
     //const MAX_ENTRIES_CAPACITY: usize = (isize::MAX as usize) / mem::size_of::<Bucket<K, V>>();
 
     #[inline]
-    pub(crate) const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         IndexMultimapCore {
             indices: RawTable::new(),
             pairs: Vec::new(),
@@ -338,7 +428,7 @@ impl<K, V, Indices> IndexMultimapCore<K, V, Indices> {
     }
 
     #[inline]
-    pub(crate) fn with_capacity(keys: usize, pairs: usize) -> Self {
+    pub(super) fn with_capacity(keys: usize, pairs: usize) -> Self {
         IndexMultimapCore {
             indices: RawTable::with_capacity(keys),
             pairs: Vec::with_capacity(pairs),
@@ -346,27 +436,27 @@ impl<K, V, Indices> IndexMultimapCore<K, V, Indices> {
     }
 
     #[inline]
-    pub(crate) fn len_keys(&self) -> usize {
+    pub(super) fn len_keys(&self) -> usize {
         self.indices.len()
     }
 
     #[inline]
-    pub(crate) fn len_pairs(&self) -> usize {
+    pub(super) fn len_pairs(&self) -> usize {
         self.pairs.len()
     }
 
     #[inline]
-    pub(crate) fn capacity_keys(&self) -> usize {
+    pub(super) fn capacity_keys(&self) -> usize {
         self.indices.capacity()
     }
 
     #[inline]
-    pub(crate) fn capacity_pairs(&self) -> usize {
+    pub(super) fn capacity_pairs(&self) -> usize {
         self.pairs.capacity()
     }
 
     #[inline]
-    pub(crate) fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.indices.clear();
         self.pairs.clear();
     }
@@ -386,87 +476,25 @@ impl<K, V, Indices> IndexMultimapCore<K, V, Indices> {
         &mut self.pairs
     }
 }
+
 impl<K, V, Indices> IndexMultimapCore<K, V, Indices>
 where
     Indices: IndexStorage,
 {
-    pub(super) fn with_pairs<F>(&mut self, f: F)
-    where
-        F: FnOnce(&mut [Bucket<K, V>]),
-        K: Eq,
-    {
-        f(&mut self.pairs);
-        self.rebuild_hash_table();
-        self.debug_assert_invariants();
-    }
-
-    pub(crate) fn truncate(&mut self, len: usize)
-    where
-        K: Eq,
-    {
-        if len < self.len_pairs() {
-            self.erase_indices(len, self.pairs.len());
-            self.pairs.truncate(len);
-            self.debug_assert_invariants();
-        }
-    }
-
-    // #[cfg(feature = "rayon")]
-    // #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
-    // pub(crate) fn par_drain<R>(&mut self, range: R) -> rayon::vec::Drain<'_, Bucket<K, V>>
-    // where
-    //     K: Send + Eq,
-    //     V: Send,
-    //     R: ops::RangeBounds<usize>,
-    // {
-    //     use rayon::iter::ParallelDrainRange;
-    //     let range = simplify_range(range, self.entries.len());
-    //     self.erase_indices(range.start, range.end);
-    //     self.entries.par_drain(range)
-    // }
-
-    pub(crate) fn split_off(&mut self, at: usize) -> Self
-    where
-        K: Eq,
-    {
-        assert!(at <= self.pairs.len());
-        let unique_keys = self.len_keys();
-
-        self.erase_indices(at, self.pairs.len());
-        let pairs = self.pairs.split_off(at);
-
-        // TODO: We are most likely over allocating here.
-        // Options:
-        //    * keep as is and potentially over allocate
-        //    * count unique keys in entries and potentially perform a rather expensive calculation
-        //    * use RawTable::new and potentially allocate multiple times
-        //
-        // There cannot be more unique keys that was in the original map or there are new entries.
-        let capacity = Ord::min(unique_keys, pairs.len());
-        let mut indices = RawTable::with_capacity(capacity);
-        raw::insert_bulk_no_grow(&mut indices, &[], &pairs);
-        let new = Self { indices, pairs };
-
-        self.debug_assert_invariants();
-        new.debug_assert_invariants();
-
-        new
-    }
-
     /// Reserve capacity for `additional` more key-value pairs.
-    pub(crate) fn reserve(&mut self, additional_keys: usize, additional_pairs: usize) {
+    pub(super) fn reserve(&mut self, additional_keys: usize, additional_pairs: usize) {
         self.indices.reserve(additional_keys, get_hash(&self.pairs));
         self.pairs.reserve(additional_pairs);
     }
 
     /// Reserve capacity for `additional` more key-value pairs, without over-allocating.
-    pub(crate) fn reserve_exact(&mut self, additional_keys: usize, additional_pairs: usize) {
+    pub(super) fn reserve_exact(&mut self, additional_keys: usize, additional_pairs: usize) {
         self.indices.reserve(additional_keys, get_hash(&self.pairs));
         self.pairs.reserve_exact(additional_pairs);
     }
 
     /// Try to reserve capacity for `additional` more key-value pairs.
-    pub(crate) fn try_reserve(
+    pub(super) fn try_reserve(
         &mut self,
         additional_keys: usize,
         additional_pairs: usize,
@@ -480,7 +508,7 @@ where
     }
 
     /// Try to reserve capacity for `additional` more key-value pairs, without over-allocating.
-    pub(crate) fn try_reserve_exact(
+    pub(super) fn try_reserve_exact(
         &mut self,
         additional_keys: usize,
         additional_pairs: usize,
@@ -494,27 +522,111 @@ where
     }
 
     /// Shrink the capacity of the map with a lower bound
-    pub(crate) fn shrink_to(&mut self, min_capacity: usize) {
+    pub(super) fn shrink_to(&mut self, min_capacity: usize) {
         self.indices.shrink_to(min_capacity, get_hash(&self.pairs));
         self.pairs.shrink_to(min_capacity);
     }
 
-    /// Remove the last key-value pair
-    pub(crate) fn pop(&mut self) -> Option<(K, V)>
+    pub(super) fn shrink_to_fit(&mut self) {
+        self.shrink_to(0);
+        // SAFETY: we own the RawTable and don't let the bucket's escape
+        unsafe { self.indices.iter().for_each(|a| a.as_mut().shrink_to_fit()) };
+    }
+
+    /// Return the index in `entries` where an equivalent key can be found
+    pub(super) fn get_indices_of<Q>(&self, hash: HashValue, key: &Q) -> &[usize]
+    where
+        Q: ?Sized + Equivalent<K>,
+    {
+        let eq = equivalent(key, &self.pairs);
+        let indices = self
+            .indices
+            .get(hash.get(), eq)
+            .map(|i| i.as_slice())
+            .unwrap_or_default();
+        if cfg!(debug_assertions) && !indices.is_empty() {
+            self.debug_assert_indices(indices);
+        }
+
+        indices
+    }
+
+    pub(super) fn get<Q>(&self, hash: HashValue, key: &Q) -> Subset<'_, K, V, &'_ [usize]>
+    where
+        Q: ?Sized + Equivalent<K>,
+    {
+        let eq = equivalent(key, &self.pairs);
+        if let Some(indices) = self.indices.get(hash.get(), eq) {
+            self.debug_assert_indices(indices.as_inner());
+            Subset::new(&self.pairs, indices.as_inner())
+        } else {
+            Subset::empty()
+        }
+    }
+
+    pub(super) fn get_mut<Q>(
+        &mut self,
+        hash: HashValue,
+        key: &Q,
+    ) -> SubsetMut<'_, K, V, &'_ [usize]>
+    where
+        Q: ?Sized + Equivalent<K>,
+    {
+        let eq = equivalent(key, &self.pairs);
+        if let Some(indices) = self.indices.get(hash.get(), eq) {
+            self.debug_assert_indices(indices.as_inner());
+            SubsetMut::new(&mut self.pairs, indices.into())
+        } else {
+            SubsetMut::empty()
+        }
+    }
+
+    pub(super) fn entry(&mut self, hash: HashValue, key: K) -> Entry<'_, K, V, Indices>
     where
         K: Eq,
     {
-        if let Some(entry) = self.pairs.pop() {
-            let last_index = self.pairs.len();
-            // last_index must also be last in the key's indices,
-            // use erase_index_last which assumes that that's the case
-            // and avoids unnecessary binary searches.
-            raw::erase_index_last(&mut self.indices, entry.hash, last_index);
-            self.debug_assert_invariants();
-            Some((entry.key, entry.value))
-        } else {
-            None
+        Entry::new(self, hash, key)
+    }
+
+    fn indices_mut(&mut self) -> impl Iterator<Item = &mut UniqueSorted<Indices>> {
+        // SAFETY: we're not letting any of the buckets escape this function,
+        // only the item references that are appropriately bound to `&mut self`.
+        unsafe { self.indices.iter().map(|bucket| bucket.as_mut()) }
+    }
+
+    /// Return the raw bucket for the given index
+    ///
+    /// # Panics
+    ///
+    /// * If `index` is out of bounds for `self.pairs`
+    fn find_index(&self, index: usize) -> RawBucket<UniqueSorted<Indices>> {
+        // We'll get a "nice" bounds-check from indexing `self.pairs`,
+        // and then we expect to find it in the table as well.
+        let hash = self.pairs[index].hash.get();
+        self.indices
+            .find(hash, |i| i.contains(&index))
+            .expect("index not found")
+    }
+
+    /// Appends a new entry to the existing key, or insert the key.
+    pub(super) fn insert_append_full(&mut self, hash: HashValue, key: K, value: V) -> usize
+    where
+        K: Eq,
+    {
+        let i = self.pairs.len();
+        let eq = equivalent(&key, &self.pairs);
+        match self.indices.get_mut(hash.get(), eq) {
+            Some(indices) => {
+                // Cannot panic as none of the entries in `self.indices` can contain `i`
+                indices.push(i);
+            }
+            None => {
+                self.indices
+                    .insert(hash.get(), UniqueSorted::one(i), get_hash(&self.pairs));
+            }
         }
+        self.pairs.push(Bucket { hash, key, value });
+        i
     }
 
     /// Append a key-value pair, *without* checking whether it already exists,
@@ -535,78 +647,93 @@ where
         (i, bucket)
     }
 
-    /// Return the index in `entries` where an equivalent key can be found
-    pub(crate) fn get_indices_of<Q>(&self, hash: HashValue, key: &Q) -> &[usize]
-    where
-        Q: ?Sized + Equivalent<K>,
-    {
-        let eq = equivalent(key, &self.pairs);
-        let indices = self
-            .indices
-            .get(hash.get(), eq)
-            .map(|i| i.as_inner().deref())
-            .unwrap_or_default();
-        if cfg!(debug_assertions) && !indices.is_empty() {
-            self.debug_assert_indices(indices);
-        }
-
-        indices
-    }
-
-    pub(crate) fn get<Q>(&self, hash: HashValue, key: &Q) -> Subset<'_, K, V, &'_ [usize]>
-    where
-        Q: ?Sized + Equivalent<K>,
-    {
-        let eq = equivalent(key, &self.pairs);
-        if let Some(indices) = self.indices.get(hash.get(), eq) {
-            self.debug_assert_indices(indices.as_inner());
-            Subset::new(&self.pairs, indices.as_inner())
-        } else {
-            Subset::new(&self.pairs, [].as_slice())
-        }
-    }
-
-    pub(crate) fn get_mut<Q>(
-        &mut self,
-        hash: HashValue,
-        key: &Q,
-    ) -> SubsetMut<'_, K, V, &'_ [usize]>
-    where
-        Q: ?Sized + Equivalent<K>,
-    {
-        let eq = equivalent(key, &self.pairs);
-        if let Some(indices) = self.indices.get(hash.get(), eq) {
-            self.debug_assert_indices(indices.as_inner());
-            SubsetMut::new(&mut self.pairs, indices.into())
-        } else {
-            SubsetMut::empty()
-        }
-    }
-
-    /// Appends a new entry to the existing key, or insert the key.
-    pub(crate) fn insert_append_full(&mut self, hash: HashValue, key: K, value: V) -> usize
+    pub(super) fn reverse(&mut self)
     where
         K: Eq,
     {
-        let i = self.pairs.len();
-        let eq = equivalent(&key, &self.pairs);
-        match self.indices.get_mut(hash.get(), eq) {
-            Some(indices) => {
-                indices.push(i);
-                debug_assert!(is_sorted_and_unique(indices.as_inner()));
-            }
-            None => {
-                self.indices
-                    .insert(hash.get(), UniqueSorted::one(i), get_hash(&self.pairs));
+        self.pairs.reverse();
+
+        // No need to save hash indices, can easily calculate what they should
+        // be, given that this is an in-place reversal.
+        let len = self.pairs.len();
+        for indices in self.indices_mut() {
+            // SAFETY: Following keeps indices unique and sorted
+            unsafe {
+                let indices = indices.as_mut_slice();
+                for i in indices.iter_mut() {
+                    *i = len - *i - 1;
+                }
+                indices.reverse();
             }
         }
-        self.pairs.push(Bucket { hash, key, value });
-        i
+        self.debug_assert_invariants();
+    }
+
+    pub(super) fn sort_by<F>(&mut self, mut cmp: F)
+    where
+        F: FnMut(&K, &V, &K, &V) -> cmp::Ordering,
+        K: Eq,
+    {
+        self.pairs
+            .sort_by(move |a, b| cmp(&a.key, &a.value, &b.key, &b.value));
+        self.rebuild_hash_table();
+        self.debug_assert_invariants();
+    }
+
+    pub(super) fn sort_unstable_by<F>(&mut self, mut cmp: F)
+    where
+        F: FnMut(&K, &V, &K, &V) -> cmp::Ordering,
+        K: Eq,
+    {
+        self.pairs
+            .sort_unstable_by(move |a, b| cmp(&a.key, &a.value, &b.key, &b.value));
+        self.rebuild_hash_table();
+        self.debug_assert_invariants();
+    }
+
+    pub(super) fn sort_unstable_keys(&mut self)
+    where
+        K: Ord,
+    {
+        self.pairs
+            .sort_unstable_by(move |a, b| K::cmp(&a.key, &b.key));
+        self.rebuild_hash_table();
+        self.debug_assert_invariants();
+    }
+
+    pub(super) fn sort_by_cached_key<T, F>(&mut self, mut sort_key: F)
+    where
+        T: Ord,
+        F: FnMut(&K, &V) -> T,
+        K: Eq,
+    {
+        self.pairs
+            .sort_by_cached_key(move |a| sort_key(&a.key, &a.value));
+        self.rebuild_hash_table();
+        self.debug_assert_invariants();
+    }
+
+    /// Remove the last key-value pair
+    pub(super) fn pop(&mut self) -> Option<(K, V)>
+    where
+        K: Eq,
+    {
+        if let Some(entry) = self.pairs.pop() {
+            let last_index = self.pairs.len();
+            // last_index must also be last in the key's indices,
+            // use erase_index_last which assumes that that's the case
+            // and avoids unnecessary binary searches.
+            erase_index_last(&mut self.indices, entry.hash, last_index);
+            self.debug_assert_invariants();
+            Some((entry.key, entry.value))
+        } else {
+            None
+        }
     }
 
     /// Remove an entry by shifting all entries that follow it
     #[inline]
-    pub(crate) fn shift_remove<Q>(
+    pub(super) fn shift_remove<Q>(
         &mut self,
         hash: HashValue,
         key: &Q,
@@ -620,57 +747,141 @@ where
     }
 
     /// Remove an entry by shifting all entries that follow it
-    pub(crate) fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)>
+    pub(super) fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)>
     where
         K: Eq,
     {
         match self.pairs.get(index) {
             Some(pair) => {
-                raw::erase_index(&mut self.indices, pair.hash, index);
-                let entry = self.shift_remove_finish(index);
+                erase_index(&mut self.indices, pair.hash, index);
+                unsafe { self.decrement_indices(index + 1, self.pairs.len(), 1) };
+                // Use Vec::remove to actually remove the entry.
+                let Bucket { key, value, .. } = self.pairs.remove(index);
                 self.debug_assert_invariants();
-                Some(entry)
+                Some((key, value))
             }
             None => None,
         }
     }
 
-    /// Remove an entry by shifting all entries that follow it
-    ///
-    /// The index should already be removed from `self.indices`.
-    fn shift_remove_finish(&mut self, index: usize) -> (K, V) {
-        // We need to go over the keys in decreasing order such that lower indices are still valid
-        // There is probably a more efficient way of doing this:
-        // * maybe use retain on entries and keep track how many items were removed before given item
-        self.decrement_indices(index + 1, self.pairs.len(), 1);
-        // Use Vec::remove to actually remove the entry.
-        let Bucket { key, value, .. } = self.pairs.remove(index);
-        (key, value)
+    /// Remove an entry by swapping it with the last
+    #[inline]
+    pub(super) fn swap_remove<Q>(
+        &mut self,
+        hash: HashValue,
+        key: &Q,
+    ) -> Option<SwapRemove<'_, K, V, Indices>>
+    where
+        Q: ?Sized + Equivalent<K>,
+        K: Eq,
+    {
+        self.debug_assert_invariants();
+        SwapRemove::new(self, hash, key)
     }
 
-    /// Decrements indexes by variable amount determined by how many ranges have been before it,
-    /// (eg how many items were removed before it).
-    ///
-    /// * Indices need to be sorted in increasing order and be unique.
-    ///
-    /// Say we need to remove indices [2, 4, 7]
-    /// then
-    ///     indices [0, 1], don't get decremented
-    ///     indices [3] get decremented by 1
-    ///     indices [5, 6], get decremented by 2
-    ///     indices [8, ...] get decremented by 3
-    fn decrement_indices_batched(&mut self, indices: &[usize]) {
-        debug_assert!(is_unique_sorted(indices));
-        for (offset, w) in (1..).zip(indices.windows(2)) {
-            let (start, end) = (w[0], w[1]);
-            self.decrement_indices(start + 1, end, offset);
-        }
+    /// Remove an entry by swapping it with the last
+    pub(super) fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)>
+    where
+        K: Eq,
+    {
+        match self.pairs.get(index) {
+            Some(entry) => {
+                erase_index(&mut self.indices, entry.hash, index);
+                // use swap_remove, but then we need to update the index that points
+                // to the other entry that has to move
+                let removed_pair = self.pairs.swap_remove(index);
 
-        // Shift the tail after the last item
-        let last = *indices.last().unwrap();
-        if last < self.pairs.len() {
-            self.decrement_indices(last + 1, self.pairs.len(), indices.len());
+                // correct index that points to the entry that had to swap places
+                if let Some(moved_pair) = self.pairs.get(index) {
+                    // was not last element
+                    // examine new element in `index` and find it in indices
+                    let last = self.pairs.len();
+                    update_index_last(&mut self.indices, moved_pair.hash, last, index);
+                }
+
+                self.debug_assert_invariants();
+                Some((removed_pair.key, removed_pair.value))
+            }
+            None => None,
         }
+    }
+
+    pub(super) fn retain_in_order<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&mut K, &mut V) -> bool,
+        K: Eq,
+    {
+        let start_count = self.pairs.len();
+        self.pairs
+            .retain_mut(|pair| keep(&mut pair.key, &mut pair.value));
+        if self.pairs.len() < start_count {
+            self.rebuild_hash_table();
+        }
+        self.debug_assert_invariants();
+    }
+
+    #[inline]
+    pub(super) fn drain<R>(&mut self, range: R) -> Drain<'_, K, V, Indices>
+    where
+        R: ops::RangeBounds<usize>,
+        K: Eq,
+    {
+        self.debug_assert_invariants();
+        Drain::new(self, range)
+    }
+
+    pub(super) fn truncate(&mut self, len: usize)
+    where
+        K: Eq,
+    {
+        if len < self.len_pairs() {
+            self.erase_indices(len, self.pairs.len());
+            self.pairs.truncate(len);
+            self.debug_assert_invariants();
+        }
+    }
+
+    // #[cfg(feature = "rayon")]
+    // #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+    // pub(super) fn par_drain<R>(&mut self, range: R) -> rayon::vec::Drain<'_, Bucket<K, V>>
+    // where
+    //     K: Send + Eq,
+    //     V: Send,
+    //     R: ops::RangeBounds<usize>,
+    // {
+    //     use rayon::iter::ParallelDrainRange;
+    //     let range = simplify_range(range, self.entries.len());
+    //     self.erase_indices(range.start, range.end);
+    //     self.entries.par_drain(range)
+    // }
+
+    pub(super) fn split_off(&mut self, at: usize) -> Self
+    where
+        K: Eq,
+    {
+        assert!(at <= self.pairs.len());
+        let unique_keys = self.len_keys();
+
+        self.erase_indices(at, self.pairs.len());
+        let pairs = self.pairs.split_off(at);
+
+        // TODO: We are most likely over allocating here.
+        // Options:
+        //    * keep as is and potentially over allocate
+        //    * count unique keys in entries and potentially perform a rather expensive calculation
+        //    * use RawTable::new and potentially allocate multiple times
+        //
+        // There cannot be more unique keys that was in the original map or there are new entries.
+        let capacity = Ord::min(unique_keys, pairs.len());
+        let mut indices = RawTable::with_capacity(capacity);
+        // Cannot panic as we just created empty table with enough capacity.
+        insert_bulk_no_grow(&mut indices, &[], &pairs);
+        let new = Self { indices, pairs };
+
+        self.debug_assert_invariants();
+        new.debug_assert_invariants();
+
+        new
     }
 
     pub(super) fn move_index(&mut self, from: usize, to: usize)
@@ -688,10 +899,10 @@ where
         // Update all other indices and rotate the entry positions.
         #[allow(clippy::comparison_chain)]
         if from < to {
-            self.decrement_indices(from + 1, to + 1, 1);
+            unsafe { self.decrement_indices(from + 1, to + 1, 1) };
             self.pairs[from..=to].rotate_left(1);
         } else if to < from {
-            self.increment_indices(to, from);
+            unsafe { self.increment_indices(to, from) };
             self.pairs[to..=from].rotate_right(1);
         }
 
@@ -700,54 +911,46 @@ where
         self.debug_assert_invariants();
     }
 
-    /// Remove an entry by swapping it with the last
-    #[inline]
-    pub(crate) fn swap_remove<Q>(
-        &mut self,
-        hash: HashValue,
-        key: &Q,
-    ) -> Option<SwapRemove<'_, K, V, Indices>>
+    pub(super) fn swap_indices(&mut self, a: usize, b: usize)
     where
-        Q: ?Sized + Equivalent<K>,
         K: Eq,
     {
-        self.debug_assert_invariants();
-        SwapRemove::new(self, hash, key)
-    }
+        if a == b {
+            return;
+        }
+        // SAFETY: Can't take two `get_mut` references from one table, so we
+        // must use raw buckets to do the swap. This is still safe because we
+        // are locally sure they won't dangle, and we write them individually.
+        unsafe {
+            let raw_bucket_a = self.find_index(a);
+            let raw_bucket_b = self.find_index(b);
+            if core::ptr::eq(raw_bucket_a.as_ptr(), raw_bucket_b.as_ptr()) {
+                // both indices belong to the same entry,
+                // if we swap entries indices are still correct
+                // nothing to do
+            } else {
+                let indices_a = raw_bucket_a.as_mut();
+                let index_a = indices_a
+                    .iter()
+                    .position(|&i| i == a)
+                    .expect("index not found");
 
-    /// Remove an entry by swapping it with the last
-    pub(crate) fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)>
-    where
-        K: Eq,
-    {
-        match self.pairs.get(index) {
-            Some(entry) => {
-                raw::erase_index(&mut self.indices, entry.hash, index);
-                let removed = self.swap_remove_finish(index);
-                self.debug_assert_invariants();
-                Some(removed)
+                let indices_b = raw_bucket_b.as_mut();
+                let index_b = indices_b
+                    .iter()
+                    .position(|&i| i == b)
+                    .expect("index not found");
+                // Cannot panic because:
+                //   * indices contains only in bound indices
+                //   * new index can exist in the same indices if a and b belong
+                //     to the same entry, but we checked for that above
+                indices_a.replace(index_a, b);
+                indices_b.replace(index_b, a);
             }
-            None => None,
         }
-    }
+        self.pairs.swap(a, b);
 
-    /// Finish removing an entry by swapping it with the last
-    ///
-    /// The index should already be removed from `self.indices`.
-    fn swap_remove_finish(&mut self, index: usize) -> (K, V) {
-        // use swap_remove, but then we need to update the index that points
-        // to the other entry that has to move
-        let removed_pair = self.pairs.swap_remove(index);
-
-        // correct index that points to the entry that had to swap places
-        if let Some(moved_pair) = self.pairs.get(index) {
-            // was not last element
-            // examine new element in `index` and find it in indices
-            let last = self.pairs.len();
-            update_index_last(&mut self.indices, moved_pair.hash, last, index);
-        }
-
-        (removed_pair.key, removed_pair.value)
+        self.debug_assert_invariants();
     }
 
     /// Erase `start..end` from `indices`, and shift `end..` indices down to `start..`
@@ -773,14 +976,17 @@ where
             self.indices.clear();
 
             // Reinsert stable indices, then shifted indices
-            raw::insert_bulk_no_grow(&mut self.indices, &[], start_pairs);
-            raw::insert_bulk_no_grow(&mut self.indices, start_pairs, shifted_pairs);
+            // These cannot panic because:
+            //   * self.indices had more entries than we insert
+            //   * `current_pairs` match with what's in `self.indices` at each step
+            insert_bulk_no_grow(&mut self.indices, &[], start_pairs);
+            insert_bulk_no_grow(&mut self.indices, start_pairs, shifted_pairs);
         } else if erased + shifted < half_capacity {
             // Find each affected index, as there are few to adjust
 
             // Find erased indices
             for (i, entry) in (start..).zip(erased_pairs) {
-                raw::erase_index(&mut self.indices, entry.hash, i);
+                erase_index(&mut self.indices, entry.hash, i);
             }
 
             // Find shifted indices
@@ -793,36 +999,114 @@ where
         }
     }
 
-    pub(crate) fn retain_in_order<F>(&mut self, mut keep: F)
-    where
-        F: FnMut(&mut K, &mut V) -> bool,
-        K: Eq,
-    {
-        let start_count = self.pairs.len();
-        self.pairs
-            .retain_mut(|pair| keep(&mut pair.key, &mut pair.value));
-        if self.pairs.len() < start_count {
-            self.rebuild_hash_table();
+    /// Sweep the whole table to erase indices start..end
+    fn erase_indices_sweep(&mut self, start: usize, end: usize) {
+        // SAFETY: we're not letting any of the buckets escape this function
+        unsafe {
+            let offset = end - start;
+            for mut bucket in self.indices.iter() {
+                let indices = bucket_as_mut(&mut bucket);
+                indices.retain(|i| {
+                    if *i >= end {
+                        *i -= offset;
+                        true
+                    } else {
+                        *i < start
+                    }
+                });
+                if indices.len() == 0 {
+                    self.indices.erase(bucket);
+                }
+            }
         }
-        self.debug_assert_invariants();
     }
 
-    #[inline]
-    pub(crate) fn drain<R>(&mut self, range: R) -> Drain<'_, K, V, Indices>
-    where
-        R: ops::RangeBounds<usize>,
-        K: Eq,
-    {
-        self.debug_assert_invariants();
-        Drain::new(self, range)
-    }
-
+    /// # Panics
+    ///
+    /// * if there is not sufficient capacity in `self.indices` to insert
+    ///   indices of pairs in `self.pairs`
     fn rebuild_hash_table(&mut self)
     where
         K: Eq,
     {
         self.indices.clear();
-        raw::insert_bulk_no_grow(&mut self.indices, &[], &self.pairs);
+        insert_bulk_no_grow(&mut self.indices, &[], &self.pairs);
+    }
+
+    /// Decrements indexes by variable amount determined by how many ranges have been before it,
+    /// (eg how many items were removed before it).
+    ///
+    /// * Indices need to be sorted in increasing order and be unique.
+    ///
+    /// Say we need to remove indices [2, 4, 7]
+    /// then
+    ///     indices [0, 1], don't get decremented
+    ///     indices [3] get decremented by 1
+    ///     indices [5, 6], get decremented by 2
+    ///     indices [8, ...] get decremented by 3
+    unsafe fn decrement_indices_batched(&mut self, indices: &UniqueSorted<Indices>) {
+        for (offset, w) in (1..).zip(indices.windows(2)) {
+            let (start, end) = (w[0], w[1]);
+            unsafe { self.decrement_indices(start + 1, end, offset) };
+        }
+
+        // Shift the tail after the last item
+        let last = *indices.last().unwrap();
+        if last < self.pairs.len() {
+            unsafe { self.decrement_indices(last + 1, self.pairs.len(), indices.len()) };
+        }
+    }
+
+    /// Decrement all indices in the range `start..end` by `amount`.
+    ///
+    /// The index `start - amount` should not exist in `self.indices`.
+    /// All entries should still be in their original positions.
+    unsafe fn decrement_indices(&mut self, start: usize, end: usize, amount: usize) {
+        // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
+        let shifted_pairs = &self.pairs[start..end];
+        if shifted_pairs.len() > self.indices.buckets() / 2 {
+            // Shift all indices in range.
+            for indices in self.indices_mut() {
+                for i in unsafe { indices.as_mut_slice() } {
+                    if *i >= end {
+                        // early break as we go past end and our indices are sorted
+                        break;
+                    } else if start <= *i {
+                        *i -= amount;
+                    }
+                }
+            }
+        } else {
+            // Find each entry in range to shift its index.
+            for (i, entry) in (start..end).zip(shifted_pairs) {
+                update_index(&mut self.indices, entry.hash, i, i - amount);
+            }
+        }
+    }
+
+    /// Increment all indices in the range `start..end`.
+    ///
+    /// The index `end` should not exist in `self.indices`.
+    /// All entries should still be in their original positions.
+    unsafe fn increment_indices(&mut self, start: usize, end: usize) {
+        // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
+        let shifted_pairs = &self.pairs[start..end];
+        if shifted_pairs.len() > self.indices.buckets() / 2 {
+            // Shift all indices in range.
+            for indices in self.indices_mut() {
+                for i in unsafe { indices.as_mut_slice() } {
+                    if start <= *i && *i < end {
+                        *i += 1;
+                    }
+                }
+            }
+        } else {
+            // Find each entry in range to shift its index, updated in reverse so
+            // we never have duplicated indices that might have a hash collision.
+            for (i, entry) in (start..end).zip(shifted_pairs).rev() {
+                update_index(&mut self.indices, entry.hash, i, i + 1);
+            }
+        }
     }
 }
 
@@ -842,7 +1126,6 @@ where
         let hasher = get_hash(&other.pairs);
         self.indices.clone_from_with_hasher(&other.indices, hasher);
         if self.pairs.capacity() < other.pairs.len() {
-            // If we must resize, match the indices capacity.
             let additional = other.pairs.len() - self.pairs.len();
             self.pairs.reserve(additional);
         }
@@ -858,7 +1141,7 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IndexMapCore")
-            .field("indices", &raw::DebugIndices(&self.indices))
+            .field("indices", &DebugIndices(&self.indices))
             .field(
                 "entries",
                 &self
@@ -872,245 +1155,18 @@ where
     }
 }
 
-/// Entry for an existing key-value pair or a vacant location to
-/// insert one.
-pub enum Entry<'a, K, V, Indices> {
-    /// Existing slot with equivalent key.
-    Occupied(OccupiedEntry<'a, K, V, Indices>),
-    /// Vacant slot (no equivalent key in the map).
-    Vacant(VacantEntry<'a, K, V, Indices>),
-}
+struct DebugIndices<'a, Indices>(&'a RawTable<UniqueSorted<Indices>>);
 
-impl<'a, K, V, Indices> Entry<'a, K, V, Indices>
+impl<Indices> fmt::Debug for DebugIndices<'_, Indices>
 where
-    Indices: IndexStorage,
-{
-    /// Gets a reference to the entry's key, either within the map if occupied,
-    /// or else the new key that was used to find the entry.
-    pub fn key(&self) -> &K {
-        match self {
-            Entry::Occupied(entry) => entry.key(),
-            Entry::Vacant(entry) => entry.key(),
-        }
-    }
-
-    /// Returns the indices where the key-value pairs exists or will be inserted.
-    /// The return value behaves like `&[`[`usize`]`]`
-    pub fn indices(&self) -> EntryIndices<'_> {
-        match self {
-            Entry::Occupied(entry) => EntryIndices(SingleOrSlice::Slice(entry.indices())),
-            Entry::Vacant(entry) => EntryIndices(SingleOrSlice::Single([entry.index()])),
-        }
-    }
-
-    /// Modifies the entries if it is occupied.
-    pub fn and_modify<F>(self, f: F) -> Self
-    where
-        F: FnOnce(SubsetMut<'_, K, V, &'_ [usize]>),
-    {
-        match self {
-            Entry::Occupied(mut entry) => {
-                f(entry.as_subset_mut());
-                Entry::Occupied(entry)
-            }
-            x => x,
-        }
-    }
-
-    /// Inserts the given default value in the entry if it is vacant and returns
-    /// a mutable iterator over it.
-    /// That iterator will yield exactly one value.
-    /// Otherwise a mutable iterator over an already existent values is returned.
-    ///
-    /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert(self, default: V) -> OccupiedEntry<'a, K, V, Indices> {
-        match self {
-            Entry::Occupied(entry) => entry,
-            Entry::Vacant(entry) => entry.insert_entry(default),
-        }
-    }
-
-    /// Inserts the result of the `call` function in the entry if it is vacant
-    /// and returns a mutable iterator over it.
-    /// That iterator will yield exactly one value.
-    /// Otherwise a mutable iterator over an already existent values is returned.
-    ///
-    /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert_with<F>(self, call: F) -> OccupiedEntry<'a, K, V, Indices>
-    where
-        F: FnOnce() -> V,
-    {
-        match self {
-            Entry::Occupied(entry) => entry,
-            Entry::Vacant(entry) => entry.insert_entry(call()),
-        }
-    }
-
-    /// Inserts the result of the `call` function with a reference to the entry's
-    /// key if it is vacant, and returns a mutable iterator over it.
-    /// That iterator will yield exactly one value.
-    /// Otherwise a mutable iterator over an already existent values is returned.
-    ///
-    /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert_with_key<F>(self, call: F) -> OccupiedEntry<'a, K, V, Indices>
-    where
-        F: FnOnce(&K) -> V,
-    {
-        match self {
-            Entry::Occupied(entry) => entry,
-
-            Entry::Vacant(entry) => {
-                let value = call(&entry.key);
-                entry.insert_entry(value)
-            }
-        }
-    }
-
-    /// Inserts a default-constructed value in the entry if it is vacant and
-    /// returns a mutable iterator over it.
-    /// That iterator will yield exactly one value.
-    /// Otherwise a mutable iterator over an already existent values is returned.
-    ///
-    /// Computes in **O(1)** time (amortized average).
-    pub fn or_default(self) -> OccupiedEntry<'a, K, V, Indices>
-    where
-        V: Default,
-    {
-        match self {
-            Entry::Occupied(entry) => entry,
-            Entry::Vacant(entry) => entry.insert_entry(V::default()),
-        }
-    }
-
-    /// Insert provided `value` in the entry and return an occupied entry referring to it.
-    pub fn insert_append(self, value: V) -> OccupiedEntry<'a, K, V, Indices> {
-        match self {
-            Entry::Occupied(mut entry) => {
-                entry.insert_append_take_owned_key(value);
-                entry
-            }
-            Entry::Vacant(entry) => entry.insert_entry(value),
-        }
-    }
-}
-
-impl<K, V, Indices> fmt::Debug for Entry<'_, K, V, Indices>
-where
-    K: fmt::Debug,
-    V: fmt::Debug,
-    Indices: fmt::Debug + IndexStorage,
+    Indices: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Entry::Vacant(v) => f.debug_tuple(stringify!(Entry)).field(v).finish(),
-            Entry::Occupied(o) => f.debug_tuple(stringify!(Entry)).field(o).finish(),
-        }
-    }
-}
-
-/// Wrapper of the indices of an [`Entry`]. Behaves like a `&[`[`usize`]`]`.
-/// Always has at least one element.
-///
-/// Returned by the [`Entry::indices`] method. See it's documentation for more.
-pub struct EntryIndices<'a>(SingleOrSlice<'a, usize>);
-
-impl EntryIndices<'_> {
-    pub fn as_slice(&self) -> &[usize] {
-        match &self.0 {
-            SingleOrSlice::Single(v) => v.as_slice(),
-            SingleOrSlice::Slice(v) => v,
-        }
-    }
-}
-
-impl<'a> ops::Deref for EntryIndices<'a> {
-    type Target = [usize];
-
-    fn deref(&self) -> &Self::Target {
-        match &self.0 {
-            SingleOrSlice::Single(v) => v.as_slice(),
-            SingleOrSlice::Slice(v) => v,
-        }
-    }
-}
-
-impl fmt::Debug for EntryIndices<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self.as_slice()).finish()
-    }
-}
-
-impl PartialEq<&[usize]> for EntryIndices<'_> {
-    fn eq(&self, other: &&[usize]) -> bool {
-        &self.as_slice() == other
-    }
-}
-
-enum SingleOrSlice<'a, T> {
-    Single([T; 1]),
-    Slice(&'a [T]),
-}
-
-impl<K, V, Indices> fmt::Debug for OccupiedEntry<'_, K, V, Indices>
-where
-    K: fmt::Debug,
-    V: fmt::Debug,
-    Indices: IndexStorage + fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct(stringify!(OccupiedEntry))
-            .field("key", self.key())
-            .field("pairs", &self.as_subset().iter())
-            .finish()
-    }
-}
-
-/// A view into a vacant entry in a [`IndexMultimap`].
-/// It is part of the [`Entry`] enum.
-///
-/// [`IndexMultimap`]: super::IndexMultimap
-pub struct VacantEntry<'a, K, V, Indices> {
-    map: &'a mut IndexMultimapCore<K, V, Indices>,
-    hash: HashValue,
-    key: K,
-}
-
-impl<'a, K, V, Indices> VacantEntry<'a, K, V, Indices> {
-    /// Gets a reference to the key that was used to find the entry.
-    pub fn key(&self) -> &K {
-        &self.key
-    }
-
-    /// Takes ownership of the key, leaving the entry vacant.
-    pub fn into_key(self) -> K {
-        self.key
-    }
-
-    /// Returns the index where the key-value pair will be inserted.
-    pub fn index(&self) -> usize {
-        self.map.len_pairs()
-    }
-
-    /// Inserts the entry's key and the given value into the map,
-    /// and returns a mutable reference to the value.
-    pub fn insert(self, value: V) -> (usize, &'a K, &'a mut V)
-    where
-        Indices: IndexStorage,
-    {
-        let (i, _) = self.map.push(self.hash, self.key, value);
-        let entry = &mut self.map.pairs[i];
-        (i, &entry.key, &mut entry.value)
-    }
-}
-
-impl<K, V, Indices> fmt::Debug for VacantEntry<'_, K, V, Indices>
-where
-    K: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple(stringify!(VacantEntry))
-            .field(self.key())
-            .finish()
+        // Use more readable output - each bucket is always one line
+        // SAFETY: we're not letting any of the buckets escape this function
+        let indices = unsafe { self.0.iter().map(|bucket| bucket.as_ref()) }
+            .map(|a| format!("{:?}", a.as_inner()));
+        f.debug_list().entries(indices).finish()
     }
 }
 
@@ -1121,14 +1177,300 @@ fn assert_send_sync() {
     assert_send_sync::<Entry<'_, i32, i32, Vec<usize>>>();
 }
 
+/// Vector like types that can be used as a backing storage for [`IndexMultimap`]
+/// to hold the indices of one key.
+///
+/// # Safety
+///
+/// All methods must behave like the ones on [`alloc::vec::Vec`] (this includes panics).
+///
+/// This trait is `unsafe` because the safety of [`IndexMultimap`] depends on the
+/// fact that methods on this trait behave like the ones on [`alloc::vec::Vec`].
+/// However there is no feasibly way for us to check that they do behave as
+/// expected or guard against any funny business.
+///
+/// [`IndexMultimap`]: crate::IndexMultimap
+pub unsafe trait IndexStorage
+where
+    Self: ops::Deref<Target = [usize]> + ops::DerefMut,
+{
+    /// Creates `self` with one element.
+    ///
+    /// Must
+    fn one(v: usize) -> Self;
+    /// Creates `self` with capacity.
+    fn with_capacity(cap: usize) -> Self;
+    /// Pushes one element to `self`.
+    fn push(&mut self, v: usize);
+    /// Removes one element from `self`.
+    ///
+    /// Should ***panic*** if `index` is out of bounds.
+    fn remove(&mut self, index: usize) -> usize;
+    fn pop(&mut self) -> Option<usize>;
+    /// Retains only the elements specified by the predicate, passing a mutable reference to it.
+    fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&mut usize) -> bool;
+    /// Returns a view into `self` as a slice.
+    fn as_slice(&self) -> &[usize];
+    /// Returns a mutable view into `self` as a slice.
+    fn as_mut_slice(&mut self) -> &mut [usize];
+    fn shrink_to(&mut self, min_capacity: usize);
+    fn shrink_to_fit(&mut self);
+    fn reserve(&mut self, additional: usize);
+    fn reserve_exact(&mut self, additional: usize);
+    fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError>;
+    fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError>;
+
+    type IntoIter: Iterator<Item = usize> + DoubleEndedIterator + ExactSizeIterator + FusedIterator;
+    fn into_iter(self) -> Self::IntoIter;
+}
+
+unsafe impl IndexStorage for Vec<usize> {
+    #[inline]
+    fn one(v: usize) -> Self {
+        alloc::vec![v]
+    }
+
+    #[inline]
+    fn with_capacity(cap: usize) -> Self {
+        Vec::with_capacity(cap)
+    }
+
+    #[inline]
+    fn push(&mut self, v: usize) {
+        self.push(v)
+    }
+
+    #[inline]
+    fn remove(&mut self, i: usize) -> usize {
+        self.remove(i)
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Option<usize> {
+        self.pop()
+    }
+
+    #[inline]
+    fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&mut usize) -> bool,
+    {
+        self.retain_mut(f)
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[usize] {
+        self.as_slice()
+    }
+
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [usize] {
+        self.as_mut_slice()
+    }
+
+    #[inline]
+    fn shrink_to(&mut self, min_capacity: usize) {
+        self.shrink_to(min_capacity)
+    }
+
+    #[inline]
+    fn shrink_to_fit(&mut self) {
+        self.shrink_to_fit()
+    }
+
+    #[inline]
+    fn reserve(&mut self, additional: usize) {
+        self.reserve(additional)
+    }
+
+    #[inline]
+    fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.try_reserve(additional)
+            .map_err(TryReserveError::from_alloc)
+    }
+
+    #[inline]
+    fn reserve_exact(&mut self, additional: usize) {
+        self.reserve_exact(additional)
+    }
+
+    #[inline]
+    fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.try_reserve_exact(additional)
+            .map_err(TryReserveError::from_alloc)
+    }
+
+    type IntoIter = alloc::vec::IntoIter<usize>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIterator::into_iter(self)
+    }
+}
+
+// impl<const N: usize> IndexStorage for SmallVec<[usize; N]> {
+//     #[inline]
+//     fn one(v: usize) -> Self {
+//         smallvec::smallvec![v]
+//     }
+
+//     #[inline]
+//     fn with_capacity(cap: usize) -> Self {
+//         SmallVec::with_capacity(cap)
+//     }
+
+//     #[inline]
+//     fn push(&mut self, v: usize) {
+//         self.push(v)
+//     }
+//     #[inline]
+//     fn remove(&mut self, i: usize) -> usize {
+//         self.remove(i)
+//     }
+//     #[inline]
+//     fn retain<F>(&mut self, f: F)
+//     where
+//         F: FnMut(&mut usize) -> bool,
+//     {
+//         self.retain_mut(f)
+//     }
+
+//     fn as_slice(&self) -> &[usize] {
+//         self.as_slice()
+//     }
+
+//     fn as_mut_slice(&mut self) -> &mut [usize] {
+//         self.as_mut_slice()
+//     }
+//     fn shrink_to(&mut self, _min_capacity: usize) {}
+//     fn shrink_to_fit(&mut self) {
+//         self.shrink_to_fit()
+//     }
+
+//     fn reserve(&mut self, additional: usize) {
+//         self.reserve(additional)
+//     }
+
+//     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+//         self.try_reserve(additional).map_err(|e| match e {
+//             smallvec::CollectionAllocErr::CapacityOverflow => TryReserveError::capacity_overflow(),
+//             smallvec::CollectionAllocErr::AllocErr { layout } => TryReserveError::alloc(layout),
+//         })
+//     }
+
+//     fn reserve_exact(&mut self, additional: usize) {
+//         self.reserve_exact(additional)
+//     }
+
+//     fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+//         self.try_reserve_exact(additional).map_err(|e| match e {
+//             smallvec::CollectionAllocErr::CapacityOverflow => TryReserveError::capacity_overflow(),
+//             smallvec::CollectionAllocErr::AllocErr { layout } => TryReserveError::alloc(layout),
+//         })
+//     }
+// }
+
+// impl<const N: usize> IndexStorage for arrayvec::ArrayVec<usize, N> {
+//     #[inline]
+//     fn one(v: usize) -> Self {
+//         let mut s = arrayvec::ArrayVec::new();
+//         s.push(v);
+//         s
+//     }
+
+//     #[inline]
+//     fn with_capacity(cap: usize) -> Self {
+//         arrayvec::ArrayVec::new()
+//     }
+
+//     /// ***Panics*** if the vector is already full.
+//     #[inline]
+//     fn push(&mut self, v: usize) {
+//         self.push(v)
+//     }
+
+//     #[inline]
+//     fn remove(&mut self, i: usize) -> usize {
+//         self.remove(i)
+//     }
+//     #[inline]
+//     fn retain<F>(&mut self, f: F)
+//     where
+//         F: FnMut(&mut usize) -> bool,
+//     {
+//         self.retain(f)
+//     }
+
+//     fn as_slice(&self) -> &[usize] {
+//         self.as_slice()
+//     }
+
+//     fn as_mut_slice(&mut self) -> &mut [usize] {
+//         self.as_mut_slice()
+//     }
+//     fn shrink_to(&mut self, _min_capacity: usize) {}
+//     fn shrink_to_fit(&mut self) {}
+
+//     fn reserve(&mut self, additional: usize) {
+//         assert!(additional == 0, "cannot resize ArrayVec")
+//     }
+
+//     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+//         assert!(additional == 0, "cannot resize ArrayVec");
+//         Ok(())
+//     }
+
+//     fn reserve_exact(&mut self, additional: usize) {
+//         assert!(additional == 0, "cannot resize ArrayVec")
+//     }
+
+//     fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+//         assert!(additional == 0, "cannot resize ArrayVec");
+//         Ok(())
+//     }
+// }
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
-    //use hashbrown::raw::RawTable;
-
-    use crate::HashValue;
 
     use super::*;
+    //use hashbrown::raw::RawTable;
+    use crate::HashValue;
+
+    // #[test]
+    // fn insert_bulk_no_grow_test() {
+    //     fn bucket(k: usize) -> Bucket<usize, usize> {
+    //         Bucket {
+    //             hash: HashValue(k),
+    //             key: k,
+    //             value: k,
+    //         }
+    //     }
+
+    //     let mut table = RawTable::<Vec<usize>>::with_capacity(10);
+    //     let mut pairs = Vec::new();
+
+    //     let new_pairs = vec![bucket(1)];
+    //     insert_bulk_no_grow(&mut table, &pairs, &new_pairs);
+    //     pairs.extend(new_pairs);
+    //     assert_eq!(DebugIndices(&table), &[[0].as_slice()]);
+
+    //     let new_pairs = vec![bucket(1), bucket(1)];
+    //     insert_bulk_no_grow(&mut table, &pairs, &new_pairs);
+    //     pairs.extend(new_pairs);
+    //     assert_eq!(DebugIndices(&table), &[[0, 1, 2].as_slice()]);
+
+    //     let new_pairs = vec![bucket(2), bucket(1)];
+    //     insert_bulk_no_grow(&mut table, &pairs, &new_pairs);
+    //     assert_eq!(
+    //         DebugIndices(&table),
+    //         &[[0, 1, 2, 4].as_slice(), [3].as_slice()]
+    //     );
+    //     pairs.extend(new_pairs);
+    // }
 
     #[test]
     fn update_index_test() {

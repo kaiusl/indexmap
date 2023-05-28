@@ -1,12 +1,12 @@
-use core::fmt;
-use core::hash::{BuildHasher, Hash};
-use core::marker::PhantomData;
-use serde::de::{SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use ::core::fmt;
+use ::core::hash::{BuildHasher, Hash};
+use ::core::marker::PhantomData;
 
-use crate::IndexMultimap;
+use ::serde::de::{SeqAccess, Visitor};
+use ::serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::IndexStorage;
+use crate::IndexMultimap;
 
 /// Serializes an [`IndexMultimap`] as an ordered sequence.
 ///

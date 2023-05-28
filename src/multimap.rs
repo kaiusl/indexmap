@@ -1,3 +1,7 @@
+#![allow(clippy::question_mark)]
+#![allow(clippy::manual_map)]
+#![deny(unsafe_op_in_unsafe_fn)]
+
 //! `IndexMultimap` is a hash table where the iteration order of the key-value
 //! pairs is independent of the hash values of the keys and each key supports
 //! multiple associated values.
@@ -14,48 +18,39 @@
 //!
 //! These definitions are used throughout this module and it's submodules.
 
-#![allow(clippy::question_mark)]
-#![allow(clippy::manual_map)]
-
-mod core;
-mod slice;
-mod subsets;
-
-#[cfg(test)]
-mod tests;
+use ::alloc::boxed::Box;
+use ::alloc::vec::Vec;
+use ::core::cmp::Ordering;
+use ::core::fmt;
+use ::core::hash::{BuildHasher, Hash, Hasher};
+use ::core::ops::{self, Index, IndexMut, RangeBounds};
+#[cfg(feature = "std")]
+use ::std::collections::hash_map::RandomState;
 
 pub use self::core::{
-    Drain, Entry, EntryIndices, IndexStorage, OccupiedEntry, ShiftRemove, SwapRemove, VacantEntry,
-};
-pub use self::subsets::{
-    Subset, SubsetIndexStorage, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
-    SubsetValuesMut, ToIndexIter,
+    Drain, Entry, EntryIndices, IndexStorage, OccupiedEntry, ShiftRemove, Subset,
+    SubsetIndexStorage, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
+    SubsetValuesMut, SwapRemove, ToIndexIter, VacantEntry,
 };
 
+use self::core::IndexMultimapCore;
+use crate::equivalent::Equivalent;
 use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
+use crate::util::try_simplify_range;
+use crate::{Bucket, HashValue, TryReserveError};
 
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 pub mod serde_seq;
-
 // TODO: add rayon impls
 //#[cfg(feature = "rayon")]
 //#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 //pub use crate::rayon::multimap as rayon;
 
-use ::core::cmp::Ordering;
-use ::core::hash::{BuildHasher, Hash, Hasher};
-use ::core::ops::{Index, IndexMut, RangeBounds};
-use ::core::{fmt, ops};
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use std::collections::hash_map::RandomState;
-
-use self::core::IndexMultimapCore;
-use crate::equivalent::Equivalent;
-use crate::util::try_simplify_range;
-use crate::{Bucket, HashValue, TryReserveError};
+mod core;
+mod slice;
+#[cfg(test)]
+mod tests;
 
 /// A hash table where the iteration order of the key-value pairs is independent
 /// of the hash values of the keys and each key supports multiple associated values.
@@ -116,7 +111,7 @@ use crate::{Bucket, HashValue, TryReserveError};
 /// [`get_index()`]: Self::get_index
 #[cfg(feature = "std")]
 pub struct IndexMultimap<K, V, S = RandomState, Indices = Vec<usize>> {
-    pub(crate) core: IndexMultimapCore<K, V, Indices>,
+    core: IndexMultimapCore<K, V, Indices>,
     hash_builder: S,
 }
 #[cfg(not(feature = "std"))]
@@ -636,13 +631,11 @@ where
     ///
     /// Computes in **O(n log n + c)** time and **O(n)** space where *n* is
     /// the length of the map and *c* the capacity. The sort is stable.
-    pub fn sort_by<F>(&mut self, mut cmp: F)
+    pub fn sort_by<F>(&mut self, cmp: F)
     where
         F: FnMut(&K, &V, &K, &V) -> Ordering,
     {
-        self.core.with_pairs(move |entries| {
-            entries.sort_by(move |a, b| cmp(&a.key, &a.value, &b.key, &b.value));
-        });
+        self.core.sort_by(cmp)
     }
 
     /// Sort the key-value pairs of the map and return a by-value iterator of
@@ -666,9 +659,7 @@ where
     where
         K: Ord,
     {
-        self.core.with_pairs(move |entries| {
-            entries.sort_unstable_by(move |a, b| K::cmp(&a.key, &b.key));
-        });
+        self.core.sort_unstable_keys()
     }
 
     /// Sort the map's key-value pairs in place using the comparison function `cmp`, but
@@ -679,13 +670,11 @@ where
     ///
     /// Computes in **O(n log n + c)** time where *n* is
     /// the length of the map and *c* is the capacity. The sort is unstable.
-    pub fn sort_unstable_by<F>(&mut self, mut cmp: F)
+    pub fn sort_unstable_by<F>(&mut self, cmp: F)
     where
         F: FnMut(&K, &V, &K, &V) -> Ordering,
     {
-        self.core.with_pairs(move |entries| {
-            entries.sort_unstable_by(move |a, b| cmp(&a.key, &a.value, &b.key, &b.value));
-        });
+        self.core.sort_unstable_by(cmp);
     }
 
     /// Sort the key-value pairs of the map and return a by-value iterator of
@@ -710,14 +699,12 @@ where
     ///
     /// Computes in **O(m n + n log n + c)** time () and **O(n)** space, where the function is
     /// **O(m)**, *n* is the length of the map, and *c* the capacity. The sort is stable.
-    pub fn sort_by_cached_key<T, F>(&mut self, mut sort_key: F)
+    pub fn sort_by_cached_key<T, F>(&mut self, sort_key: F)
     where
         T: Ord,
         F: FnMut(&K, &V) -> T,
     {
-        self.core.with_pairs(move |entries| {
-            entries.sort_by_cached_key(move |a| sort_key(&a.key, &a.value));
-        });
+        self.core.sort_by_cached_key(sort_key)
     }
 
     /// Reverses the order of the map’s key-value pairs in place.

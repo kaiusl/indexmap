@@ -1,12 +1,12 @@
 #![allow(clippy::bool_assert_comparison)]
 
+use ::core::fmt::Debug;
+use ::core::panic::AssertUnwindSafe;
+use ::core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use ::std::panic::catch_unwind;
+use ::std::string::String;
+
 use super::*;
-use ::core::{
-    fmt::Debug,
-    panic::AssertUnwindSafe,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
-};
-use std::{panic::catch_unwind, string::String};
 
 type IndexMultimapVec<K, V> = IndexMultimap<K, V, RandomState, Vec<usize>>;
 
