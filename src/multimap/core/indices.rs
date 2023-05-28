@@ -6,13 +6,35 @@ use ::core::{iter, mem, ops, slice};
 use super::subsets::{internal, SubsetIndexStorage, ToIndexIter};
 use super::IndexStorage;
 
+// --- 
+// 
+// # Safety
+// 
+// It's important to note that the safety of the structs below
+// relies on the fact that the only way to create them is to start with
+// `UniqueSorted::one`. That method requires
+// that `Inner: IndexStorage` which means that at start `Inner` is some Vec<usize>
+// like object. After that it's possible to convert it into iterators or `Unique`.
+// Only way to modify the values in `Inner` if through safe `&mut` functions on
+// `self` of unsafe ones.
+// 
+// This means that even though in general if `Inner` type contains some sort of
+// interior mutability or is an iterator that yields `&mut something` one could
+// modify the inner data through &, which would be unsafe as it could easily 
+// mess with our invariants of uniqueness and sortedness. However if one starts
+// from `UniqueSorted::one` then it's not possible to have interior mutability 
+// and only way to get a mutable iterator would be through unsafe methods
+// (which atm we don't even provide).
+// 
+// ---
+
 /// Wrapper that promises that `Inner` only contains unique and sorted items.
 #[derive(Debug, Clone, Default)]
 pub(super) struct UniqueSorted<Inner> {
     inner: Inner,
 }
 
-// It's OK to Defer as the user cannot modify the slice they get.
+// It's OK to Deref as the user cannot modify the slice they get.
 // DeferMut on the other hand would be unsafe, for that purpose there is `unsafe fn as_mut_slice`,
 impl<Inner> ops::Deref for UniqueSorted<Inner>
 where
