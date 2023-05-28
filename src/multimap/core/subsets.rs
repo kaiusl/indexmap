@@ -1015,34 +1015,8 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::multimap::core::Unique;
     use crate::util::is_unique;
     use crate::HashValue;
-
-    #[test]
-    fn debug() {
-        fn bucket(k: usize, v: usize) -> Bucket<usize, usize> {
-            Bucket {
-                hash: HashValue(k),
-                key: k,
-                value: v,
-            }
-        }
-
-        let mut pairs = vec![
-            bucket(1, 11),
-            bucket(2, 21),
-            bucket(1, 12),
-            bucket(1, 13),
-            bucket(2, 22),
-            bucket(1, 14),
-        ];
-        let indices = unsafe { Unique::new_unchecked([0usize, 2, 3, 5].as_slice()) };
-
-        let _iter1 = SubsetIterMut::new(&mut pairs, indices.slice_iter().copied());
-        //println!("{:#?}", iter1);
-        //println!("{:#?}", iter1);
-    }
 
     #[test]
     fn unique() {
@@ -1062,19 +1036,14 @@ mod tests {
             bucket(2, 22),
             bucket(1, 14),
         ];
+        // SAFETY: inner is unique slice of usize, no interior  mutability and it's not mutable iterator
         let indices = unsafe { Unique::new_unchecked([0usize, 2, 3, 5].as_slice()) };
 
         let iter1 = SubsetIterMut::new(&mut pairs, indices.slice_iter().copied());
-        //println!("{iter1:#?}");
-        //iter.clone();
         let items = iter1.collect::<Vec<_>>();
-        let values = items.iter().map(|a| *a.2).collect::<Vec<_>>();
         assert!(is_unique(&items));
-        assert!(is_unique(&values));
 
         let mut iter2 = SubsetIterMut::new(&mut pairs, indices.slice_iter().copied());
-
-        //let b = items[0];
         let items = [
             iter2.next(),
             iter2.nth(1),
@@ -1086,21 +1055,6 @@ mod tests {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-        let values = items.iter().map(|a| *a.2).collect::<Vec<_>>();
         assert!(is_unique(&items));
-        assert!(is_unique(&values));
-
-        // let mut iter3 = pairs.iter_mut();// unsafe { pairsMut::new(&mut pairs, indices.iter()) };
-        // let i1 = iter3.next().unwrap();
-        // let i2 = iter3.next().unwrap();
-        // //let v1 = i1.2;
-
-        // //let b = &items[0];
-        // //let b = i1.2;
-        // move_item(iter3);
-        // let v = i1;
-
-        // //let a = &pairs;
-        // let v = i2;
     }
 }
