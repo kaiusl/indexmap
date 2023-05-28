@@ -8,10 +8,10 @@ use crate::util::is_sorted_and_unique;
 use super::subsets::{internal, SubsetIndexStorage, ToIndexIter};
 use super::IndexStorage;
 
-// --- 
-// 
+// ---
+//
 // # Safety
-// 
+//
 // It's important to note that the safety of the structs below
 // relies on the fact that the only way to create them is to start with
 // `UniqueSorted::one`. That method requires
@@ -19,15 +19,15 @@ use super::IndexStorage;
 // like object. After that it's possible to convert it into iterators or `Unique`.
 // Only way to modify the values in `Inner` if through safe `&mut` functions on
 // `self` of unsafe ones.
-// 
+//
 // This means that even though in general if `Inner` type contains some sort of
 // interior mutability or is an iterator that yields `&mut something` one could
-// modify the inner data through &, which would be unsafe as it could easily 
+// modify the inner data through &, which would be unsafe as it could easily
 // mess with our invariants of uniqueness and sortedness. However if one starts
-// from `UniqueSorted::one` then it's not possible to have interior mutability 
+// from `UniqueSorted::one` then it's not possible to have interior mutability
 // and only way to get a mutable iterator would be through unsafe methods
 // (which atm we don't even provide).
-// 
+//
 // ---
 
 /// Wrapper that promises that `Inner` only contains unique and sorted items.
@@ -127,6 +127,7 @@ where
         F: FnMut(&mut usize) -> bool,
     {
         self.inner.retain(keep);
+        debug_assert!(is_sorted_and_unique(self.as_slice()))
     }
 
     /// Replaces an value at `self[old_index]` with `new` and keeps `self` sorted.
@@ -136,16 +137,7 @@ where
     /// * If `new` already exists. It would violate the uniqueness guarantee of indices.
     /// * If `old_index` is out of bounds for self
     pub(crate) fn replace(&mut self, old_index: usize, new: usize) -> usize {
-        let len = self.len();
-        if len == 1 {
-            return mem::replace(&mut self.inner[old_index], new);
-        }
-
-        // Is this even beneficial? We avoid binary search for position but do bunch of comparisons
-        // TODO: benchmark it
-        let is_new_larger_than_prev = old_index == 0 || self.inner[old_index - 1] < new;
-        let is_new_smaller_than_next = old_index == len - 1 || new < self.inner[old_index + 1];
-        if is_new_larger_than_prev && is_new_smaller_than_next {
+        if self.len() == 1 {
             return mem::replace(&mut self.inner[old_index], new);
         }
 
@@ -434,8 +426,37 @@ impl<I> FusedIterator for Unique<I> where I: Iterator + FusedIterator {}
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
 
+    #[test]
+    fn push() {
+        let mut i = UniqueSorted::<Vec<usize>>::one(5);
+        i.push(6);
+
+        i.remove(0);
+        i.remove(0);
+        assert!(i.is_empty());
+
+        i.push(3);
+    }
+
+    #[test]
+    fn push_panic() {
+        use std::panic::catch_unwind;
+        catch_unwind(|| {
+            let mut i = UniqueSorted::<Vec<usize>>::one(5);
+            i.push(5);
+        })
+        .expect_err("pushed value must be larger than any other value in the vec");
+
+        catch_unwind(|| {
+            let mut i = UniqueSorted::<Vec<usize>>::one(5);
+            i.push(3);
+        })
+        .expect_err("pushed value must be larger than any other value in the vec");
+    }
 
     #[test]
     fn replace_unique_sorted_test() {
