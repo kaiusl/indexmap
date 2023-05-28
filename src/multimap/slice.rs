@@ -1,7 +1,7 @@
-use super::{IndexMultimap, IndexStorage};
+use ::core::ops::{self, Bound, Index, IndexMut};
 
+use super::{IndexMultimap, IndexStorage};
 use crate::map::Slice;
-use core::ops::{self, Bound, Index, IndexMut};
 
 // We can't have `impl<I: RangeBounds<usize>> Index<I>` because that conflicts
 // both upstream with `Index<usize>` and downstream with `Index<&Q>`.
@@ -43,8 +43,9 @@ impl_index!(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     #[test]
     fn slice_index() {
