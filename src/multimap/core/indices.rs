@@ -3,6 +3,8 @@
 use ::core::iter::FusedIterator;
 use ::core::{iter, mem, ops, slice};
 
+use crate::util::is_sorted_and_unique;
+
 use super::subsets::{internal, SubsetIndexStorage, ToIndexIter};
 use super::IndexStorage;
 
@@ -152,11 +154,10 @@ where
         let new_sorted_pos = slice.partition_point(|&a| a < new);
         // Since our array is sorted, it will also be unique if the next element
         // returned by partition_point is not our new index
+        // Say we want to insert 6. Then in list [1, 2, 4, 6, 8],
+        // partition_point will return 3. Then below will panic.
         assert!(
-            slice
-                .get(new_sorted_pos + 1)
-                .map(|&i| i != new)
-                .unwrap_or(true),
+            slice.get(new_sorted_pos).map(|&i| i != new).unwrap_or(true),
             "`new` already exists, it would violate uniqueness"
         );
 
@@ -167,6 +168,7 @@ where
             Ordering::Equal => {}
             Ordering::Greater => slice[new_sorted_pos..=old_index].rotate_right(1),
         }
+        debug_assert!(is_sorted_and_unique(self.as_slice()));
         old
     }
 
@@ -429,3 +431,67 @@ where
 }
 
 impl<I> FusedIterator for Unique<I> where I: Iterator + FusedIterator {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    #[test]
+    fn replace_unique_sorted_test() {
+        // new > old
+        let mut i = UniqueSorted {
+            inner: vec![1, 2, 4, 6, 8, 10],
+        };
+        i.replace(1, 7);
+        assert_eq!(i.as_slice(), [1, 4, 6, 7, 8, 10]);
+
+        // new < old
+        let mut i = UniqueSorted {
+            inner: vec![1, 2, 4, 6, 8, 10],
+        };
+        i.replace(4, 3);
+        assert_eq!(i.as_slice(), [1, 2, 3, 4, 6, 10]);
+
+        // new == old
+        let mut i = UniqueSorted {
+            inner: vec![1, 2, 4, 6, 8, 10],
+        };
+        i.replace(4, 9);
+        assert_eq!(i.as_slice(), [1, 2, 4, 6, 9, 10]);
+
+        // new larger than anything
+        let mut i = UniqueSorted {
+            inner: vec![1, 2, 4, 6, 8, 10],
+        };
+        i.replace(4, 12);
+        assert_eq!(i.as_slice(), [1, 2, 4, 6, 10, 12]);
+
+        // new smaller than anything
+        let mut i = UniqueSorted {
+            inner: vec![1, 2, 4, 6, 8, 10],
+        };
+        i.replace(4, 0);
+        assert_eq!(i.as_slice(), [0, 1, 2, 4, 6, 10]);
+    }
+
+    #[test]
+    #[should_panic = "`new` already exists, it would violate uniqueness"]
+    fn replace_unique_sorted_test_new_exists() {
+        // expected replace to panic as `new` already exists
+        let mut i = UniqueSorted {
+            inner: vec![1, 2, 4, 6, 8, 10],
+        };
+        i.replace(1, 6);
+    }
+
+    #[test]
+    #[should_panic = "index out of bounds: the len is 6 but the index is 6"]
+    fn replace_unique_sorted_test_old_index_out_of_bounds() {
+        // expected replace to panic as `old_index` is out of bounds
+        let mut i = UniqueSorted {
+            inner: vec![1, 2, 4, 6, 8, 10],
+        };
+        i.replace(6, 7);
+    }
+}
