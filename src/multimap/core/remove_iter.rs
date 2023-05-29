@@ -3,15 +3,13 @@
 use ::core::iter::FusedIterator;
 use ::core::ptr::{self, NonNull};
 use ::core::{fmt, mem, ops, slice};
-
 use ::hashbrown::raw::RawTable;
 
 use super::{
-    equivalent, update_index_last, DebugIndices, IndexMultimapCore, IndexStorage, RawBucket,
-    UniqueSorted,
+    equivalent, update_index_last, IndexMultimapCore, IndexStorage, RawBucket, UniqueSorted,
 };
 use crate::map::Slice;
-use crate::util::{simplify_range};
+use crate::util::{debug_iter_as_list, simplify_range, DebugIterAsNumberedCompactList};
 use crate::{Bucket, Equivalent, HashValue};
 
 /// An iterator that shift removes pairs from [`IndexMultimap`].
@@ -317,21 +315,30 @@ where
     Indices::IntoIter: fmt::Debug + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let items_iter = self.indices_to_remove.clone().map(|i| {
+            assert!(i < self.orig_len);
+            let bucket = unsafe { &*self.map.pairs.as_ptr().add(i) };
+            (i, &bucket.key, &bucket.value)
+        });
         if cfg!(feature = "test_debug") {
             f.debug_struct("ShiftRemove")
-                .field("map", &self.map)
-                .field("indices_table", &DebugIndices(&self.indices_table))
-                .field("prev_removed_idx", &self.prev_removed_idx)
+                .field(
+                    "prev_removed_idx",
+                    &format_args!("{:?}", self.prev_removed_idx),
+                )
                 .field("del", &self.del)
                 .field("orig_len", &self.orig_len)
-                .field("indices_to_remove", &self.indices_to_remove)
+                .field(
+                    "indices_to_remove",
+                    &DebugIterAsNumberedCompactList::new(self.indices_to_remove.clone()),
+                )
+                .field(
+                    "items_to_remove",
+                    &DebugIterAsNumberedCompactList::new(items_iter),
+                )
                 .finish()
         } else {
-            let iter = self.indices_to_remove.clone().map(|i| {
-                let bucket = &self.map.pairs[i];
-                (i, &bucket.key, &bucket.value)
-            });
-            f.debug_struct("ShiftRemove").field("left", &iter).finish()
+            debug_iter_as_list(f, Some("ShiftRemove"), items_iter)
         }
     }
 }
@@ -632,24 +639,30 @@ where
     Indices: fmt::Debug + IndexStorage,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let items_iter = self.iter_forward.clone().map(|i| {
+            let i = self.indices_to_remove[i];
+            assert!(i < self.orig_len);
+            let bucket = unsafe { &*self.map.pairs.as_ptr().add(i) };
+            (i, &bucket.key, &bucket.value)
+        });
         if cfg!(feature = "test_debug") {
             f.debug_struct("SwapRemove")
-                .field("map", &self.map)
-                .field("indices_table", &DebugIndices(&self.indices_table))
                 .field("orig_len", &self.orig_len)
-                .field("indices", &self.indices_to_remove.as_inner())
                 .field("iter_forward", &self.iter_forward)
                 .field("iter_backward", &self.iter_backward)
                 .field("total_iter", &self.total_iter)
                 .field("prev_backward", &self.prev_backward)
+                .field(
+                    "indices_to_remove",
+                    &DebugIterAsNumberedCompactList::new(self.indices_to_remove.as_slice().iter()),
+                )
+                .field(
+                    "items_to_remove",
+                    &DebugIterAsNumberedCompactList::new(items_iter),
+                )
                 .finish()
         } else {
-            let iter = self.iter_forward.clone().map(|i| {
-                let i = self.indices_to_remove[i];
-                let bucket = &self.map.pairs[i];
-                (i, &bucket.key, &bucket.value)
-            });
-            f.debug_struct("SwapRemove").field("left", &iter).finish()
+            debug_iter_as_list(f, Some("SwapRemove"), items_iter)
         }
     }
 }
@@ -766,10 +779,22 @@ impl<K, V, Indices> fmt::Debug for Drain<'_, K, V, Indices>
 where
     K: fmt::Debug + Eq,
     V: fmt::Debug,
-    Indices: IndexStorage,
+    Indices: fmt::Debug + IndexStorage,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Drain").field(&self.as_slice()).finish()
+        if cfg!(feature = "test_debug") {
+            f.debug_struct("Drain")
+                .field("start", &self.start)
+                .field("tail_start", &self.tail_start)
+                .field("tail_len", &self.tail_len)
+                .field(
+                    "to_remove",
+                    &DebugIterAsNumberedCompactList::new(self.as_slice().iter()),
+                )
+                .finish()
+        } else {
+            debug_iter_as_list(f, Some("Drain"), self.as_slice().iter())
+        }
     }
 }
 

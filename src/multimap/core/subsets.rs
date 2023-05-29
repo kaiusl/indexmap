@@ -23,6 +23,7 @@ use ::core::iter::FusedIterator;
 use ::core::marker::PhantomData;
 
 use super::Unique;
+use crate::util::{debug_iter_as_list, debug_iter_as_numbered_compact_list};
 use crate::Bucket;
 
 /// Slice like construct over a subset of all the key-value pairs in the [`IndexMultimap`].
@@ -181,11 +182,7 @@ where
     Indices: SubsetIndexStorage + fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SubSet")
-            // Print only pairs that are actually referred to by indices
-            .field("pairs", &self.iter())
-            .field("indices", &self.indices)
-            .finish()
+        debug_subset(f, "Subset", self.iter())
     }
 }
 
@@ -392,11 +389,7 @@ where
     Indices: fmt::Debug + SubsetIndexStorage,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("pairsMut")
-            // Print only pairs that are actually referred to by indices
-            .field("pairs", &self.iter())
-            .field("indices", &self.indices)
-            .finish()
+        debug_subset(f, "SubsetMut", self.iter())
     }
 }
 
@@ -470,9 +463,9 @@ macro_rules! iter_methods {
             None => None,
         }
     };
-    ($name:ty, $item:ty, $index:ident, $pair:ident, $($return:tt)*) => {
+    ($name:ident, $ty:ty, $item:ty, $index:ident, $pair:ident, $($return:tt)*) => {
 
-        impl<'a, K, V, I> $name
+        impl<'a, K, V, I> $ty
         where
             I: Iterator<Item = usize>,
         {
@@ -483,7 +476,7 @@ macro_rules! iter_methods {
             }
         }
 
-        impl<'a, K, V, I> Iterator for $name
+        impl<'a, K, V, I> Iterator for $ty
         where
             I: Iterator<Item = usize>,
         {
@@ -530,7 +523,7 @@ macro_rules! iter_methods {
             }
         }
 
-        impl<'a, K, V, I> DoubleEndedIterator for $name
+        impl<'a, K, V, I> DoubleEndedIterator for $ty
         where
             I: Iterator<Item = usize> + DoubleEndedIterator,
         {
@@ -543,7 +536,7 @@ macro_rules! iter_methods {
             }
         }
 
-        impl<'a, K, V, I> ExactSizeIterator for $name
+        impl<'a, K, V, I> ExactSizeIterator for $ty
         where
             I: Iterator<Item = usize> + ExactSizeIterator,
         {
@@ -552,12 +545,12 @@ macro_rules! iter_methods {
             }
         }
 
-        impl<'a, K, V, I> FusedIterator for $name where
+        impl<'a, K, V, I> FusedIterator for $ty where
             I: Iterator<Item = usize> + FusedIterator
         {
         }
 
-        impl<'a, K, V, I> Clone for $name
+        impl<'a, K, V, I> Clone for $ty
         where
             I: Clone,
         {
@@ -569,7 +562,8 @@ macro_rules! iter_methods {
             }
         }
 
-        impl<'a, K, V, I> fmt::Debug for $name
+
+        impl<'a, K, V, I> fmt::Debug for $ty
         where
             K: fmt::Debug,
             V: fmt::Debug,
@@ -580,7 +574,7 @@ macro_rules! iter_methods {
                     let $pair = &self.pairs[$index];
                     $($return)*
                 });
-                f.debug_list().entries(pairs).finish()
+                debug_subset(f, stringify!($name), pairs)
             }
         }
     };
@@ -601,6 +595,7 @@ pub struct SubsetIter<'a, K, V, I> {
 }
 
 iter_methods!(
+    SubsetIter,
     SubsetIter<'a, K, V, I>,
     (usize, &'a K, &'a V),
     index,
@@ -622,7 +617,14 @@ pub struct SubsetKeys<'a, K, V, I> {
     indices: I,
 }
 
-iter_methods!(SubsetKeys<'a, K, V, I>, &'a K, index, pair, &pair.key);
+iter_methods!(
+    SubsetKeys,
+    SubsetKeys<'a, K, V, I>,
+    &'a K,
+    index,
+    pair,
+    &pair.key
+);
 
 /// An iterator over a subset of all the values in the [`IndexMultimap`].
 ///
@@ -638,7 +640,14 @@ pub struct SubsetValues<'a, K, V, I> {
     indices: I,
 }
 
-iter_methods!(SubsetValues<'a, K, V, I>, &'a V, index, pair, &pair.value);
+iter_methods!(
+    SubsetValues,
+    SubsetValues<'a, K, V, I>,
+    &'a V,
+    index,
+    pair,
+    &pair.value
+);
 
 /// A mutable iterator over a subset of all the pairs in the [`IndexMultimap`].
 ///
@@ -677,7 +686,34 @@ where
         }
     }
 
-    unsafe fn get_item(
+    fn get_items(&self) -> impl Iterator<Item = (usize, &K, &V)>
+    where
+        I: Clone,
+    {
+        // SAFETY:
+        //  * we assert i is in bounds
+        //  * self.pairs is not modified never
+        //  * self.indices is an iterator that return unique indices,
+        //    thus we cannot have returned item at this index,
+        //    hence it's ok to create a reference and it cannot invalidate any
+        //    previously returned mutable references
+        //  * the lifetime of returned values is bound to the borrow of self by
+        //    this function call. Thus any further call to Iterator methods will
+        //    invalidate these references as it should.
+        self.indices.clone().map(|i| unsafe {
+            assert!(i < self.pairs_len);
+            let pair = &*self.pairs_start.add(i);
+            (i, &pair.key, &pair.value)
+        })
+    }
+
+    /// # Safety
+    ///
+    /// * pairs_start = self.pairs.start
+    /// * pairs_len = self.pairs_len
+    /// * index must be from the iterator self.indices
+    #[inline]
+    unsafe fn get_item_mut(
         pairs_start: *mut Bucket<K, V>,
         pairs_len: usize,
         index: usize,
@@ -688,10 +724,8 @@ where
         //     points to the start of pairs slice
         //   * self.indices are unique => we cannot return aliasing
         //     mutable references
-        //   * self.indices are in bounds for indexing into self.pairs,
-        //     that is index < self.pairs.len() => .add is safe
-        //     These requirements are either asserted in safe constructors
-        //     or documented on unsafe ones.
+        //   * self.indices is also an iterator => cannot use same index twice
+        //   * index is asserted to be in bounds
         //   * no one else can have access to the pairs slice as we
         //     borrowed it mutably for 'a => it's valid to return
         //     &'a mut into the slice
@@ -710,14 +744,18 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.indices.next() {
-            Some(index) => Some(unsafe { Self::get_item(self.pairs_start, self.pairs_len, index) }),
+            Some(index) => {
+                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
+            }
             None => None,
         }
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
         match self.indices.nth(n) {
-            Some(index) => Some(unsafe { Self::get_item(self.pairs_start, self.pairs_len, index) }),
+            Some(index) => {
+                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
+            }
             None => None,
         }
     }
@@ -727,7 +765,9 @@ where
         Self: Sized,
     {
         match self.indices.last() {
-            Some(index) => Some(unsafe { Self::get_item(self.pairs_start, self.pairs_len, index) }),
+            Some(index) => {
+                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
+            }
             None => None,
         }
     }
@@ -748,7 +788,7 @@ where
         Self: Sized,
     {
         self.indices
-            .map(|index| unsafe { Self::get_item(self.pairs_start, self.pairs_len, index) })
+            .map(|index| unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
             .collect()
     }
 }
@@ -760,17 +800,19 @@ where
     I: Iterator<Item = usize> + DoubleEndedIterator,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
-        // SAFETY: see the safety doc in `next` method
         match self.indices.next_back() {
-            Some(index) => Some(unsafe { Self::get_item(self.pairs_start, self.pairs_len, index) }),
+            Some(index) => {
+                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
+            }
             None => None,
         }
     }
 
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
-        // SAFETY: see the safety doc in `next` method
         match self.indices.nth_back(n) {
-            Some(index) => Some(unsafe { Self::get_item(self.pairs_start, self.pairs_len, index) }),
+            Some(index) => {
+                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
+            }
             None => None,
         }
     }
@@ -802,11 +844,7 @@ where
     I: Iterator<Item = usize> + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let pairs = self
-            .indices
-            .clone()
-            .map(|index| unsafe { Self::get_item(self.pairs_start, self.pairs_len, index) });
-        f.debug_list().entries(pairs).finish()
+        debug_subset(f, "SubsetIterMut", self.get_items())
     }
 }
 
@@ -932,7 +970,8 @@ where
     I: Iterator<Item = usize> + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.inner.fmt(f)
+        let items = self.inner.get_items().map(|(_, _, v)| v);
+        debug_subset(f, "SubsetValuesMut", items)
     }
 }
 
@@ -1006,6 +1045,18 @@ unsafe impl SubsetIndexStorage for Vec<usize> {
 
     fn index_iter(&self, _: internal::Guard) -> <Self as ToIndexIter<'_>>::Iter {
         <[usize]>::iter(self).copied()
+    }
+}
+
+fn debug_subset<I>(f: &mut fmt::Formatter<'_>, name: &'static str, iter: I) -> fmt::Result
+where
+    I: Iterator,
+    I::Item: fmt::Debug,
+{
+    if cfg!(feature = "test_debug") {
+        debug_iter_as_numbered_compact_list(f, Some(name), iter)
+    } else {
+        debug_iter_as_list(f, Some(name), iter)
     }
 }
 

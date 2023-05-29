@@ -9,6 +9,7 @@ use super::{
     SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, Unique,
     UniqueSorted,
 };
+use crate::util::{DebugIterAsList, DebugIterAsNumberedCompactList};
 use crate::{Bucket, HashValue};
 
 /// Entry for an existing key-value pair or a vacant location to
@@ -278,9 +279,13 @@ where
     K: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple(stringify!(VacantEntry))
-            .field(self.key())
-            .finish()
+        let mut s = f.debug_struct(stringify!(VacantEntry));
+        if cfg!(feature = "test_debug") {
+            s.field("key", &format_args!("{:?}", self.key()));
+        } else {
+            s.field("key", self.key());
+        }
+        s.finish()
     }
 }
 
@@ -649,9 +654,14 @@ where
     Indices: IndexStorage + fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct(stringify!(OccupiedEntry))
-            .field("key", self.key())
-            .field("pairs", &self.as_subset().iter())
-            .finish()
+        let mut s = f.debug_struct(stringify!(OccupiedEntry));
+        if cfg!(feature = "test_debug") {
+            s.field("key", &format_args!("{:?}", self.key()));
+            s.field("pairs", &DebugIterAsNumberedCompactList::new(self.iter()));
+        } else {
+            s.field("key", self.key());
+            s.field("pairs", &DebugIterAsList::new(self.iter()));
+        }
+        s.finish()
     }
 }

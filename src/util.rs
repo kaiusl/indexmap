@@ -1,5 +1,12 @@
 use core::ops::{Bound, Range, RangeBounds};
 
+mod debug;
+
+pub(crate) use debug::{
+    debug_iter_as_list, debug_iter_as_numbered_compact_list, DebugIterAsList,
+    DebugIterAsNumberedCompactList,
+};
+
 pub(crate) fn third<A, B, C>(t: (A, B, C)) -> C {
     t.2
 }
@@ -82,7 +89,6 @@ pub(crate) fn is_unique_sorted<T: PartialOrd>(slice: &[T]) -> bool {
 pub(crate) fn is_sorted_and_unique<T: PartialOrd>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] < w[1])
 }
-
 
 /// Checks if the slice contains only unique items.
 pub(crate) fn is_unique<T>(slice: &[T]) -> bool

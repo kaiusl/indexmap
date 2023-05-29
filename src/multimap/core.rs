@@ -9,7 +9,6 @@
 //!
 //! However, we should probably not let this show in the public API or docs.
 
-use ::alloc::format;
 use ::alloc::vec::Vec;
 use ::core::iter::FusedIterator;
 use ::core::{fmt, ops};
@@ -27,6 +26,7 @@ pub use self::subsets::{
 use indices::{Unique, UniqueSorted};
 
 use crate::equivalent::Equivalent;
+use crate::util::{DebugIterAsNumberedCompactList};
 use crate::{Bucket, HashValue, TryReserveError};
 
 mod entry;
@@ -1137,36 +1137,39 @@ impl<K, V, Indices> fmt::Debug for IndexMultimapCore<K, V, Indices>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    Indices: fmt::Debug,
+    Indices: ops::Deref<Target = [usize]>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IndexMapCore")
-            .field("indices", &DebugIndices(&self.indices))
+            .field("indices", &DebugIndices(self))
             .field(
                 "entries",
-                &self
-                    .pairs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| format!("{i}: {:?}", a))
-                    .collect::<Vec<_>>(),
+                &DebugIterAsNumberedCompactList::new(self.pairs.iter().map(Bucket::refs)),
             )
             .finish()
     }
 }
 
-struct DebugIndices<'a, Indices>(&'a RawTable<UniqueSorted<Indices>>);
+struct DebugIndices<'a, K, V, Indices>(&'a IndexMultimapCore<K, V, Indices>);
 
-impl<Indices> fmt::Debug for DebugIndices<'_, Indices>
+impl<K, V, Indices> fmt::Debug for DebugIndices<'_, K, V, Indices>
 where
-    Indices: fmt::Debug,
+    Indices: ops::Deref<Target = [usize]>,
+    K: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Use more readable output - each bucket is always one line
         // SAFETY: we're not letting any of the buckets escape this function
-        let indices = unsafe { self.0.iter().map(|bucket| bucket.as_ref()) }
-            .map(|a| format!("{:?}", a.as_inner()));
-        f.debug_list().entries(indices).finish()
+        let indices = unsafe { self.0.indices.iter().map(|bucket| bucket.as_ref()) };
+        let mut list = f.debug_map();
+        for i in indices {
+            let key = self.0.pairs[i[0]].key_ref();
+            list.entry(
+                &format_args!("{key:?}"),
+                &format_args!("{:?}", i.as_slice()),
+            );
+        }
+        list.finish()
     }
 }
 

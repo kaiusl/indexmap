@@ -36,7 +36,7 @@ pub use self::core::{
 use self::core::IndexMultimapCore;
 use crate::equivalent::Equivalent;
 use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
-use crate::util::try_simplify_range;
+use crate::util::{try_simplify_range, DebugIterAsList, debug_iter_as_list};
 use crate::{Bucket, HashValue, TryReserveError};
 
 #[cfg(feature = "serde")]
@@ -140,6 +140,7 @@ where
     }
 }
 
+#[cfg(not(feature = "test_debug"))]
 impl<K, V, S, Indices> fmt::Debug for IndexMultimap<K, V, S, Indices>
 where
     K: fmt::Debug,
@@ -147,14 +148,23 @@ where
     Indices: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if cfg!(not(feature = "test_debug")) {
-            f.debug_map().entries(self.iter()).finish()
-        } else {
-            // Let the inner `IndexMultimapCore` print all of its details
-            f.debug_struct("IndexMultimap")
-                .field("core", &self.core)
-                .finish()
-        }
+        let iter = self.iter().zip(0usize..).map(|((k, v), i)| (i, k, v));
+        debug_iter_as_list(f, Some("IndexMultimap"), iter)
+    }
+}
+
+#[cfg(feature = "test_debug")]
+impl<K, V, S, Indices> fmt::Debug for IndexMultimap<K, V, S, Indices>
+where
+    K: fmt::Debug,
+    V: fmt::Debug,
+    Indices: ops::Deref<Target = [usize]>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Let the inner `IndexMultimapCore` print all of its details
+        f.debug_struct("IndexMultimap")
+            .field("core", &self.core)
+            .finish()
     }
 }
 

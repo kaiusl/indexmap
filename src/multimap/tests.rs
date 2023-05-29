@@ -1313,3 +1313,72 @@ fn from_array() {
 
     assert_eq!(map, expected)
 }
+
+#[test]
+fn debugs() {
+    #[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
+    struct Key {
+        k1: i32,
+        sfasgsg: i32
+    }
+
+    fn key(k: i32) -> Key {
+        Key { k1: k, sfasgsg: k }
+    }
+
+    let items: [(_, String); 6] = [
+        (key(1), "first".into()),
+        (key(2), "second".into()),
+        (key(1), "first2".into()),
+        (key(3), "third".into()),
+        (key(3), "third2".into()),
+        (key(1), "first3".into()),
+    ];
+    let mut map = IndexMultimapVec::with_capacity(5, 8);
+    map.extend(items);
+
+    println!("map = {map:#?}");
+
+    println!("\nSubset = {:#?}", map.get(&key(1)));
+    println!("\nSubsetMut = {:#?}", map.get_mut(&key(3)));
+
+    let mut get_mut = map.get_mut(&key(1));
+    println!("\nSubsetIter = {:#?}", get_mut.iter());
+    println!("\nSubsetIterMut = {:#?}", get_mut.iter_mut());
+    println!("\nSubsetKeys = {:#?}", get_mut.keys());
+    println!("\nSubsetValues = {:#?}", get_mut.values());
+    println!("\nSubsetValuesMut = {:#?}", get_mut.values_mut());
+
+    let gentry = map.entry(key(1));
+    println!("\nEntry(Occupied) = {:#?}", gentry);
+    println!(
+        "\nOccupiedEntry = {:#?}",
+        match gentry {
+            Entry::Occupied(o) => o,
+            _ => unreachable!(),
+        }
+    );
+    let ventry = map.entry(key(6));
+    println!("\nEntry(Vacant) = {:#?}", ventry);
+    println!(
+        "\nVacantEntry = {:#?}",
+        match ventry {
+            Entry::Vacant(v) => v,
+            _ => unreachable!(),
+        }
+    );
+    
+    let mut map2 = map.clone();
+    let mut swpremove = map2.swap_remove(&key(1)).unwrap();
+    swpremove.next();
+    println!("\nSwapRemove = {:#?}", swpremove);
+
+    let mut map2 = map.clone();
+    let mut shiftremove = map2.shift_remove(&key(1)).unwrap();
+    shiftremove.next();
+    println!("\nShiftRemove = {:#?}", shiftremove);
+
+    let mut map2 = map.clone();
+    let drain = map2.drain(1..3);
+    println!("\nDrain = {:#?}", drain);
+}
