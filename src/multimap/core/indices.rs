@@ -276,12 +276,12 @@ impl<Inner> Unique<Inner> {
 #[cfg(test)]
 impl<Inner> Unique<Inner> {
     #[inline]
-    pub(crate) unsafe fn new_unchecked(indices: Inner) -> Self {
-        Self { inner: indices }
+    pub(super) unsafe fn new_unchecked(inner: Inner) -> Self {
+        Self { inner }
     }
 
     #[inline]
-    pub fn slice_iter<T>(&self) -> Unique<slice::Iter<'_, T>>
+    pub(super) fn slice_iter<T>(&self) -> Unique<slice::Iter<'_, T>>
     where
         Inner: ops::Deref<Target = [T]>,
     {
