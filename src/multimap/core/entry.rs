@@ -55,6 +55,13 @@ where
         }
     }
 
+    pub fn into_key(self) -> Option<K> {
+        match self {
+            Entry::Occupied(e) => e.into_key(),
+            Entry::Vacant(e) => Some(e.into_key()),
+        }
+    }
+
     /// Returns the indices where the key-value pairs exists or will be inserted.
     /// The return value behaves like `&[`[`usize`]`]`
     pub fn indices(&self) -> EntryIndices<'_> {
@@ -398,6 +405,10 @@ where
         &self.map.pairs[self.indices()[0]].key
     }
 
+    pub fn into_key(self) -> Option<K> {
+        self.key
+    }
+
     fn clone_key(&self) -> K
     where
         K: Clone,
@@ -437,8 +448,19 @@ where
         }
     }
 
-    /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
+    /// Returns a mutable reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
     pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
+        match self.indices().get(n) {
+            Some(&index) => {
+                let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+                Some((index, key, value))
+            }
+            None => None,
+        }
+    }
+
+    /// Converts `self` into a long lived mutable reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
+    pub fn into_nth(self, n: usize) -> Option<(usize, &'a K, &'a mut V)> {
         match self.indices().get(n) {
             Some(&index) => {
                 let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
@@ -455,8 +477,15 @@ where
         (index, key, value)
     }
 
-    /// Return a reference to the first pair in this entry.
+    /// Return a mutable reference to the first pair in this entry.
     pub fn first_mut(&mut self) -> (usize, &K, &mut V) {
+        let index = self.indices()[0];
+        let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+        (index, key, value)
+    }
+
+    /// Converts `self` into a long lived mutable reference to the first pair in this entry.
+    pub fn into_first(self) -> (usize, &'a K, &'a mut V) {
         let index = self.indices()[0];
         let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
         (index, key, value)
@@ -469,8 +498,15 @@ where
         (index, key, value)
     }
 
-    /// Returns a reference to the last pair in this entry.
+    /// Returns a mutable reference to the last pair in this entry.
     pub fn last_mut(&mut self) -> (usize, &K, &mut V) {
+        let index = *self.indices().last().unwrap();
+        let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+        (index, key, value)
+    }
+
+    /// Converts `self` into a long lived mutable reference to the last pair in this entry.
+    pub fn into_last(self) -> (usize, &'a K, &'a mut V) {
         let index = *self.indices().last().unwrap();
         let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
         (index, key, value)
@@ -564,6 +600,15 @@ where
         )
     }
 
+    /// Converts into a mutable iterator over all the keys in this subset.
+    pub fn into_keys(self) -> SubsetKeys<'a, K, V, Copied<slice::Iter<'a, usize>>> {
+        SubsetKeys::new(
+            &self.map.pairs,
+            // SAFETY: we have &mut map keep keeping the bucket stable
+            unsafe { self.raw_bucket.as_ref() }.iter().copied(),
+        )
+    }
+
     /// Returns an iterator over all the values in this entry.
     pub fn values(&self) -> SubsetValues<'_, K, V, Copied<slice::Iter<'_, usize>>> {
         SubsetValues::new(
@@ -592,6 +637,11 @@ where
         Subset::new(&self.map.pairs, self.indices())
     }
 
+    pub fn into_subset(self) -> Subset<'a, K, V, &'a [usize]> {
+        let indices = unsafe { self.raw_bucket.as_ref() };
+        Subset::new(&self.map.pairs, indices.as_slice())
+    }
+
     /// Returns a slice like construct with all values associated with this entry in the map.
     ///
     /// If you need a reference which may outlive the destruction of the
@@ -601,7 +651,7 @@ where
         SubsetMut::new(&mut self.map.pairs, indices.into())
     }
 
-    /// Converts into  a slice like construct with all the values associated with
+    /// Converts into a slice like construct with all the values associated with
     /// this pair in the map, with a lifetime bound to the map itself.
     pub fn into_subset_mut(self) -> SubsetMut<'a, K, V, &'a [usize]> {
         let indices = unsafe { self.raw_bucket.as_ref() };
