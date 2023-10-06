@@ -271,6 +271,11 @@ impl<Inner> Unique<Inner> {
     pub fn as_inner(&self) -> &Inner {
         &self.inner
     }
+
+    #[inline]
+    pub fn into_inner(self) -> Inner {
+        self.inner
+    }
 }
 
 #[cfg(test)]

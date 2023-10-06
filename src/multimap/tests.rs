@@ -112,7 +112,7 @@ fn check_subentries<K, V>(
     itertools::assert_equal(subentries.keys(), expected.iter().map(|(_, k, _)| *k));
     itertools::assert_equal(subentries.values(), expected.iter().map(|(_, _, v)| *v));
     for i in 0..subentries.len() {
-        assert_eq!(subentries.get(i).as_ref(), expected.get(i));
+        assert_eq!(subentries.nth(i).as_ref(), expected.get(i));
         assert_eq!(subentries[i], *expected[i].2)
     }
 }
@@ -154,10 +154,10 @@ fn check_subentries_mut(
     );
     for i in 0..subentries.len() {
         assert_eq!(
-            subentries.get(i).map(|(i, k, v)| (i, *k, *v)),
+            subentries.nth(i).map(|(i, k, v)| (i, *k, *v)),
             expected.get(i).map(|(i, k, v)| (*i, **k, **v))
         );
-        assert_eq!(subentries.get_mut(i).as_ref(), expected.get(i));
+        assert_eq!(subentries.nth_mut(i).as_ref(), expected.get(i));
         assert_eq!(subentries[i], *expected[i].2)
     }
 }
@@ -1319,7 +1319,7 @@ fn debugs() {
     #[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
     struct Key {
         k1: i32,
-        sfasgsg: i32
+        sfasgsg: i32,
     }
 
     fn key(k: i32) -> Key {
@@ -1367,7 +1367,7 @@ fn debugs() {
             _ => unreachable!(),
         }
     );
-    
+
     let mut map2 = map.clone();
     let mut swpremove = map2.swap_remove(&key(1)).unwrap();
     swpremove.next();

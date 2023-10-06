@@ -75,7 +75,7 @@ where
     }
 
     /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
-    pub fn get(&self, n: usize) -> Option<(usize, &K, &V)> {
+    pub fn nth(&self, n: usize) -> Option<(usize, &'a K, &'a V)> {
         match self.indices.get(n) {
             Some(&index) => {
                 let Bucket { key, value, .. } = &self.pairs[index];
@@ -86,7 +86,7 @@ where
     }
 
     /// Return a reference to the first pair in this subset or `None` if this subset is empty.
-    pub fn first(&self) -> Option<(usize, &K, &V)> {
+    pub fn first(&self) -> Option<(usize, &'a K, &'a V)> {
         match self.indices.first() {
             Some(&index) => {
                 let Bucket { key, value, .. } = &self.pairs[index];
@@ -97,7 +97,7 @@ where
     }
 
     /// Returns a reference to the last pair in this subset or `None` if this subset is empty.
-    pub fn last(&self) -> Option<(usize, &K, &V)> {
+    pub fn last(&self) -> Option<(usize, &'a K, &'a V)> {
         match self.indices.last() {
             Some(&index) => {
                 let Bucket { key, value, .. } = &self.pairs[index];
@@ -108,7 +108,7 @@ where
     }
 
     /// Returns an iterator over all the pairs in this subset.
-    pub fn iter(&self) -> SubsetIter<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+    pub fn iter(&self) -> SubsetIter<'a, K, V, <Indices as ToIndexIter<'_>>::Iter> {
         SubsetIter::new(self.pairs, self.indices.index_iter(internal::Guard))
     }
 
@@ -116,12 +116,12 @@ where
     ///
     /// Note that the iterator yields one key for each pair.
     /// That is there may be duplicate keys.
-    pub fn keys(&self) -> SubsetKeys<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+    pub fn keys(&self) -> SubsetKeys<'a, K, V, <Indices as ToIndexIter<'_>>::Iter> {
         SubsetKeys::new(self.pairs, self.indices.index_iter(internal::Guard))
     }
 
     /// Returns an iterator over all the values in this subset.
-    pub fn values(&self) -> SubsetValues<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+    pub fn values(&self) -> SubsetValues<'a, K, V, <Indices as ToIndexIter<'_>>::Iter> {
         SubsetValues::new(self.pairs, self.indices.index_iter(internal::Guard))
     }
 }
@@ -266,7 +266,7 @@ where
     }
 
     /// Returns a reference to an `n`th key-value pair in this subset or `None` if `n >= self.len()`.
-    pub fn get(&self, n: usize) -> Option<(usize, &K, &V)> {
+    pub fn nth(&self, n: usize) -> Option<(usize, &K, &V)> {
         match self.indices.get(n) {
             Some(&index) => {
                 let Bucket { key, value, .. } = &self.pairs[index];
@@ -277,7 +277,18 @@ where
     }
 
     /// Returns a mutable reference to an `n`th pair in this subset or `None` if `n >= self.len()`.
-    pub fn get_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
+    pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
+        match self.indices.get(n) {
+            Some(&index) => {
+                let Bucket { key, value, .. } = &mut self.pairs[index];
+                Some((index, key, value))
+            }
+            None => None,
+        }
+    }
+
+    /// Converts `self` into a long lived mutable reference to an `n`th pair in this subset or `None` if `n >= self.len()`.
+    pub fn into_nth(self, n: usize) -> Option<(usize, &'a K, &'a mut V)> {
         match self.indices.get(n) {
             Some(&index) => {
                 let Bucket { key, value, .. } = &mut self.pairs[index];
@@ -309,6 +320,17 @@ where
         }
     }
 
+    /// Converts `self` into long lived mutable reference to the first pair in this subset or `None` if this subset is empty.
+    pub fn into_first_mut(self) -> Option<(usize, &'a K, &'a mut V)> {
+        match self.indices.first() {
+            Some(&index) => {
+                let Bucket { key, value, .. } = &mut self.pairs[index];
+                Some((index, key, value))
+            }
+            None => None,
+        }
+    }
+
     /// Returns a reference to the last pair in this subset or `None` if this subset is empty.
     pub fn last(&self) -> Option<(usize, &K, &V)> {
         match self.indices.last() {
@@ -322,6 +344,17 @@ where
 
     /// Returns a mutable reference to the last pair in this subset or `None` if this subset is empty.
     pub fn last_mut(&mut self) -> Option<(usize, &K, &mut V)> {
+        match self.indices.last() {
+            Some(&index) => {
+                let Bucket { key, value, .. } = &mut self.pairs[index];
+                Some((index, key, value))
+            }
+            None => None,
+        }
+    }
+
+    /// Converts `self` into long lived mutable reference to the last pair in this subset or `None` if this subset is empty.
+    pub fn into_last_mut(&mut self) -> Option<(usize, &K, &mut V)> {
         match self.indices.last() {
             Some(&index) => {
                 let Bucket { key, value, .. } = &mut self.pairs[index];
@@ -355,6 +388,14 @@ where
         SubsetKeys::new(
             self.pairs,
             self.indices.as_inner().index_iter(internal::Guard),
+        )
+    }
+
+    /// Converts into a mutable iterator over all the keys in this subset.
+    pub fn into_keys(self) -> SubsetKeys<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
+        SubsetKeys::new(
+            self.pairs,
+            self.indices.into_inner().into_index_iter(internal::Guard),
         )
     }
 
@@ -437,7 +478,7 @@ where
     type Output = V;
 
     fn index(&self, index: usize) -> &Self::Output {
-        self.get(index).expect("index out of bounds").2
+        self.nth(index).expect("index out of bounds").2
     }
 }
 
@@ -446,7 +487,7 @@ where
     Indices: SubsetIndexStorage,
 {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        self.get_mut(index).expect("index out of bounds").2
+        self.nth_mut(index).expect("index out of bounds").2
     }
 }
 
