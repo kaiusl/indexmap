@@ -120,9 +120,19 @@ where
         SubsetKeys::new(self.pairs, self.indices.index_iter(internal::Guard))
     }
 
+    /// Converts into a iterator over all the keys in this subset.
+    pub fn into_keys(self) -> SubsetKeys<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
+        SubsetKeys::new(self.pairs, self.indices.into_index_iter(internal::Guard))
+    }
+
     /// Returns an iterator over all the values in this subset.
     pub fn values(&self) -> SubsetValues<'a, K, V, <Indices as ToIndexIter<'_>>::Iter> {
         SubsetValues::new(self.pairs, self.indices.index_iter(internal::Guard))
+    }
+
+    /// Converts into a iterator over all the values in this subset.
+    pub fn into_values(self) -> SubsetValues<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
+        SubsetValues::new(self.pairs, self.indices.into_index_iter(internal::Guard))
     }
 }
 
@@ -391,7 +401,7 @@ where
         )
     }
 
-    /// Converts into a mutable iterator over all the keys in this subset.
+    /// Converts into a iterator over all the keys in this subset.
     pub fn into_keys(self) -> SubsetKeys<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
         SubsetKeys::new(
             self.pairs,
