@@ -27,6 +27,8 @@ use ::core::ops::{self, Index, IndexMut, RangeBounds};
 #[cfg(feature = "std")]
 use ::std::collections::hash_map::RandomState;
 
+use equivalent::Equivalent;
+
 pub use self::core::{
     Drain, Entry, EntryIndices, IndexStorage, OccupiedEntry, ShiftRemove, Subset,
     SubsetIndexStorage, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
@@ -34,9 +36,8 @@ pub use self::core::{
 };
 
 use self::core::IndexMultimapCore;
-use crate::equivalent::Equivalent;
 use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
-use crate::util::{try_simplify_range, DebugIterAsList, debug_iter_as_list};
+use crate::util::{debug_iter_as_list, try_simplify_range, DebugIterAsList};
 use crate::{Bucket, HashValue, TryReserveError};
 
 #[cfg(feature = "serde")]
