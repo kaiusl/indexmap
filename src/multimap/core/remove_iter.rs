@@ -99,7 +99,7 @@ where
         bucket: RawBucket<UniqueSorted<Indices>>,
     ) -> Self {
         unsafe {
-            let indices = map.indices.remove(bucket);
+            let (indices, _) = map.indices.remove(bucket);
             Self::new_unchecked(map, indices)
         }
     }
@@ -429,7 +429,7 @@ where
         bucket: RawBucket<UniqueSorted<Indices>>,
     ) -> Self {
         unsafe {
-            let indices = map.indices.remove(bucket);
+            let (indices, _) = map.indices.remove(bucket);
             Self::new_unchecked(map, indices)
         }
     }

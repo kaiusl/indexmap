@@ -10,10 +10,11 @@
 //! However, we should probably not let this show in the public API or docs.
 
 use ::alloc::vec::Vec;
+use ::core::cmp;
 use ::core::iter::FusedIterator;
 use ::core::{fmt, ops};
-use core::cmp;
 
+use ::equivalent::Equivalent;
 use ::hashbrown::raw::RawTable;
 
 pub use self::entry::{Entry, EntryIndices, OccupiedEntry, VacantEntry};
@@ -23,10 +24,9 @@ pub use self::subsets::{
     SubsetValuesMut, ToIndexIter,
 };
 
-use indices::{Unique, UniqueSorted};
+use self::indices::{Unique, UniqueSorted};
 
-use crate::equivalent::Equivalent;
-use crate::util::{DebugIterAsNumberedCompactList};
+use crate::util::DebugIterAsNumberedCompactList;
 use crate::{Bucket, HashValue, TryReserveError};
 
 mod entry;
