@@ -953,13 +953,23 @@ mod tests {
 
             let mut r = map.swap_remove(HashValue(1), &1).unwrap();
 
+            // Clone internals so we can restore the original state and allow r to be dropped properly.
+            let iter_forward = r.iter_forward.clone();
+            let iter_backward = r.iter_backward.clone();
+            let total_iter = r.total_iter.clone();
+            let prev_backward = r.prev_backward;
+
             let mut swaps = Vec::new();
             while let Some(i) = r.index_to_swap_with(current) {
                 swaps.push(i);
             }
 
             assert_eq!(&swaps, &expected);
-            mem::forget(r);
+
+            r.iter_forward = iter_forward;
+            r.iter_backward = iter_backward;
+            r.total_iter = total_iter;
+            r.prev_backward = prev_backward;
         }
 
         let insert = [1, 1, 2, 3, 1, 1, 5, 4, 1];
