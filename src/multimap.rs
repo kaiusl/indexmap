@@ -19,24 +19,21 @@
 //! These definitions are used throughout this module and it's submodules.
 
 use ::alloc::boxed::Box;
-use ::alloc::vec::Vec;
 use ::core::cmp::Ordering;
 use ::core::fmt;
 use ::core::hash::{BuildHasher, Hash, Hasher};
 use ::core::ops::{self, Index, IndexMut, RangeBounds};
 #[cfg(feature = "std")]
 use ::std::collections::hash_map::RandomState;
-
 use equivalent::Equivalent;
 
+use self::core::IndexMultimapCore;
 pub use self::core::{
     Drain, Entry, EntryIndices, OccupiedEntry, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
     SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
 };
-
-use self::core::IndexMultimapCore;
 use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
-use crate::util::{debug_iter_as_list, try_simplify_range, DebugIterAsList};
+use crate::util::{debug_iter_as_list, try_simplify_range};
 use crate::{Bucket, HashValue, TryReserveError};
 
 #[cfg(feature = "serde")]

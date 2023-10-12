@@ -1,8 +1,9 @@
 #![allow(clippy::bool_assert_comparison)]
 
+use ::alloc::vec::Vec;
 use ::core::fmt::Debug;
 use ::core::panic::AssertUnwindSafe;
-use ::core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use ::core::sync::atomic::AtomicU32;
 use ::std::panic::catch_unwind;
 use ::std::string::String;
 
@@ -355,14 +356,14 @@ fn reserve() {
     assert_eq!(map.len_keys(), capacity_keys);
     assert_eq!(map.len_pairs(), capacity_entries);
 
-    map.insert_append(capacity_entries, std::usize::MAX);
+    map.insert_append(capacity_entries, usize::MAX);
     assert_eq!(map.len_keys(), capacity_keys + 1);
     assert_eq!(map.len_pairs(), capacity_entries + 1);
     assert!(map.capacity_keys() > capacity_keys);
     assert!(map.capacity_pairs() > capacity_entries);
     assert_eq!(
         map.get(&capacity_entries).first().map(|(_, k, v)| (k, v)),
-        Some((&capacity_entries, &std::usize::MAX))
+        Some((&capacity_entries, &usize::MAX))
     );
 }
 

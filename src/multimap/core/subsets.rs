@@ -17,7 +17,7 @@
 // possibility that needs to be dealt with.
 // ---
 
-use core::{iter, slice};
+use core::slice;
 
 use ::core::fmt;
 use ::core::iter::FusedIterator;
@@ -719,13 +719,15 @@ where
         }
     }
 
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        match self.indices.nth(n) {
-            Some(&index) => {
-                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
-            }
-            None => None,
-        }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.indices.size_hint()
+    }
+
+    fn count(self) -> usize
+    where
+        Self: Sized,
+    {
+        self.indices.count()
     }
 
     fn last(self) -> Option<Self::Item>
@@ -740,15 +742,13 @@ where
         }
     }
 
-    fn count(self) -> usize
-    where
-        Self: Sized,
-    {
-        self.indices.count()
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.indices.size_hint()
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        match self.indices.nth(n) {
+            Some(&index) => {
+                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
+            }
+            None => None,
+        }
     }
 
     fn collect<B: FromIterator<Self::Item>>(self) -> B
@@ -850,11 +850,15 @@ where
         }
     }
 
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        match self.inner.nth(n) {
-            Some((_, _, v)) => Some(v),
-            None => None,
-        }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+
+    fn count(self) -> usize
+    where
+        Self: Sized,
+    {
+        self.inner.count()
     }
 
     fn last(self) -> Option<Self::Item>
@@ -867,15 +871,11 @@ where
         }
     }
 
-    fn count(self) -> usize
-    where
-        Self: Sized,
-    {
-        self.inner.count()
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        match self.inner.nth(n) {
+            Some((_, _, v)) => Some(v),
+            None => None,
+        }
     }
 
     fn collect<B: FromIterator<Self::Item>>(self) -> B

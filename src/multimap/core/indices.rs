@@ -3,6 +3,7 @@
 
 use ::alloc::vec::Vec;
 use ::core::{mem, ops, slice};
+pub(super) use iterators::{UniqueIter, UniqueSortedIter};
 
 use crate::util::is_sorted_and_unique;
 
@@ -160,7 +161,7 @@ impl<'a, T> Default for &'a UniqueSlice<T> {
 }
 
 impl<T> UniqueSlice<T> {
-    pub(crate) unsafe fn from_slice_unchecked<'a>(slice: &'a [T]) -> &'a Self {
+    pub(crate) unsafe fn from_slice_unchecked(slice: &[T]) -> &Self {
         // SAFETY:
         //  * `Self` is `repr(transparent)` wrapper around `[T]`.
         //  * Reference lifetimes are bound in function signature.
@@ -187,7 +188,6 @@ impl<'a, T> IntoIterator for &'a UniqueSlice<T> {
     }
 }
 
-pub(super) use iterators::{UniqueIter, UniqueSortedIter};
 mod iterators {
     use core::iter::FusedIterator;
 
@@ -217,6 +217,11 @@ mod iterators {
         }
 
         #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.inner.size_hint()
+        }
+
+        #[inline]
         fn count(self) -> usize
         where
             Self: Sized,
@@ -227,11 +232,6 @@ mod iterators {
         #[inline]
         fn nth(&mut self, n: usize) -> Option<Self::Item> {
             self.inner.nth(n)
-        }
-
-        #[inline]
-        fn size_hint(&self) -> (usize, Option<usize>) {
-            self.inner.size_hint()
         }
 
         #[inline]
@@ -290,6 +290,11 @@ mod iterators {
         }
 
         #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.inner.size_hint()
+        }
+
+        #[inline]
         fn count(self) -> usize
         where
             Self: Sized,
@@ -300,11 +305,6 @@ mod iterators {
         #[inline]
         fn nth(&mut self, n: usize) -> Option<Self::Item> {
             self.inner.nth(n)
-        }
-
-        #[inline]
-        fn size_hint(&self) -> (usize, Option<usize>) {
-            self.inner.size_hint()
         }
 
         #[inline]
@@ -340,7 +340,6 @@ mod iterators {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
     #[test]

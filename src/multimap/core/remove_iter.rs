@@ -5,12 +5,12 @@ use ::core::ptr::{self, NonNull};
 use ::core::{fmt, mem, ops, slice};
 
 use super::indices::UniqueSortedIter;
-use super::{equivalent, update_index_last, IndexMultimapCore, IndicesBucket, IndicesTable};
+use super::{
+    equivalent, update_index_last, IndexMultimapCore, Indices, IndicesBucket, IndicesTable,
+};
 use crate::map::Slice;
 use crate::util::{debug_iter_as_list, simplify_range, DebugIterAsNumberedCompactList};
 use crate::{Bucket, Equivalent, HashValue};
-
-use super::Indices;
 
 /// An iterator that shift removes pairs from [`IndexMultimap`].
 ///
@@ -888,8 +888,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     #[test]
     fn swap_remove_index_to_swap_with() {

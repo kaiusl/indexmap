@@ -10,8 +10,7 @@
 //! However, we should probably not let this show in the public API or docs.
 
 use ::alloc::vec::Vec;
-use ::core::{cmp, fmt, mem, ops};
-
+use ::core::{cmp, fmt, ops};
 use ::equivalent::Equivalent;
 
 pub use self::entry::{Entry, EntryIndices, OccupiedEntry, VacantEntry};
@@ -238,7 +237,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         for indices in index_iter {
             index_count += indices.len();
             assert!(!indices.is_empty(), "found empty indices");
-            assert!(is_sorted(indices), "found unsorted indices");
+            assert!(crate::util::is_sorted(indices), "found unsorted indices");
             assert!(
                 indices.last().unwrap() < &self.pairs.len(),
                 "found out of bound index for entries in indices"
@@ -366,7 +365,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     #[cfg(all(debug_assertions, feature = "more_debug_assertions"))]
     #[track_caller]
     fn debug_assert_indices(&self, indices: &[usize]) {
-        assert!(is_sorted_and_unique(indices));
+        assert!(crate::util::is_sorted_and_unique(indices));
         assert!(!indices.is_empty());
         assert!(indices.last().unwrap_or(&0) < &self.pairs.len());
     }
@@ -375,7 +374,6 @@ impl<K, V> IndexMultimapCore<K, V> {
 impl<K, V> IndexMultimapCore<K, V> {
     /// The maximum capacity before the `entries` allocation would exceed `isize::MAX`.
     //const MAX_ENTRIES_CAPACITY: usize = (isize::MAX as usize) / mem::size_of::<Bucket<K, V>>();
-
     #[inline]
     pub(super) const fn new() -> Self {
         IndexMultimapCore {
@@ -851,7 +849,7 @@ impl<K, V> IndexMultimapCore<K, V> {
             self.pairs[to..=from].rotate_right(1);
         }
 
-        // Change the sentinal index to its final position.
+        // Change the sentinel index to its final position.
         update_index_last(&mut self.indices, from_hash, usize::MAX, to);
         self.debug_assert_invariants();
     }
@@ -958,7 +956,7 @@ impl<K, V> IndexMultimapCore<K, V> {
                 //     Now as we use constant offset
                 //     and self.indices as whole also contains only unique indices,
                 //     means that the resulting indices will be unique
-                //  b) retain preserves the order and using constant offset 
+                //  b) retain preserves the order and using constant offset
                 //     cannot change the order
                 //  d) above points together ensure that individual set
                 //     of indices remain unique and sorted and the whole
@@ -1136,10 +1134,7 @@ fn assert_send_sync() {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-
     use super::*;
-    //use hashbrown::raw::RawTable;
     use crate::HashValue;
 
     // #[test]

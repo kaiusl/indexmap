@@ -1,29 +1,23 @@
 //use indexmap::IndexMultimap;
-use indexmap::IndexSet;
-use itertools::Itertools;
-
-use quickcheck::Arbitrary;
-use quickcheck::Gen;
-use quickcheck::QuickCheck;
+use std::hash::{BuildHasher, BuildHasherDefault};
 
 use fnv::FnvHasher;
-use quickcheck::TestResult;
-use std::hash::{BuildHasher, BuildHasherDefault};
+use indexmap::IndexSet;
+use itertools::Itertools;
+use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 
 type FnvBuilder = BuildHasherDefault<FnvHasher>;
 type IndexMultimapFnv<K, V> = indexmap::IndexMultimap<K, V, FnvBuilder>;
 type IndexMultimap<K, V> = indexmap::IndexMultimap<K, V>;
 
 use std::cmp::min;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::hash_map::Entry as HEntry;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::ops::Bound;
-use std::ops::Deref;
+use std::ops::{Bound, Deref};
 
 use indexmap::multimap::Entry as OEntry;
-use std::collections::hash_map::Entry as HEntry;
 
 fn set<'a, T: 'a, I>(iter: I) -> HashSet<T>
 where
