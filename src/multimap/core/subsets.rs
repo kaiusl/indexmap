@@ -17,15 +17,15 @@
 // possibility that needs to be dealt with.
 // ---
 
+use core::{iter, slice};
+
 use ::core::fmt;
 use ::core::iter::FusedIterator;
 use ::core::marker::PhantomData;
-use core::{iter, slice};
-
-use crate::util::{debug_iter_as_list, debug_iter_as_numbered_compact_list};
-use crate::Bucket;
 
 use super::indices::{UniqueIter, UniqueSlice};
+use crate::util::{debug_iter_as_list, debug_iter_as_numbered_compact_list};
+use crate::Bucket;
 
 /// Slice like construct over a subset of all the key-value pairs in the [`IndexMultimap`].
 ///
@@ -333,7 +333,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     }
 
     /// Converts `self` into long lived mutable reference to the last pair in this subset or `None` if this subset is empty.
-    pub fn into_last_mut(&mut self) -> Option<(usize, &K, &mut V)> {
+    pub fn into_last_mut(self) -> Option<(usize, &'a K, &'a mut V)> {
         match self.indices.last() {
             Some(&index) => {
                 let Bucket { key, value, .. } = &mut self.pairs[index];
