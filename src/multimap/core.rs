@@ -10,22 +10,17 @@
 //! However, we should probably not let this show in the public API or docs.
 
 use ::alloc::vec::Vec;
-use ::core::cmp;
-use ::core::iter::FusedIterator;
-use ::core::{fmt, ops};
+use ::core::{cmp, fmt, mem, ops};
 
 use ::equivalent::Equivalent;
-use ::hashbrown::raw::RawTable;
 
 pub use self::entry::{Entry, EntryIndices, OccupiedEntry, VacantEntry};
 pub use self::remove_iter::{Drain, ShiftRemove, SwapRemove};
 pub use self::subsets::{
-    Subset, SubsetIndexStorage, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
-    SubsetValuesMut, ToIndexIter,
+    Subset, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut,
 };
 
-use self::indices::{Unique, UniqueSorted};
-
+use self::indices::Indices;
 use crate::util::DebugIterAsNumberedCompactList;
 use crate::{Bucket, HashValue, TryReserveError};
 
@@ -34,10 +29,11 @@ mod indices;
 mod remove_iter;
 mod subsets;
 
-type RawBucket<Indices> = hashbrown::raw::Bucket<Indices>;
+type IndicesBucket = hashbrown::raw::Bucket<Indices>;
+type IndicesTable = hashbrown::raw::RawTable<Indices>;
 
 /// Core of the map that does not depend on S
-pub(super) struct IndexMultimapCore<K, V, Indices> {
+pub(super) struct IndexMultimapCore<K, V> {
     // ---
     // IMPL DETAILS:
     //
@@ -59,7 +55,7 @@ pub(super) struct IndexMultimapCore<K, V, Indices> {
     //
     // ---
     /// indices mapping from the entry hash to its index.
-    indices: RawTable<UniqueSorted<Indices>>,
+    indices: IndicesTable,
     /// pairs is a dense vec of key-value pairs in their order.
     pairs: Vec<Bucket<K, V>>,
 }
@@ -70,24 +66,23 @@ pub(super) struct IndexMultimapCore<K, V, Indices> {
 ///
 /// * if there is not sufficient capacity already.
 /// * potentially panics if `indices` and `current_pairs` don't match.
-fn insert_bulk_no_grow<K, V, Indices>(
-    indices: &mut RawTable<UniqueSorted<Indices>>,
+fn insert_bulk_no_grow<K, V>(
+    indices_table: &mut IndicesTable,
     current_pairs: &[Bucket<K, V>],
     new_pairs: &[Bucket<K, V>],
 ) where
     K: Eq,
-    Indices: IndexStorage,
 {
     let current_num_pairs = current_pairs.len();
     debug_assert_eq!(
         // SAFETY: we have mutable reference to the table and buckets don't escape
-        unsafe { indices.iter().map(|a| a.as_ref().as_slice().len()) }.sum::<usize>(),
+        unsafe { indices_table.iter().map(|a| a.as_ref().as_slice().len()) }.sum::<usize>(),
         current_num_pairs,
         "mismatch in the number of current pairs"
     );
 
     for (pair_index, pair) in (current_num_pairs..).zip(new_pairs) {
-        match indices.get_mut(pair.hash.get(), |indices| {
+        match indices_table.get_mut(pair.hash.get(), |indices| {
             let i = indices[0];
             if i < current_num_pairs {
                 current_pairs[i].key == pair.key
@@ -99,10 +94,11 @@ fn insert_bulk_no_grow<K, V, Indices>(
             None => {
                 // Need to check every time as we don't know how many unique keys are in the `new_pairs`
                 // Cannot use `new_pairs.len()` as regular IndexMap does.
-                assert!(indices.capacity() > indices.len());
+                assert!(indices_table.capacity() > indices_table.len());
                 // SAFETY: we asserted that sufficient capacity exists for this pair and that this pair is not in the table
+                let indices = Indices::one(pair_index);
                 unsafe {
-                    indices.insert_no_grow(pair.hash.get(), UniqueSorted::one(pair_index));
+                    indices_table.insert_no_grow(pair.hash.get(), indices);
                 }
             }
         }
@@ -111,19 +107,16 @@ fn insert_bulk_no_grow<K, V, Indices>(
 
 #[inline]
 /// Binds the mutable borrow of T to the borrow of bucket.
-unsafe fn bucket_as_mut<T>(bucket: &mut RawBucket<T>) -> &mut T {
+unsafe fn bucket_as_mut(bucket: &mut IndicesBucket) -> &mut Indices {
     unsafe { bucket.as_mut() }
 }
 
 #[inline]
-fn erase_index<Indices>(table: &mut RawTable<UniqueSorted<Indices>>, hash: HashValue, index: usize)
-where
-    Indices: IndexStorage,
-{
+fn erase_index(table: &mut IndicesTable, hash: HashValue, index: usize) {
     // Cache the index in indices as we find the bucket,
     // so that we don't need to find it again for indices.remove below
     let mut index_in_indices = None;
-    let eq_index = |indices: &UniqueSorted<Indices>| match indices.binary_search(&index) {
+    let eq_index = |indices: &Indices| match indices.binary_search(&index) {
         Ok(i) => {
             index_in_indices = Some(i);
             true
@@ -151,13 +144,7 @@ where
 /// Used by .pop() method, since we keep indices sorted and thus the index we
 /// need to remove must be in the last position.
 #[inline]
-fn erase_index_last<Indices>(
-    table: &mut RawTable<UniqueSorted<Indices>>,
-    hash: HashValue,
-    index: usize,
-) where
-    Indices: IndexStorage,
-{
+fn erase_index_last(table: &mut IndicesTable, hash: HashValue, index: usize) {
     match table.find(hash.get(), eq_index_last(index)) {
         Some(mut bucket) => {
             // SAFETY: we have &mut to table and thus to the bucket
@@ -175,14 +162,7 @@ fn erase_index_last<Indices>(
 }
 
 #[inline]
-fn update_index<Indices>(
-    table: &mut RawTable<UniqueSorted<Indices>>,
-    hash: HashValue,
-    old: usize,
-    new: usize,
-) where
-    Indices: IndexStorage,
-{
+fn update_index(table: &mut IndicesTable, hash: HashValue, old: usize, new: usize) {
     // Index to `old` in the indices
     let mut olds_index: usize = 0;
     let indices = table
@@ -204,14 +184,7 @@ fn update_index<Indices>(
 /// in the whole map and thus in any indices array as well.
 /// This avoids one binary search to find the position of old in indices array.
 #[inline]
-fn update_index_last<Indices>(
-    table: &mut RawTable<UniqueSorted<Indices>>,
-    hash: HashValue,
-    old: usize,
-    new: usize,
-) where
-    Indices: IndexStorage,
-{
+fn update_index_last(table: &mut IndicesTable, hash: HashValue, old: usize, new: usize) {
     // Index to `old` in the indices
     let indices = table
         .get_mut(hash.get(), eq_index_last(old))
@@ -220,23 +193,16 @@ fn update_index_last<Indices>(
 }
 
 #[inline(always)]
-fn get_hash<K, V, Indices>(pairs: &[Bucket<K, V>]) -> impl Fn(&UniqueSorted<Indices>) -> u64 + '_
-where
-    Indices: IndexStorage,
-{
+fn get_hash<K, V>(pairs: &[Bucket<K, V>]) -> impl Fn(&Indices) -> u64 + '_ {
     // All pairs at `indices` must have equivalent keys,
     // just take the key from the first
     move |indices| pairs[indices[0]].hash.get()
 }
 
 #[inline]
-fn equivalent<'a, K, V, Q, Indices>(
-    key: &'a Q,
-    pairs: &'a [Bucket<K, V>],
-) -> impl Fn(&UniqueSorted<Indices>) -> bool + 'a
+fn equivalent<'a, K, V, Q>(key: &'a Q, pairs: &'a [Bucket<K, V>]) -> impl Fn(&Indices) -> bool + 'a
 where
     Q: ?Sized + Equivalent<K>,
-    Indices: IndexStorage,
 {
     // All pairs at `indices` must have equivalent keys,
     // just take the key from the first
@@ -245,25 +211,16 @@ where
 
 #[allow(dead_code)]
 #[inline]
-fn eq_index<Indices>(index: usize) -> impl Fn(&UniqueSorted<Indices>) -> bool
-where
-    Indices: IndexStorage,
-{
+fn eq_index(index: usize) -> impl Fn(&Indices) -> bool {
     move |indices| indices.binary_search(&index).is_ok()
 }
 
 #[inline]
-fn eq_index_last<Indices>(index: usize) -> impl Fn(&UniqueSorted<Indices>) -> bool
-where
-    Indices: IndexStorage,
-{
+fn eq_index_last(index: usize) -> impl Fn(&Indices) -> bool {
     move |indices| *indices.last().unwrap() == index
 }
 
-impl<K, V, Indices> IndexMultimapCore<K, V, Indices>
-where
-    Indices: IndexStorage,
-{
+impl<K, V> IndexMultimapCore<K, V> {
     #[inline(always)]
     #[cfg(any(not(debug_assertions), not(feature = "more_debug_assertions")))]
     fn debug_assert_invariants(&self) {}
@@ -415,14 +372,14 @@ where
     }
 }
 
-impl<K, V, Indices> IndexMultimapCore<K, V, Indices> {
+impl<K, V> IndexMultimapCore<K, V> {
     /// The maximum capacity before the `entries` allocation would exceed `isize::MAX`.
     //const MAX_ENTRIES_CAPACITY: usize = (isize::MAX as usize) / mem::size_of::<Bucket<K, V>>();
 
     #[inline]
     pub(super) const fn new() -> Self {
         IndexMultimapCore {
-            indices: RawTable::new(),
+            indices: IndicesTable::new(),
             pairs: Vec::new(),
         }
     }
@@ -430,7 +387,7 @@ impl<K, V, Indices> IndexMultimapCore<K, V, Indices> {
     #[inline]
     pub(super) fn with_capacity(keys: usize, pairs: usize) -> Self {
         IndexMultimapCore {
-            indices: RawTable::with_capacity(keys),
+            indices: IndicesTable::with_capacity(keys),
             pairs: Vec::with_capacity(pairs),
         }
     }
@@ -477,10 +434,7 @@ impl<K, V, Indices> IndexMultimapCore<K, V, Indices> {
     }
 }
 
-impl<K, V, Indices> IndexMultimapCore<K, V, Indices>
-where
-    Indices: IndexStorage,
-{
+impl<K, V> IndexMultimapCore<K, V> {
     /// Reserve capacity for `additional` more key-value pairs.
     pub(super) fn reserve(&mut self, additional_keys: usize, additional_pairs: usize) {
         self.indices.reserve(additional_keys, get_hash(&self.pairs));
@@ -551,44 +505,40 @@ where
         indices
     }
 
-    pub(super) fn get<Q>(&self, hash: HashValue, key: &Q) -> Subset<'_, K, V, &'_ [usize]>
+    pub(super) fn get<Q>(&self, hash: HashValue, key: &Q) -> Subset<'_, K, V>
     where
         Q: ?Sized + Equivalent<K>,
     {
         let eq = equivalent(key, &self.pairs);
         if let Some(indices) = self.indices.get(hash.get(), eq) {
-            self.debug_assert_indices(indices.as_inner());
-            Subset::new(&self.pairs, indices.as_inner())
+            self.debug_assert_indices(indices);
+            Subset::new(&self.pairs, indices)
         } else {
             Subset::empty()
         }
     }
 
-    pub(super) fn get_mut<Q>(
-        &mut self,
-        hash: HashValue,
-        key: &Q,
-    ) -> SubsetMut<'_, K, V, &'_ [usize]>
+    pub(super) fn get_mut<Q>(&mut self, hash: HashValue, key: &Q) -> SubsetMut<'_, K, V>
     where
         Q: ?Sized + Equivalent<K>,
     {
         let eq = equivalent(key, &self.pairs);
         if let Some(indices) = self.indices.get(hash.get(), eq) {
-            self.debug_assert_indices(indices.as_inner());
-            SubsetMut::new(&mut self.pairs, indices.into())
+            self.debug_assert_indices(indices);
+            SubsetMut::new(&mut self.pairs, indices.as_unique_slice())
         } else {
             SubsetMut::empty()
         }
     }
 
-    pub(super) fn entry(&mut self, hash: HashValue, key: K) -> Entry<'_, K, V, Indices>
+    pub(super) fn entry(&mut self, hash: HashValue, key: K) -> Entry<'_, K, V>
     where
         K: Eq,
     {
         Entry::new(self, hash, key)
     }
 
-    fn indices_mut(&mut self) -> impl Iterator<Item = &mut UniqueSorted<Indices>> {
+    fn indices_mut(&mut self) -> impl Iterator<Item = &mut Indices> {
         // SAFETY: we're not letting any of the buckets escape this function,
         // only the item references that are appropriately bound to `&mut self`.
         unsafe { self.indices.iter().map(|bucket| bucket.as_mut()) }
@@ -599,7 +549,7 @@ where
     /// # Panics
     ///
     /// * If `index` is out of bounds for `self.pairs`
-    fn find_index(&self, index: usize) -> RawBucket<UniqueSorted<Indices>> {
+    fn find_index(&self, index: usize) -> IndicesBucket {
         // We'll get a "nice" bounds-check from indexing `self.pairs`,
         // and then we expect to find it in the table as well.
         let hash = self.pairs[index].hash.get();
@@ -622,7 +572,7 @@ where
             }
             None => {
                 self.indices
-                    .insert(hash.get(), UniqueSorted::one(i), get_hash(&self.pairs));
+                    .insert(hash.get(), Indices::one(i), get_hash(&self.pairs));
             }
         }
         self.pairs.push(Bucket { hash, key, value });
@@ -631,19 +581,14 @@ where
 
     /// Append a key-value pair, *without* checking whether it already exists,
     /// and return the pair's new index.
-    fn push(
-        &mut self,
-        hash: HashValue,
-        key: K,
-        value: V,
-    ) -> (usize, hashbrown::raw::Bucket<UniqueSorted<Indices>>) {
+    fn push(&mut self, hash: HashValue, key: K, value: V) -> (usize, IndicesBucket) {
         let i = self.pairs.len();
         let bucket = self
             .indices
-            .insert(hash.get(), UniqueSorted::one(i), get_hash(&self.pairs));
+            .insert(hash.get(), Indices::one(i), get_hash(&self.pairs));
         self.pairs.push(Bucket { hash, key, value });
         #[allow(unsafe_code)]
-        self.debug_assert_indices(unsafe { bucket.as_ref().as_inner() });
+        self.debug_assert_indices(unsafe { bucket.as_ref() });
         (i, bucket)
     }
 
@@ -737,7 +682,7 @@ where
         &mut self,
         hash: HashValue,
         key: &Q,
-    ) -> Option<ShiftRemove<'_, K, V, Indices>>
+    ) -> Option<ShiftRemove<'_, K, V>>
     where
         Q: ?Sized + Equivalent<K>,
         K: Eq,
@@ -770,7 +715,7 @@ where
         &mut self,
         hash: HashValue,
         key: &Q,
-    ) -> Option<SwapRemove<'_, K, V, Indices>>
+    ) -> Option<SwapRemove<'_, K, V>>
     where
         Q: ?Sized + Equivalent<K>,
         K: Eq,
@@ -821,7 +766,7 @@ where
     }
 
     #[inline]
-    pub(super) fn drain<R>(&mut self, range: R) -> Drain<'_, K, V, Indices>
+    pub(super) fn drain<R>(&mut self, range: R) -> Drain<'_, K, V>
     where
         R: ops::RangeBounds<usize>,
         K: Eq,
@@ -873,7 +818,7 @@ where
         //
         // There cannot be more unique keys that was in the original map or there are new entries.
         let capacity = Ord::min(unique_keys, pairs.len());
-        let mut indices = RawTable::with_capacity(capacity);
+        let mut indices = IndicesTable::with_capacity(capacity);
         // Cannot panic as we just created empty table with enough capacity.
         insert_bulk_no_grow(&mut indices, &[], &pairs);
         let new = Self { indices, pairs };
@@ -1006,7 +951,19 @@ where
             let offset = end - start;
             for mut bucket in self.indices.iter() {
                 let indices = bucket_as_mut(&mut bucket);
-                indices.retain(|i| {
+                // SAFETY:
+                //  a) we remove all the indices in range start..end,
+                //     thus any starting index >= end turned into
+                //     index in range start..end will be unique.
+                //     Now as we use constant offset
+                //     and self.indices as whole also contains only unique indices,
+                //     means that the resulting indices will be unique
+                //  b) retain preserves the order and using constant offset 
+                //     cannot change the order
+                //  d) above points together ensure that individual set
+                //     of indices remain unique and sorted and the whole
+                //     indices table will also contain unique indices
+                indices.retain_mut(|i| {
                     if *i >= end {
                         *i -= offset;
                         true
@@ -1044,7 +1001,7 @@ where
     ///     indices [3] get decremented by 1
     ///     indices [5, 6], get decremented by 2
     ///     indices [8, ...] get decremented by 3
-    unsafe fn decrement_indices_batched(&mut self, indices: &UniqueSorted<Indices>) {
+    unsafe fn decrement_indices_batched(&mut self, indices: &Indices) {
         for (offset, w) in (1..).zip(indices.windows(2)) {
             let (start, end) = (w[0], w[1]);
             unsafe { self.decrement_indices(start + 1, end, offset) };
@@ -1110,11 +1067,10 @@ where
     }
 }
 
-impl<K, V, Indices> Clone for IndexMultimapCore<K, V, Indices>
+impl<K, V> Clone for IndexMultimapCore<K, V>
 where
     K: Clone,
     V: Clone,
-    Indices: Clone + IndexStorage,
 {
     fn clone(&self) -> Self {
         let mut new = Self::new();
@@ -1133,11 +1089,10 @@ where
     }
 }
 
-impl<K, V, Indices> fmt::Debug for IndexMultimapCore<K, V, Indices>
+impl<K, V> fmt::Debug for IndexMultimapCore<K, V>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    Indices: ops::Deref<Target = [usize]>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IndexMapCore")
@@ -1150,11 +1105,10 @@ where
     }
 }
 
-struct DebugIndices<'a, K, V, Indices>(&'a IndexMultimapCore<K, V, Indices>);
+struct DebugIndices<'a, K, V>(&'a IndexMultimapCore<K, V>);
 
-impl<K, V, Indices> fmt::Debug for DebugIndices<'_, K, V, Indices>
+impl<K, V> fmt::Debug for DebugIndices<'_, K, V>
 where
-    Indices: ops::Deref<Target = [usize]>,
     K: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1176,264 +1130,9 @@ where
 #[test]
 fn assert_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<IndexMultimapCore<i32, i32, Vec<usize>>>();
-    assert_send_sync::<Entry<'_, i32, i32, Vec<usize>>>();
+    assert_send_sync::<IndexMultimapCore<i32, i32>>();
+    assert_send_sync::<Entry<'_, i32, i32>>();
 }
-
-/// Vector like types that can be used as a backing storage for [`IndexMultimap`]
-/// to hold the indices of one key.
-///
-/// # Safety
-///
-/// All methods must behave like the ones on [`alloc::vec::Vec`] (this includes panics).
-///
-/// This trait is `unsafe` because the safety of [`IndexMultimap`] depends on the
-/// fact that methods on this trait behave like the ones on [`alloc::vec::Vec`].
-/// However there is no feasibly way for us to check that they do behave as
-/// expected or guard against any funny business.
-///
-/// [`IndexMultimap`]: crate::IndexMultimap
-pub unsafe trait IndexStorage
-where
-    Self: ops::Deref<Target = [usize]> + ops::DerefMut,
-{
-    /// Creates `self` with one element.
-    ///
-    /// Must
-    fn one(v: usize) -> Self;
-    /// Creates `self` with capacity.
-    fn with_capacity(cap: usize) -> Self;
-    /// Pushes one element to `self`.
-    fn push(&mut self, v: usize);
-    /// Removes one element from `self`.
-    ///
-    /// Should ***panic*** if `index` is out of bounds.
-    fn remove(&mut self, index: usize) -> usize;
-    fn pop(&mut self) -> Option<usize>;
-    /// Retains only the elements specified by the predicate, passing a mutable reference to it.
-    fn retain<F>(&mut self, f: F)
-    where
-        F: FnMut(&mut usize) -> bool;
-    /// Returns a view into `self` as a slice.
-    fn as_slice(&self) -> &[usize];
-    /// Returns a mutable view into `self` as a slice.
-    fn as_mut_slice(&mut self) -> &mut [usize];
-    fn shrink_to(&mut self, min_capacity: usize);
-    fn shrink_to_fit(&mut self);
-    fn reserve(&mut self, additional: usize);
-    fn reserve_exact(&mut self, additional: usize);
-    fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError>;
-    fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError>;
-
-    type IntoIter: Iterator<Item = usize> + DoubleEndedIterator + ExactSizeIterator + FusedIterator;
-    fn into_iter(self) -> Self::IntoIter;
-}
-
-unsafe impl IndexStorage for Vec<usize> {
-    #[inline]
-    fn one(v: usize) -> Self {
-        alloc::vec![v]
-    }
-
-    #[inline]
-    fn with_capacity(cap: usize) -> Self {
-        Vec::with_capacity(cap)
-    }
-
-    #[inline]
-    fn push(&mut self, v: usize) {
-        self.push(v)
-    }
-
-    #[inline]
-    fn remove(&mut self, i: usize) -> usize {
-        self.remove(i)
-    }
-
-    #[inline]
-    fn pop(&mut self) -> Option<usize> {
-        self.pop()
-    }
-
-    #[inline]
-    fn retain<F>(&mut self, f: F)
-    where
-        F: FnMut(&mut usize) -> bool,
-    {
-        self.retain_mut(f)
-    }
-
-    #[inline]
-    fn as_slice(&self) -> &[usize] {
-        self.as_slice()
-    }
-
-    #[inline]
-    fn as_mut_slice(&mut self) -> &mut [usize] {
-        self.as_mut_slice()
-    }
-
-    #[inline]
-    fn shrink_to(&mut self, min_capacity: usize) {
-        self.shrink_to(min_capacity)
-    }
-
-    #[inline]
-    fn shrink_to_fit(&mut self) {
-        self.shrink_to_fit()
-    }
-
-    #[inline]
-    fn reserve(&mut self, additional: usize) {
-        self.reserve(additional)
-    }
-
-    #[inline]
-    fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
-        self.try_reserve(additional)
-            .map_err(TryReserveError::from_alloc)
-    }
-
-    #[inline]
-    fn reserve_exact(&mut self, additional: usize) {
-        self.reserve_exact(additional)
-    }
-
-    #[inline]
-    fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
-        self.try_reserve_exact(additional)
-            .map_err(TryReserveError::from_alloc)
-    }
-
-    type IntoIter = alloc::vec::IntoIter<usize>;
-
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        IntoIterator::into_iter(self)
-    }
-}
-
-// impl<const N: usize> IndexStorage for SmallVec<[usize; N]> {
-//     #[inline]
-//     fn one(v: usize) -> Self {
-//         smallvec::smallvec![v]
-//     }
-
-//     #[inline]
-//     fn with_capacity(cap: usize) -> Self {
-//         SmallVec::with_capacity(cap)
-//     }
-
-//     #[inline]
-//     fn push(&mut self, v: usize) {
-//         self.push(v)
-//     }
-//     #[inline]
-//     fn remove(&mut self, i: usize) -> usize {
-//         self.remove(i)
-//     }
-//     #[inline]
-//     fn retain<F>(&mut self, f: F)
-//     where
-//         F: FnMut(&mut usize) -> bool,
-//     {
-//         self.retain_mut(f)
-//     }
-
-//     fn as_slice(&self) -> &[usize] {
-//         self.as_slice()
-//     }
-
-//     fn as_mut_slice(&mut self) -> &mut [usize] {
-//         self.as_mut_slice()
-//     }
-//     fn shrink_to(&mut self, _min_capacity: usize) {}
-//     fn shrink_to_fit(&mut self) {
-//         self.shrink_to_fit()
-//     }
-
-//     fn reserve(&mut self, additional: usize) {
-//         self.reserve(additional)
-//     }
-
-//     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
-//         self.try_reserve(additional).map_err(|e| match e {
-//             smallvec::CollectionAllocErr::CapacityOverflow => TryReserveError::capacity_overflow(),
-//             smallvec::CollectionAllocErr::AllocErr { layout } => TryReserveError::alloc(layout),
-//         })
-//     }
-
-//     fn reserve_exact(&mut self, additional: usize) {
-//         self.reserve_exact(additional)
-//     }
-
-//     fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
-//         self.try_reserve_exact(additional).map_err(|e| match e {
-//             smallvec::CollectionAllocErr::CapacityOverflow => TryReserveError::capacity_overflow(),
-//             smallvec::CollectionAllocErr::AllocErr { layout } => TryReserveError::alloc(layout),
-//         })
-//     }
-// }
-
-// impl<const N: usize> IndexStorage for arrayvec::ArrayVec<usize, N> {
-//     #[inline]
-//     fn one(v: usize) -> Self {
-//         let mut s = arrayvec::ArrayVec::new();
-//         s.push(v);
-//         s
-//     }
-
-//     #[inline]
-//     fn with_capacity(cap: usize) -> Self {
-//         arrayvec::ArrayVec::new()
-//     }
-
-//     /// ***Panics*** if the vector is already full.
-//     #[inline]
-//     fn push(&mut self, v: usize) {
-//         self.push(v)
-//     }
-
-//     #[inline]
-//     fn remove(&mut self, i: usize) -> usize {
-//         self.remove(i)
-//     }
-//     #[inline]
-//     fn retain<F>(&mut self, f: F)
-//     where
-//         F: FnMut(&mut usize) -> bool,
-//     {
-//         self.retain(f)
-//     }
-
-//     fn as_slice(&self) -> &[usize] {
-//         self.as_slice()
-//     }
-
-//     fn as_mut_slice(&mut self) -> &mut [usize] {
-//         self.as_mut_slice()
-//     }
-//     fn shrink_to(&mut self, _min_capacity: usize) {}
-//     fn shrink_to_fit(&mut self) {}
-
-//     fn reserve(&mut self, additional: usize) {
-//         assert!(additional == 0, "cannot resize ArrayVec")
-//     }
-
-//     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
-//         assert!(additional == 0, "cannot resize ArrayVec");
-//         Ok(())
-//     }
-
-//     fn reserve_exact(&mut self, additional: usize) {
-//         assert!(additional == 0, "cannot resize ArrayVec")
-//     }
-
-//     fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
-//         assert!(additional == 0, "cannot resize ArrayVec");
-//         Ok(())
-//     }
-// }
 
 #[cfg(test)]
 mod tests {
@@ -1453,7 +1152,7 @@ mod tests {
     //         }
     //     }
 
-    //     let mut table = RawTable::<Vec<usize>>::with_capacity(10);
+    //     let mut table = IndicesTable::with_capacity(10);
     //     let mut pairs = Vec::new();
 
     //     let new_pairs = vec![bucket(1)];
@@ -1477,7 +1176,7 @@ mod tests {
 
     #[test]
     fn update_index_test() {
-        let mut map = IndexMultimapCore::<i32, i32, Vec<usize>>::new();
+        let mut map = IndexMultimapCore::<i32, i32>::new();
         map.insert_append_full(HashValue(1), 1, 1);
         map.insert_append_full(HashValue(2), 2, 2);
         map.insert_append_full(HashValue(1), 1, 3);

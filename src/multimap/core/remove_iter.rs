@@ -3,14 +3,14 @@
 use ::core::iter::FusedIterator;
 use ::core::ptr::{self, NonNull};
 use ::core::{fmt, mem, ops, slice};
-use ::hashbrown::raw::RawTable;
 
-use super::{
-    equivalent, update_index_last, IndexMultimapCore, IndexStorage, RawBucket, UniqueSorted,
-};
+use super::indices::UniqueSortedIter;
+use super::{equivalent, update_index_last, IndexMultimapCore, IndicesBucket, IndicesTable};
 use crate::map::Slice;
 use crate::util::{debug_iter_as_list, simplify_range, DebugIterAsNumberedCompactList};
 use crate::{Bucket, Equivalent, HashValue};
+
+use super::Indices;
 
 /// An iterator that shift removes pairs from [`IndexMultimap`].
 ///
@@ -19,10 +19,8 @@ use crate::{Bucket, Equivalent, HashValue};
 ///
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`IndexMultimap::shift_remove`]: crate::IndexMultimap::shift_remove
-pub struct ShiftRemove<'a, K, V, Indices>
+pub struct ShiftRemove<'a, K, V>
 where
-    // Needed by Drop impl
-    Indices: IndexStorage,
     // Needed by map.debug_assert_invariants if cfg!(more_debug_assertions) in Drop impl.
     // It's a bit annoying but since one cannot reasonably use a map without
     // `K: Eq`, then I don't mind too much about having this bound here.
@@ -57,9 +55,9 @@ where
     * on construction we must take ownership of `map.indices`
       and leave an empty table in it's place
     --- */
-    map: &'a mut IndexMultimapCore<K, V, Indices>,
+    map: &'a mut IndexMultimapCore<K, V>,
     /// map.indices we took ownership of
-    indices_table: RawTable<UniqueSorted<Indices>>,
+    indices_table: IndicesTable,
     /// The index of pair that was removed previously.
     prev_removed_idx: Option<usize>,
     /// The number of items that have been removed thus far.
@@ -67,16 +65,15 @@ where
     /// The original length of `vec` prior to removing.
     orig_len: usize,
     /// The indices that will be removed.
-    indices_to_remove: UniqueSorted<Indices::IntoIter>,
+    indices_to_remove: UniqueSortedIter<alloc::vec::IntoIter<usize>>,
 }
 
-impl<'a, K: 'a, V: 'a, Indices: 'a> ShiftRemove<'a, K, V, Indices>
+impl<'a, K: 'a, V: 'a> ShiftRemove<'a, K, V>
 where
-    Indices: IndexStorage,
     K: Eq,
 {
     pub(super) fn new<Q>(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        map: &'a mut IndexMultimapCore<K, V>,
         hash: HashValue,
         key: &Q,
     ) -> Option<Self>
@@ -95,8 +92,8 @@ where
     ///
     /// * `bucket` must be alive and from the `map`
     pub(super) unsafe fn new_raw(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
-        bucket: RawBucket<UniqueSorted<Indices>>,
+        map: &'a mut IndexMultimapCore<K, V>,
+        bucket: IndicesBucket,
     ) -> Self {
         unsafe {
             let (indices, _) = map.indices.remove(bucket);
@@ -107,10 +104,7 @@ where
     /// # Safety
     ///
     /// See the comment in the type definition for safety.
-    unsafe fn new_unchecked(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
-        indices: UniqueSorted<Indices>,
-    ) -> Self {
+    unsafe fn new_unchecked(map: &'a mut IndexMultimapCore<K, V>, indices: Indices) -> Self {
         debug_assert!(indices.is_empty() || *indices.last().unwrap() < map.pairs.len());
 
         unsafe { map.decrement_indices_batched(&indices) };
@@ -136,7 +130,7 @@ where
     /// `i` must be self.indices_to_remove.next() or equivalent
     #[inline]
     unsafe fn shift_remove_index(
-        map: &mut IndexMultimapCore<K, V, Indices>,
+        map: &mut IndexMultimapCore<K, V>,
         prev_removed_idx: &mut Option<usize>,
         del: &mut usize,
         i: usize,
@@ -191,9 +185,8 @@ where
     }
 }
 
-impl<K, V, Indices> Iterator for ShiftRemove<'_, K, V, Indices>
+impl<K, V> Iterator for ShiftRemove<'_, K, V>
 where
-    Indices: IndexStorage,
     K: Eq,
 {
     type Item = (usize, K, V);
@@ -223,9 +216,8 @@ where
     }
 }
 
-impl<K, V, Indices> ExactSizeIterator for ShiftRemove<'_, K, V, Indices>
+impl<K, V> ExactSizeIterator for ShiftRemove<'_, K, V>
 where
-    Indices: IndexStorage,
     K: Eq,
 {
     fn len(&self) -> usize {
@@ -233,28 +225,20 @@ where
     }
 }
 
-impl<K, V, Indices> FusedIterator for ShiftRemove<'_, K, V, Indices>
-where
-    Indices: IndexStorage,
-    K: Eq,
-{
-}
+impl<K, V> FusedIterator for ShiftRemove<'_, K, V> where K: Eq {}
 
-impl<K, V, Indices> Drop for ShiftRemove<'_, K, V, Indices>
+impl<K, V> Drop for ShiftRemove<'_, K, V>
 where
-    Indices: IndexStorage,
     K: Eq,
 {
     fn drop(&mut self) {
-        struct Guard<'a, 'b, K, V, Indices>(&'a mut ShiftRemove<'b, K, V, Indices>)
+        struct Guard<'a, 'b, K, V>(&'a mut ShiftRemove<'b, K, V>)
         where
-            K: Eq,
-            Indices: IndexStorage;
+            K: Eq;
 
-        impl<'a, 'b, K, V, Indices> Drop for Guard<'a, 'b, K, V, Indices>
+        impl<'a, 'b, K, V> Drop for Guard<'a, 'b, K, V>
         where
             K: Eq,
-            Indices: IndexStorage,
         {
             fn drop(&mut self) {
                 let inner = &mut *self.0;
@@ -307,12 +291,10 @@ where
     }
 }
 
-impl<'a, K, V, Indices> fmt::Debug for ShiftRemove<'a, K, V, Indices>
+impl<'a, K, V> fmt::Debug for ShiftRemove<'a, K, V>
 where
     K: fmt::Debug + Eq,
     V: fmt::Debug,
-    Indices: fmt::Debug + IndexStorage,
-    Indices::IntoIter: fmt::Debug + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let items_iter = self.indices_to_remove.clone().map(|i| {
@@ -350,10 +332,8 @@ where
 ///
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`IndexMultimap::swap_remove`]: crate::IndexMultimap::swap_remove
-pub struct SwapRemove<'a, K, V, Indices>
+pub struct SwapRemove<'a, K, V>
 where
-    // Needed by Drop impl
-    Indices: IndexStorage,
     // Needed by map.debug_assert_invariants if cfg!(more_debug_assertions) in Drop impl.
     // It's a bit annoying but since one cannot reasonably use a map without
     // `K: Eq`, then I don't mind too much about having this bound here.
@@ -383,12 +363,12 @@ where
     * on construction we must take ownership of map.indices
       and leave an empty table in it's place
     --- */
-    map: &'a mut IndexMultimapCore<K, V, Indices>,
-    indices_table: RawTable<UniqueSorted<Indices>>,
+    map: &'a mut IndexMultimapCore<K, V>,
+    indices_table: IndicesTable,
     /// The original length of `map.pairs` prior to removing.
     orig_len: usize,
     /// Indices that need to be removed from `map.pairs`.
-    indices_to_remove: UniqueSorted<Indices>,
+    indices_to_remove: Indices,
     /// `0..indices.len()`, used to index into `self.indices` to get indices to remove
     iter_forward: ops::Range<usize>,
     /// `0..indices.len() - 1`, used to index into `self.indices` backwards to determine which index to swap with
@@ -400,13 +380,12 @@ where
     prev_backward: usize,
 }
 
-impl<'a, K, V, Indices> SwapRemove<'a, K, V, Indices>
+impl<'a, K, V> SwapRemove<'a, K, V>
 where
-    Indices: IndexStorage,
     K: Eq,
 {
     pub(super) fn new<Q>(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
+        map: &'a mut IndexMultimapCore<K, V>,
         hash: HashValue,
         key: &Q,
     ) -> Option<Self>
@@ -425,8 +404,8 @@ where
     ///
     /// * `bucket` must be alive and from the `map`
     pub(super) unsafe fn new_raw(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
-        bucket: RawBucket<UniqueSorted<Indices>>,
+        map: &'a mut IndexMultimapCore<K, V>,
+        bucket: IndicesBucket,
     ) -> Self {
         unsafe {
             let (indices, _) = map.indices.remove(bucket);
@@ -437,10 +416,7 @@ where
     /// # Safety
     ///
     /// See the comment in the type definition for safety.
-    unsafe fn new_unchecked(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
-        indices: UniqueSorted<Indices>,
-    ) -> Self {
+    unsafe fn new_unchecked(map: &'a mut IndexMultimapCore<K, V>, indices: Indices) -> Self {
         debug_assert!(!indices.is_empty());
         debug_assert!(*indices.last().unwrap() < map.pairs.len());
 
@@ -545,9 +521,8 @@ where
     }
 }
 
-impl<K, V, Indices> Iterator for SwapRemove<'_, K, V, Indices>
+impl<K, V> Iterator for SwapRemove<'_, K, V>
 where
-    Indices: IndexStorage,
     K: Eq,
 {
     type Item = (usize, K, V);
@@ -577,9 +552,8 @@ where
     }
 }
 
-impl<K, V, Indices> ExactSizeIterator for SwapRemove<'_, K, V, Indices>
+impl<K, V> ExactSizeIterator for SwapRemove<'_, K, V>
 where
-    Indices: IndexStorage,
     K: Eq,
 {
     fn len(&self) -> usize {
@@ -587,27 +561,19 @@ where
     }
 }
 
-impl<K, V, Indices> FusedIterator for SwapRemove<'_, K, V, Indices>
-where
-    Indices: IndexStorage,
-    K: Eq,
-{
-}
+impl<K, V> FusedIterator for SwapRemove<'_, K, V> where K: Eq {}
 
-impl<K, V, Indices> Drop for SwapRemove<'_, K, V, Indices>
+impl<K, V> Drop for SwapRemove<'_, K, V>
 where
-    Indices: IndexStorage,
     K: Eq,
 {
     fn drop(&mut self) {
-        struct Guard<'a, 'b, K, V, Indices>(&'a mut SwapRemove<'b, K, V, Indices>)
+        struct Guard<'a, 'b, K, V>(&'a mut SwapRemove<'b, K, V>)
         where
-            Indices: IndexStorage,
             K: Eq;
 
-        impl<'a, 'b, K, V, Indices> Drop for Guard<'a, 'b, K, V, Indices>
+        impl<'a, 'b, K, V> Drop for Guard<'a, 'b, K, V>
         where
-            Indices: IndexStorage,
             K: Eq,
         {
             fn drop(&mut self) {
@@ -632,11 +598,10 @@ where
     }
 }
 
-impl<'a, K, V, Indices> fmt::Debug for SwapRemove<'a, K, V, Indices>
+impl<'a, K, V> fmt::Debug for SwapRemove<'a, K, V>
 where
     K: fmt::Debug + Eq,
     V: fmt::Debug,
-    Indices: fmt::Debug + IndexStorage,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let items_iter = self.iter_forward.clone().map(|i| {
@@ -674,10 +639,9 @@ where
 ///
 /// [`drain`]: crate::IndexMultimap::drain
 /// [`IndexMultimap`]: crate::IndexMultimap
-pub struct Drain<'a, K, V, Indices>
+pub struct Drain<'a, K, V>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     /* ---
     Effectively a copy of `std::vec::Drain` implementation (as of Rust 1.68),
@@ -697,9 +661,9 @@ where
     [head] [tail], new length of vec = start + tail_len
     --- */
     /// Pointer to map.
-    map: NonNull<IndexMultimapCore<K, V, Indices>>,
+    map: NonNull<IndexMultimapCore<K, V>>,
     /// map.indices
-    indices_table: RawTable<UniqueSorted<Indices>>,
+    indices_table: IndicesTable,
     // Index of first item that's drained
     start: usize,
     /// Index of tail to preserve
@@ -711,27 +675,24 @@ where
 }
 
 // &self can only read, there is no interior mutability
-unsafe impl<K, V, Indices> Sync for Drain<'_, K, V, Indices>
+unsafe impl<K, V> Sync for Drain<'_, K, V>
 where
     K: Sync + Eq,
     V: Sync,
-    Indices: Sync + IndexStorage,
 {
 }
-unsafe impl<K, V, Indices> Send for Drain<'_, K, V, Indices>
+unsafe impl<K, V> Send for Drain<'_, K, V>
 where
     K: Send + Eq,
     V: Send,
-    Indices: Send + IndexStorage,
 {
 }
 
-impl<'a, K, V, Indices> Drain<'a, K, V, Indices>
+impl<'a, K, V> Drain<'a, K, V>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
-    pub(super) fn new<R>(map: &'a mut IndexMultimapCore<K, V, Indices>, range: R) -> Self
+    pub(super) fn new<R>(map: &'a mut IndexMultimapCore<K, V>, range: R) -> Self
     where
         R: ops::RangeBounds<usize>,
         K: Eq,
@@ -775,11 +736,10 @@ where
     }
 }
 
-impl<K, V, Indices> fmt::Debug for Drain<'_, K, V, Indices>
+impl<K, V> fmt::Debug for Drain<'_, K, V>
 where
     K: fmt::Debug + Eq,
     V: fmt::Debug,
-    Indices: fmt::Debug + IndexStorage,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if cfg!(feature = "test_debug") {
@@ -798,10 +758,9 @@ where
     }
 }
 
-impl<K, V, Indices> Iterator for Drain<'_, K, V, Indices>
+impl<K, V> Iterator for Drain<'_, K, V>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     type Item = (K, V);
 
@@ -818,10 +777,9 @@ where
     }
 }
 
-impl<K, V, Indices> DoubleEndedIterator for Drain<'_, K, V, Indices>
+impl<K, V> DoubleEndedIterator for Drain<'_, K, V>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     #[inline]
     fn next_back(&mut self) -> Option<(K, V)> {
@@ -832,43 +790,34 @@ where
     }
 }
 
-impl<K, V, Indices> ExactSizeIterator for Drain<'_, K, V, Indices>
+impl<K, V> ExactSizeIterator for Drain<'_, K, V>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     fn len(&self) -> usize {
         self.to_remove.len()
     }
 }
 
-impl<K, V, Indices> FusedIterator for Drain<'_, K, V, Indices>
-where
-    K: Eq,
-    Indices: IndexStorage,
-{
-}
+impl<K, V> FusedIterator for Drain<'_, K, V> where K: Eq {}
 
-impl<K, V, Indices> Drop for Drain<'_, K, V, Indices>
+impl<K, V> Drop for Drain<'_, K, V>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     fn drop(&mut self) {
         /// Moves back the un-`Drain`ed elements to restore the original `Vec`.
         /// Swaps back the indices that we took from the map at construction.
-        struct DropGuard<'r, 'a, K, V, Indices>
+        struct DropGuard<'r, 'a, K, V>
         where
             K: Eq,
-            Indices: IndexStorage,
         {
-            drain: &'r mut Drain<'a, K, V, Indices>,
+            drain: &'r mut Drain<'a, K, V>,
         }
 
-        impl<'r, 'a, K, V, Indices> Drop for DropGuard<'r, 'a, K, V, Indices>
+        impl<'r, 'a, K, V> Drop for DropGuard<'r, 'a, K, V>
         where
             K: Eq,
-            Indices: IndexStorage,
         {
             fn drop(&mut self) {
                 unsafe {
@@ -946,7 +895,7 @@ mod tests {
     fn swap_remove_index_to_swap_with() {
         // Removes all key=1, expected swap positions are all where key!=1
         fn test(insert: &[i32], current: usize, expected: &[usize]) {
-            let mut map = IndexMultimapCore::<i32, i32, Vec<usize>>::new();
+            let mut map = IndexMultimapCore::<i32, i32>::new();
             for &k in insert {
                 map.insert_append_full(HashValue(k as usize), k, 0);
             }

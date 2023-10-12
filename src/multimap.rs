@@ -30,9 +30,8 @@ use ::std::collections::hash_map::RandomState;
 use equivalent::Equivalent;
 
 pub use self::core::{
-    Drain, Entry, EntryIndices, IndexStorage, OccupiedEntry, ShiftRemove, Subset,
-    SubsetIndexStorage, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
-    SubsetValuesMut, SwapRemove, ToIndexIter, VacantEntry,
+    Drain, Entry, EntryIndices, OccupiedEntry, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
+    SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
 };
 
 use self::core::IndexMultimapCore;
@@ -111,22 +110,21 @@ mod tests;
 /// [`get()`]: Self::get
 /// [`get_index()`]: Self::get_index
 #[cfg(feature = "std")]
-pub struct IndexMultimap<K, V, S = RandomState, Indices = Vec<usize>> {
-    core: IndexMultimapCore<K, V, Indices>,
+pub struct IndexMultimap<K, V, S = RandomState> {
+    core: IndexMultimapCore<K, V>,
     hash_builder: S,
 }
 #[cfg(not(feature = "std"))]
-pub struct IndexMultimap<K, V, S, Indices = Vec<usize>> {
-    pub(crate) core: IndexMultimapCore<K, V, Indices>,
+pub struct IndexMultimap<K, V, S> {
+    pub(crate) core: IndexMultimapCore<K, V>,
     hash_builder: S,
 }
 
-impl<K, V, S, Indices> Clone for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> Clone for IndexMultimap<K, V, S>
 where
     K: Clone,
     V: Clone,
     S: Clone,
-    Indices: Clone + IndexStorage,
 {
     fn clone(&self) -> Self {
         IndexMultimap {
@@ -142,11 +140,10 @@ where
 }
 
 #[cfg(not(feature = "test_debug"))]
-impl<K, V, S, Indices> fmt::Debug for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> fmt::Debug for IndexMultimap<K, V, S>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    Indices: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let iter = self.iter().zip(0usize..).map(|((k, v), i)| (i, k, v));
@@ -155,11 +152,10 @@ where
 }
 
 #[cfg(feature = "test_debug")]
-impl<K, V, S, Indices> fmt::Debug for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> fmt::Debug for IndexMultimap<K, V, S>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    Indices: ops::Deref<Target = [usize]>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Let the inner `IndexMultimapCore` print all of its details
@@ -188,7 +184,7 @@ impl<K, V> IndexMultimap<K, V> {
     }
 }
 
-impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
+impl<K, V, S> IndexMultimap<K, V, S> {
     /// Create a new map with capacity for `keys` unique keys and `pairs` total
     /// key-value pairs. (Does not allocate if both `keys` and `entries` are zero.)
     ///
@@ -304,11 +300,10 @@ impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices> {
         IntoValues::new(self.core.into_pairs())
     }
 }
-impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices>
+impl<K, V, S> IndexMultimap<K, V, S>
 where
     K: Hash + Eq,
     S: BuildHasher,
-    Indices: IndexStorage,
 {
     /// Shortens the map, keeping the first `len` elements and dropping the rest.
     ///
@@ -481,7 +476,7 @@ where
     /// in-place manipulation.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn entry(&mut self, key: K) -> Entry<'_, K, V, Indices> {
+    pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
         let hash = self.hash(&key);
         self.core.entry(hash, key)
     }
@@ -501,7 +496,7 @@ where
     /// If the `key` has no equivalent in the map, then the returned subset is empty.
     ///
     /// Computes in **O(1)** time (average).
-    pub fn get<Q>(&self, key: &Q) -> Subset<'_, K, V, &'_ [usize]>
+    pub fn get<Q>(&self, key: &Q) -> Subset<'_, K, V>
     where
         Q: Hash + Equivalent<K> + ?Sized,
     {
@@ -518,7 +513,7 @@ where
     /// If the `key` has no equivalent in the map, then the returned subset is empty.
     ///
     /// Computes in **O(1)** time (average).
-    pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> SubsetMut<'_, K, V, &'_ [usize]>
+    pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> SubsetMut<'_, K, V>
     where
         Q: Hash + Equivalent<K>,
     {
@@ -568,7 +563,7 @@ where
     /// being dropped (is *leaked*),
     /// the map may have lost and leaked elements arbitrarily,
     /// including pairs not associated with given key.
-    pub fn swap_remove<Q>(&mut self, key: &Q) -> Option<SwapRemove<'_, K, V, Indices>>
+    pub fn swap_remove<Q>(&mut self, key: &Q) -> Option<SwapRemove<'_, K, V>>
     where
         Q: Hash + Equivalent<K> + ?Sized,
     {
@@ -600,7 +595,7 @@ where
     /// being dropped (is *leaked*),
     /// the map may have lost and leaked elements arbitrarily,
     /// including pairs not associated with given key.
-    pub fn shift_remove<Q>(&mut self, key: &Q) -> Option<ShiftRemove<'_, K, V, Indices>>
+    pub fn shift_remove<Q>(&mut self, key: &Q) -> Option<ShiftRemove<'_, K, V>>
     where
         Q: Hash + Equivalent<K> + ?Sized,
     {
@@ -748,7 +743,7 @@ where
     /// the end point is greater than the length of the map.
     ///
     /// [`mem::forget`]: ::core::mem::forget
-    pub fn drain<R>(&mut self, range: R) -> Drain<'_, K, V, Indices>
+    pub fn drain<R>(&mut self, range: R) -> Drain<'_, K, V>
     where
         R: ops::RangeBounds<usize>,
     {
@@ -806,10 +801,7 @@ where
     }
 }
 
-impl<K, V, S, Indices> IndexMultimap<K, V, S, Indices>
-where
-    Indices: IndexStorage,
-{
+impl<K, V, S> IndexMultimap<K, V, S> {
     /// Returns a slice of all the key-value pairs in the map.
     ///
     /// Computes in **O(1)** time.
@@ -936,10 +928,9 @@ where
 /// map.insert("foo", 1);
 /// println!("{:?}", map[10]); // panics!
 /// ```
-impl<K, V, S, Indices> Index<usize> for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> Index<usize> for IndexMultimap<K, V, S>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     type Output = V;
 
@@ -982,10 +973,9 @@ where
 /// map.insert("foo", 1);
 /// map[10] = 1; // panics!
 /// ```
-impl<K, V, S, Indices> IndexMut<usize> for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> IndexMut<usize> for IndexMultimap<K, V, S>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     /// Returns a mutable reference to the value at the supplied `index`.
     ///
@@ -997,10 +987,9 @@ where
     }
 }
 
-impl<K, V, Indices, S> IntoIterator for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> IntoIterator for IndexMultimap<K, V, S>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     type Item = (K, V);
     type IntoIter = IntoIter<K, V>;
@@ -1010,10 +999,9 @@ where
     }
 }
 
-impl<'a, K, V, Indices, S> IntoIterator for &'a IndexMultimap<K, V, S, Indices>
+impl<'a, K, V, S> IntoIterator for &'a IndexMultimap<K, V, S>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
@@ -1023,10 +1011,9 @@ where
     }
 }
 
-impl<'a, K, V, Indices, S> IntoIterator for &'a mut IndexMultimap<K, V, S, Indices>
+impl<'a, K, V, S> IntoIterator for &'a mut IndexMultimap<K, V, S>
 where
     K: Eq,
-    Indices: IndexStorage,
 {
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
@@ -1036,11 +1023,10 @@ where
     }
 }
 
-impl<K, V, S, Indices> FromIterator<(K, V)> for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> FromIterator<(K, V)> for IndexMultimap<K, V, S>
 where
     K: Hash + Eq,
     S: BuildHasher + Default,
-    Indices: IndexStorage,
 {
     /// Create an [`IndexMultimap`] from the sequence of key-value pairs in the
     /// iterable.
@@ -1061,10 +1047,9 @@ where
 
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-impl<K, V, Indices, const N: usize> From<[(K, V); N]> for IndexMultimap<K, V, RandomState, Indices>
+impl<K, V, const N: usize> From<[(K, V); N]> for IndexMultimap<K, V, RandomState>
 where
     K: Hash + Eq,
-    Indices: IndexStorage,
 {
     /// # Examples
     ///
@@ -1080,11 +1065,10 @@ where
     }
 }
 
-impl<K, V, S, Indices> Extend<(K, V)> for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> Extend<(K, V)> for IndexMultimap<K, V, S>
 where
     K: Hash + Eq,
     S: BuildHasher,
-    Indices: IndexStorage,
 {
     /// Extend the map with all key-value pairs in the iterable.
     ///
@@ -1117,11 +1101,10 @@ where
     }
 }
 
-impl<'a, K, V, Indices, S> Extend<(&'a K, &'a V)> for IndexMultimap<K, V, S, Indices>
+impl<'a, K, V, S> Extend<(&'a K, &'a V)> for IndexMultimap<K, V, S>
 where
     K: Hash + Eq + Copy,
     V: Copy,
-    Indices: IndexStorage,
     S: BuildHasher,
 {
     /// Extend the map with all key-value pairs in the iterable.
@@ -1139,7 +1122,7 @@ where
     }
 }
 
-impl<K, V, S, Indices> Default for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> Default for IndexMultimap<K, V, S>
 where
     S: Default,
 {
@@ -1151,17 +1134,14 @@ where
 
 /// This implementation does not consider the order as a part of equality.
 /// Use [`IndexMultimap::as_slice`] and compare the results if the order is important.
-impl<K, V1, S1, Indices1, V2, S2, Indices2> PartialEq<IndexMultimap<K, V2, S2, Indices2>>
-    for IndexMultimap<K, V1, S1, Indices1>
+impl<K, V1, S1, V2, S2> PartialEq<IndexMultimap<K, V2, S2>> for IndexMultimap<K, V1, S1>
 where
     K: Hash + Eq,
     V1: PartialEq<V2>,
     S1: BuildHasher,
     S2: BuildHasher,
-    Indices1: IndexStorage,
-    Indices2: IndexStorage,
 {
-    fn eq(&self, other: &IndexMultimap<K, V2, S2, Indices2>) -> bool {
+    fn eq(&self, other: &IndexMultimap<K, V2, S2>) -> bool {
         if self.len_pairs() != other.len_pairs() {
             return false;
         }
@@ -1175,11 +1155,10 @@ where
     }
 }
 
-impl<K, V, S, Indices> Eq for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> Eq for IndexMultimap<K, V, S>
 where
     K: Eq + Hash,
     V: Eq,
     S: BuildHasher,
-    Indices: IndexStorage,
 {
 }

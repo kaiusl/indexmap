@@ -100,7 +100,7 @@ macro_rules! indexmultimap {
             // Note: `stringify!($key)` is just here to consume the repetition,
             // but we throw away that string literal during constant evaluation.
             const CAP: usize = <[()]>::len(&[$({ stringify!($key); }),*]);
-            let mut map = $crate::IndexMultimap::<_, _, ::std::collections::hash_map::RandomState, Vec<usize>>::with_capacity(CAP, CAP);
+            let mut map = $crate::IndexMultimap::<_, _, ::std::collections::hash_map::RandomState>::with_capacity(CAP, CAP);
             $(
                 map.insert_append($key, $value);
             )*

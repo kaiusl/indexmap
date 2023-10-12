@@ -17,14 +17,15 @@
 // possibility that needs to be dealt with.
 // ---
 
-use ::alloc::vec::Vec;
 use ::core::fmt;
 use ::core::iter::FusedIterator;
 use ::core::marker::PhantomData;
+use core::{iter, slice};
 
-use super::Unique;
 use crate::util::{debug_iter_as_list, debug_iter_as_numbered_compact_list};
 use crate::Bucket;
+
+use super::indices::{UniqueIter, UniqueSlice};
 
 /// Slice like construct over a subset of all the key-value pairs in the [`IndexMultimap`].
 ///
@@ -34,26 +35,20 @@ use crate::Bucket;
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`IndexMultimap::get`]: crate::IndexMultimap::get
 /// [`OccupiedEntry::get`]: crate::multimap::OccupiedEntry::get
-pub struct Subset<'a, K, V, Indices> {
+pub struct Subset<'a, K, V> {
     // See the comment on top of this module for impl details
     pairs: &'a [Bucket<K, V>],
-    indices: Indices,
+    indices: &'a [usize],
 }
 
-impl<'a, K, V, Indices> Subset<'a, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<'a, K, V> Subset<'a, K, V> {
     /// Indices should be in bounds for pairs, **panics** can occur otherwise.
-    pub(super) fn new(pairs: &'a [Bucket<K, V>], indices: Indices) -> Self {
+    pub(super) fn new(pairs: &'a [Bucket<K, V>], indices: &'a [usize]) -> Self {
         debug_assert!(indices.iter().max().unwrap_or(&0) < &pairs.len());
         Self { pairs, indices }
     }
 
-    pub(crate) fn empty() -> Self
-    where
-        Indices: Default,
-    {
+    pub(crate) fn empty() -> Self {
         Self {
             pairs: Default::default(),
             indices: Default::default(),
@@ -70,7 +65,7 @@ where
         self.len() == 0
     }
 
-    pub fn indices(&self) -> &[usize] {
+    pub fn indices(&self) -> &'a [usize] {
         &self.indices
     }
 
@@ -108,52 +103,36 @@ where
     }
 
     /// Returns an iterator over all the pairs in this subset.
-    pub fn iter(&self) -> SubsetIter<'a, K, V, <Indices as ToIndexIter<'_>>::Iter> {
-        SubsetIter::new(self.pairs, self.indices.index_iter(internal::Guard))
+    pub fn iter(&self) -> SubsetIter<'a, K, V> {
+        SubsetIter::new(self.pairs, self.indices.iter())
     }
 
     /// Returns an iterator over all the keys in this subset.
     ///
     /// Note that the iterator yields one key for each pair.
     /// That is there may be duplicate keys.
-    pub fn keys(&self) -> SubsetKeys<'a, K, V, <Indices as ToIndexIter<'_>>::Iter> {
-        SubsetKeys::new(self.pairs, self.indices.index_iter(internal::Guard))
-    }
-
-    /// Converts into a iterator over all the keys in this subset.
-    pub fn into_keys(self) -> SubsetKeys<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
-        SubsetKeys::new(self.pairs, self.indices.into_index_iter(internal::Guard))
+    pub fn keys(&self) -> SubsetKeys<'a, K, V> {
+        SubsetKeys::new(self.pairs, self.indices.iter())
     }
 
     /// Returns an iterator over all the values in this subset.
-    pub fn values(&self) -> SubsetValues<'a, K, V, <Indices as ToIndexIter<'_>>::Iter> {
-        SubsetValues::new(self.pairs, self.indices.index_iter(internal::Guard))
-    }
-
-    /// Converts into a iterator over all the values in this subset.
-    pub fn into_values(self) -> SubsetValues<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
-        SubsetValues::new(self.pairs, self.indices.into_index_iter(internal::Guard))
+    pub fn values(&self) -> SubsetValues<'a, K, V> {
+        SubsetValues::new(self.pairs, self.indices.iter())
     }
 }
 
-impl<'a, K, V, Indices> IntoIterator for Subset<'a, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<'a, K, V> IntoIterator for Subset<'a, K, V> {
     type Item = (usize, &'a K, &'a V);
-    type IntoIter = SubsetIter<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter>;
+    type IntoIter = SubsetIter<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
-        SubsetIter::new(self.pairs, self.indices.into_index_iter(internal::Guard))
+        self.iter()
     }
 }
 
-impl<'a, K, V, Indices> IntoIterator for &'a Subset<'_, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<'a, K, V> IntoIterator for &'a Subset<'_, K, V> {
     type Item = (usize, &'a K, &'a V);
-    type IntoIter = SubsetIter<'a, K, V, <Indices as ToIndexIter<'a>>::Iter>;
+    type IntoIter = SubsetIter<'a, K, V>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -161,10 +140,7 @@ where
     }
 }
 
-impl<'a, K, V, Indices> core::ops::Index<usize> for Subset<'a, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<'a, K, V> core::ops::Index<usize> for Subset<'a, K, V> {
     type Output = V;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -173,23 +149,19 @@ where
     }
 }
 
-impl<'a, K, V, Indices> Clone for Subset<'a, K, V, Indices>
-where
-    Indices: SubsetIndexStorage + Clone,
-{
+impl<'a, K, V> Clone for Subset<'a, K, V> {
     fn clone(&self) -> Self {
         Self {
             pairs: self.pairs,
-            indices: self.indices.clone(),
+            indices: self.indices,
         }
     }
 }
 
-impl<'a, K, V, Indices> fmt::Debug for Subset<'a, K, V, Indices>
+impl<'a, K, V> fmt::Debug for Subset<'a, K, V>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    Indices: SubsetIndexStorage + fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         debug_subset(f, "Subset", self.iter())
@@ -207,15 +179,12 @@ where
 /// [`IndexMultimap::get_mut`]: crate::IndexMultimap::get_mut
 /// [`OccupiedEntry::get_mut`]: crate::multimap::OccupiedEntry::get_mut
 /// [`Entry::or_insert`]: crate::multimap::Entry::or_insert
-pub struct SubsetMut<'a, K, V, Indices> {
+pub struct SubsetMut<'a, K, V> {
     pairs: &'a mut [Bucket<K, V>],
-    indices: Unique<Indices>,
+    indices: &'a UniqueSlice<usize>,
 }
 
-impl<'a, K, V, Indices> SubsetMut<'a, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<'a, K, V> SubsetMut<'a, K, V> {
     #[cfg(not(debug_assertions))]
     #[inline(always)]
     fn debug_assert_invariants(&self) {}
@@ -234,9 +203,9 @@ where
             .unwrap_or(true));
     }
 
-    pub(super) fn new(pairs: &'a mut [Bucket<K, V>], indices: Unique<Indices>) -> Self {
-        let inner = indices.as_inner();
-        assert!(inner.is_empty() || *indices.last().unwrap() < pairs.len());
+    pub(super) fn new(pairs: &'a mut [Bucket<K, V>], indices: &'a UniqueSlice<usize>) -> Self {
+        //let inner = indices.as_inner();
+        assert!(indices.is_empty() || *indices.last().unwrap() < pairs.len());
         Self { pairs, indices }
     }
 
@@ -375,116 +344,89 @@ where
     }
 
     /// Returns an iterator over all the pairs in this subset.
-    pub fn iter(&self) -> SubsetIter<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+    pub fn iter(&self) -> SubsetIter<'_, K, V> {
         self.debug_assert_invariants();
-        SubsetIter::new(
-            self.pairs,
-            self.indices.as_inner().index_iter(internal::Guard),
-        )
+        SubsetIter::new(self.pairs, self.indices.as_slice().iter())
     }
 
     /// Returns a mutable iterator over all the pairs in this subset.
-    pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+    pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V> {
         self.debug_assert_invariants();
-        SubsetIterMut::new(self.pairs, self.indices.index_iter(internal::Guard))
+        SubsetIterMut::new(self.pairs, self.indices.iter())
     }
 
     /// Returns an iterator over all the keys in this subset.
     ///
     /// Note that the iterator yield one key for each pair.
     /// That is there may be duplicate keys.
-    pub fn keys(&self) -> SubsetKeys<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+    pub fn keys(&self) -> SubsetKeys<'_, K, V> {
         self.debug_assert_invariants();
-        SubsetKeys::new(
-            self.pairs,
-            self.indices.as_inner().index_iter(internal::Guard),
-        )
+        SubsetKeys::new(self.pairs, self.indices.as_slice().iter())
     }
 
     /// Converts into a iterator over all the keys in this subset.
-    pub fn into_keys(self) -> SubsetKeys<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
-        SubsetKeys::new(
-            self.pairs,
-            self.indices.into_inner().into_index_iter(internal::Guard),
-        )
+    pub fn into_keys(self) -> SubsetKeys<'a, K, V> {
+        SubsetKeys::new(self.pairs, self.indices.as_slice().into_iter())
     }
 
     /// Returns an iterator over all the values in this subset.
-    pub fn values(&self) -> SubsetValues<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+    pub fn values(&self) -> SubsetValues<'_, K, V> {
         self.debug_assert_invariants();
-        SubsetValues::new(
-            self.pairs,
-            self.indices.as_inner().index_iter(internal::Guard),
-        )
+        SubsetValues::new(self.pairs, self.indices.as_slice().iter())
     }
 
     /// Returns a mutable iterator over all the values in this subset.
-    pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V, <Indices as ToIndexIter<'_>>::Iter> {
+    pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V> {
         self.debug_assert_invariants();
-        SubsetValuesMut::new(self.pairs, self.indices.index_iter(internal::Guard))
+        SubsetValuesMut::new(self.pairs, self.indices.iter())
     }
 
     /// Converts into a mutable iterator over all the values in this subset.
-    pub fn into_values(
-        self,
-    ) -> SubsetValuesMut<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter> {
+    pub fn into_values(self) -> SubsetValuesMut<'a, K, V> {
         self.debug_assert_invariants();
-        SubsetValuesMut::new(self.pairs, self.indices.into_index_iter(internal::Guard))
+        SubsetValuesMut::new(self.pairs, self.indices.iter())
     }
 }
 
-impl<'a, K, V, Indices> fmt::Debug for SubsetMut<'a, K, V, Indices>
+impl<'a, K, V> fmt::Debug for SubsetMut<'a, K, V>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    Indices: fmt::Debug + SubsetIndexStorage,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         debug_subset(f, "SubsetMut", self.iter())
     }
 }
 
-impl<'a, K, V, Indices> IntoIterator for SubsetMut<'a, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<'a, K, V> IntoIterator for SubsetMut<'a, K, V> {
     type Item = (usize, &'a K, &'a mut V);
-    type IntoIter = SubsetIterMut<'a, K, V, <Indices as SubsetIndexStorage>::IntoIter>;
+    type IntoIter = SubsetIterMut<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.debug_assert_invariants();
-        SubsetIterMut::new(self.pairs, self.indices.into_index_iter(internal::Guard))
+        SubsetIterMut::new(self.pairs, self.indices.iter())
     }
 }
 
-impl<'a, K, V, Indices> IntoIterator for &'a SubsetMut<'_, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<'a, K, V> IntoIterator for &'a SubsetMut<'_, K, V> {
     type Item = (usize, &'a K, &'a V);
-    type IntoIter = SubsetIter<'a, K, V, <Indices as ToIndexIter<'a>>::Iter>;
+    type IntoIter = SubsetIter<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
 }
 
-impl<'a, K, V, Indices> IntoIterator for &'a mut SubsetMut<'_, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<'a, K, V> IntoIterator for &'a mut SubsetMut<'_, K, V> {
     type Item = (usize, &'a K, &'a mut V);
-    type IntoIter = SubsetIterMut<'a, K, V, <Indices as ToIndexIter<'a>>::Iter>;
+    type IntoIter = SubsetIterMut<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
     }
 }
 
-impl<K, V, Indices> core::ops::Index<usize> for SubsetMut<'_, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<K, V> core::ops::Index<usize> for SubsetMut<'_, K, V> {
     type Output = V;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -492,10 +434,7 @@ where
     }
 }
 
-impl<K, V, Indices> core::ops::IndexMut<usize> for SubsetMut<'_, K, V, Indices>
-where
-    Indices: SubsetIndexStorage,
-{
+impl<K, V> core::ops::IndexMut<usize> for SubsetMut<'_, K, V> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         self.nth_mut(index).expect("index out of bounds").2
     }
@@ -507,7 +446,7 @@ macro_rules! iter_methods {
             Some($index) => {
                 let $pair = $self
                     .pairs
-                    .get($index)
+                    .get(*$index)
                     .expect("expected indices to be in bounds");
                 Some($($return)*)
             }
@@ -516,21 +455,16 @@ macro_rules! iter_methods {
     };
     ($name:ident, $ty:ty, $item:ty, $index:ident, $pair:ident, $($return:tt)*) => {
 
-        impl<'a, K, V, I> $ty
-        where
-            I: Iterator<Item = usize>,
+        impl<'a, K, V> $ty
         {
             /// * `indices` should be in bounds for `pairs`,
             ///   otherwise the iterator will panic
-            pub(super) fn new(pairs: &'a [Bucket<K, V>], indices: I) -> Self {
+            pub(super) fn new(pairs: &'a [Bucket<K, V>], indices: slice::Iter<'a, usize>) -> Self {
                 Self { pairs, indices }
             }
         }
 
-        impl<'a, K, V, I> Iterator for $ty
-        where
-            I: Iterator<Item = usize>,
-        {
+        impl<'a, K, V> Iterator for $ty {
             type Item = $item;
 
             fn next(&mut self) -> Option<Self::Item> {
@@ -566,7 +500,7 @@ macro_rules! iter_methods {
                 self.indices
                     .filter_map(|$index| {
                         let $pair = self.pairs
-                            .get($index)
+                            .get(*$index)
                             .expect("expected indices to be in bounds");
                         Some($($return)*)
                     })
@@ -574,10 +508,7 @@ macro_rules! iter_methods {
             }
         }
 
-        impl<'a, K, V, I> DoubleEndedIterator for $ty
-        where
-            I: Iterator<Item = usize> + DoubleEndedIterator,
-        {
+        impl<'a, K, V> DoubleEndedIterator for $ty {
             fn next_back(&mut self) -> Option<Self::Item> {
                 iter_methods!(@get_item self, self.indices.next_back(), $index, $pair, $($return)*)
             }
@@ -587,24 +518,15 @@ macro_rules! iter_methods {
             }
         }
 
-        impl<'a, K, V, I> ExactSizeIterator for $ty
-        where
-            I: Iterator<Item = usize> + ExactSizeIterator,
-        {
+        impl<'a, K, V> ExactSizeIterator for $ty {
             fn len(&self) -> usize {
                 self.indices.len()
             }
         }
 
-        impl<'a, K, V, I> FusedIterator for $ty where
-            I: Iterator<Item = usize> + FusedIterator
-        {
-        }
+        impl<'a, K, V> FusedIterator for $ty {}
 
-        impl<'a, K, V, I> Clone for $ty
-        where
-            I: Clone,
-        {
+        impl<'a, K, V> Clone for $ty {
             fn clone(&self) -> Self {
                 Self {
                     pairs: self.pairs,
@@ -614,15 +536,14 @@ macro_rules! iter_methods {
         }
 
 
-        impl<'a, K, V, I> fmt::Debug for $ty
+        impl<'a, K, V> fmt::Debug for $ty
         where
             K: fmt::Debug,
             V: fmt::Debug,
-            I: Clone + Iterator<Item = usize>,
         {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 let pairs = self.indices.clone().map(|$index| {
-                    let $pair = &self.pairs[$index];
+                    let $pair = &self.pairs[*$index];
                     $($return)*
                 });
                 debug_subset(f, stringify!($name), pairs)
@@ -639,19 +560,19 @@ macro_rules! iter_methods {
 /// [`Subset::iter`]: super::Subset::iter
 /// [`SubsetMut::iter`]: super::SubsetMut::iter
 /// [`IndexMultimap`]: crate::IndexMultimap
-pub struct SubsetIter<'a, K, V, I> {
+pub struct SubsetIter<'a, K, V> {
     // See the comment on top of the super module (subsets.rs) for impl details
     pairs: &'a [Bucket<K, V>],
-    indices: I,
+    indices: slice::Iter<'a, usize>,
 }
 
 iter_methods!(
     SubsetIter,
-    SubsetIter<'a, K, V, I>,
+    SubsetIter<'a, K, V>,
     (usize, &'a K, &'a V),
     index,
     pair,
-    (index, &pair.key, &pair.value)
+    (*index, &pair.key, &pair.value)
 );
 
 /// An iterator over a subset of all the keys in the [`IndexMultimap`].
@@ -662,15 +583,15 @@ iter_methods!(
 /// [`Subset::keys`]: super::Subset::keys
 /// [`SubsetMut::keys`]: super::SubsetMut::keys
 /// [`IndexMultimap`]: crate::IndexMultimap
-pub struct SubsetKeys<'a, K, V, I> {
+pub struct SubsetKeys<'a, K, V> {
     // See the comment on top of the super module (subsets.rs) for impl details
     pairs: &'a [Bucket<K, V>],
-    indices: I,
+    indices: slice::Iter<'a, usize>,
 }
 
 iter_methods!(
     SubsetKeys,
-    SubsetKeys<'a, K, V, I>,
+    SubsetKeys<'a, K, V>,
     &'a K,
     index,
     pair,
@@ -685,15 +606,15 @@ iter_methods!(
 /// [`Subset::values`]: super::Subset::values
 /// [`SubsetMut::values`]: super::SubsetMut::values
 /// [`IndexMultimap`]: crate::IndexMultimap
-pub struct SubsetValues<'a, K, V, I> {
+pub struct SubsetValues<'a, K, V> {
     // See the comment on top of the super module (subsets.rs) for impl details
     pairs: &'a [Bucket<K, V>],
-    indices: I,
+    indices: slice::Iter<'a, usize>,
 }
 
 iter_methods!(
     SubsetValues,
-    SubsetValues<'a, K, V, I>,
+    SubsetValues<'a, K, V>,
     &'a V,
     index,
     pair,
@@ -707,7 +628,7 @@ iter_methods!(
 ///
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`SubsetMut::iter_mut`]: crate::multimap::SubsetMut::iter_mut
-pub struct SubsetIterMut<'a, K, V, I> {
+pub struct SubsetIterMut<'a, K, V> {
     // ---
     // See the comment on top of the super module (subsets.rs) for impl details
     //
@@ -719,16 +640,16 @@ pub struct SubsetIterMut<'a, K, V, I> {
     // ---
     pairs_start: *mut Bucket<K, V>,
     pairs_len: usize,
-    indices: Unique<I>,
+    indices: UniqueIter<slice::Iter<'a, usize>>,
     // What self.pairs really is, constructors should take this to bind the lifetime properly
     _marker: PhantomData<&'a mut [Bucket<K, V>]>,
 }
 
-impl<'a, K, V, I> SubsetIterMut<'a, K, V, I>
-where
-    I: Iterator<Item = usize>,
-{
-    pub(super) fn new(pairs: &'a mut [Bucket<K, V>], indices: Unique<I>) -> Self {
+impl<'a, K, V> SubsetIterMut<'a, K, V> {
+    pub(super) fn new(
+        pairs: &'a mut [Bucket<K, V>],
+        indices: UniqueIter<slice::Iter<'a, usize>>,
+    ) -> Self {
         Self {
             pairs_start: pairs.as_mut_ptr(),
             pairs_len: pairs.len(),
@@ -737,10 +658,7 @@ where
         }
     }
 
-    fn get_items(&self) -> impl Iterator<Item = (usize, &K, &V)>
-    where
-        I: Clone,
-    {
+    fn get_items(&self) -> impl Iterator<Item = (usize, &K, &V)> {
         // SAFETY:
         //  * we assert i is in bounds
         //  * self.pairs is not modified never
@@ -751,7 +669,7 @@ where
         //  * the lifetime of returned values is bound to the borrow of self by
         //    this function call. Thus any further call to Iterator methods will
         //    invalidate these references as it should.
-        self.indices.clone().map(|i| unsafe {
+        self.indices.clone().map(|&i| unsafe {
             assert!(i < self.pairs_len);
             let pair = &*self.pairs_start.add(i);
             (i, &pair.key, &pair.value)
@@ -785,17 +703,16 @@ where
     }
 }
 
-impl<'a, K, V, I> Iterator for SubsetIterMut<'a, K, V, I>
+impl<'a, K, V> Iterator for SubsetIterMut<'a, K, V>
 where
     K: 'a,
     V: 'a,
-    I: Iterator<Item = usize>,
 {
     type Item = (usize, &'a K, &'a mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.indices.next() {
-            Some(index) => {
+            Some(&index) => {
                 Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
             }
             None => None,
@@ -804,7 +721,7 @@ where
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
         match self.indices.nth(n) {
-            Some(index) => {
+            Some(&index) => {
                 Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
             }
             None => None,
@@ -816,7 +733,7 @@ where
         Self: Sized,
     {
         match self.indices.last() {
-            Some(index) => {
+            Some(&index) => {
                 Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
             }
             None => None,
@@ -839,20 +756,19 @@ where
         Self: Sized,
     {
         self.indices
-            .map(|index| unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
+            .map(|&index| unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
             .collect()
     }
 }
 
-impl<'a, K, V, I> DoubleEndedIterator for SubsetIterMut<'a, K, V, I>
+impl<'a, K, V> DoubleEndedIterator for SubsetIterMut<'a, K, V>
 where
     K: 'a,
     V: 'a,
-    I: Iterator<Item = usize> + DoubleEndedIterator,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.indices.next_back() {
-            Some(index) => {
+            Some(&index) => {
                 Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
             }
             None => None,
@@ -861,7 +777,7 @@ where
 
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         match self.indices.nth_back(n) {
-            Some(index) => {
+            Some(&index) => {
                 Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
             }
             None => None,
@@ -869,30 +785,27 @@ where
     }
 }
 
-impl<'a, K, V, I> ExactSizeIterator for SubsetIterMut<'a, K, V, I>
+impl<'a, K, V> ExactSizeIterator for SubsetIterMut<'a, K, V>
 where
     K: 'a,
     V: 'a,
-    I: Iterator<Item = usize> + ExactSizeIterator,
 {
     fn len(&self) -> usize {
         self.indices.len()
     }
 }
 
-impl<'a, K, V, I> FusedIterator for SubsetIterMut<'a, K, V, I>
+impl<'a, K, V> FusedIterator for SubsetIterMut<'a, K, V>
 where
     K: 'a,
     V: 'a,
-    I: Iterator<Item = usize> + FusedIterator,
 {
 }
 
-impl<K, V: fmt::Debug, I> fmt::Debug for SubsetIterMut<'_, K, V, I>
+impl<K, V: fmt::Debug> fmt::Debug for SubsetIterMut<'_, K, V>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    I: Iterator<Item = usize> + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         debug_subset(f, "SubsetIterMut", self.get_items())
@@ -906,28 +819,27 @@ where
 ///
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`SubsetMut::values_mut`]: crate::multimap::SubsetMut::values_mut
-pub struct SubsetValuesMut<'a, K, V, I> {
+pub struct SubsetValuesMut<'a, K, V> {
     // SAFETY: see SubsetIterMut's definition
-    inner: SubsetIterMut<'a, K, V, I>,
+    inner: SubsetIterMut<'a, K, V>,
 }
 
-impl<'a, K, V, I> SubsetValuesMut<'a, K, V, I>
-where
-    I: Iterator<Item = usize>,
-{
+impl<'a, K, V> SubsetValuesMut<'a, K, V> {
     #[inline]
-    pub(super) fn new(pairs: &'a mut [Bucket<K, V>], indices: Unique<I>) -> Self {
+    pub(super) fn new(
+        pairs: &'a mut [Bucket<K, V>],
+        indices: UniqueIter<slice::Iter<'a, usize>>,
+    ) -> Self {
         Self {
             inner: SubsetIterMut::new(pairs, indices),
         }
     }
 }
 
-impl<'a, K, V, I> Iterator for SubsetValuesMut<'a, K, V, I>
+impl<'a, K, V> Iterator for SubsetValuesMut<'a, K, V>
 where
     K: 'a,
     V: 'a,
-    I: Iterator<Item = usize>,
 {
     type Item = &'a mut V;
 
@@ -974,11 +886,10 @@ where
     }
 }
 
-impl<'a, K, V, I> DoubleEndedIterator for SubsetValuesMut<'a, K, V, I>
+impl<'a, K, V> DoubleEndedIterator for SubsetValuesMut<'a, K, V>
 where
     K: 'a,
     V: 'a,
-    I: Iterator<Item = usize> + DoubleEndedIterator,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.inner.next_back() {
@@ -995,107 +906,31 @@ where
     }
 }
 
-impl<'a, K, V, I> ExactSizeIterator for SubsetValuesMut<'a, K, V, I>
+impl<'a, K, V> ExactSizeIterator for SubsetValuesMut<'a, K, V>
 where
     K: 'a,
     V: 'a,
-    I: Iterator<Item = usize> + ExactSizeIterator,
 {
     fn len(&self) -> usize {
         self.inner.len()
     }
 }
 
-impl<'a, K, V, I> FusedIterator for SubsetValuesMut<'a, K, V, I>
+impl<'a, K, V> FusedIterator for SubsetValuesMut<'a, K, V>
 where
     K: 'a,
     V: 'a,
-    I: Iterator<Item = usize> + FusedIterator,
 {
 }
 
-impl<K, V: fmt::Debug, I> fmt::Debug for SubsetValuesMut<'_, K, V, I>
+impl<K, V: fmt::Debug> fmt::Debug for SubsetValuesMut<'_, K, V>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    I: Iterator<Item = usize> + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let items = self.inner.get_items().map(|(_, _, v)| v);
         debug_subset(f, "SubsetValuesMut", items)
-    }
-}
-
-pub(super) mod internal {
-    pub struct Guard;
-    pub trait Sealed {}
-    pub struct Bounds<T>(T);
-    impl<T> Sealed for Bounds<T> {}
-    impl<'a> Sealed for &'a [usize] {}
-    impl Sealed for alloc::vec::Vec<usize> {}
-}
-
-/// GAT workaround for [`SubsetIndexStorage`] providing an associated `Iter`
-/// type that could borrow from self.
-pub trait ToIndexIter<'a>
-where
-    Self: internal::Sealed,
-{
-    type Iter: Iterator<Item = usize>
-        + DoubleEndedIterator
-        + ExactSizeIterator
-        + FusedIterator
-        + Clone;
-}
-
-/// Used by `Subset` and other similar structs to
-/// be generic over the indices container.
-#[allow(clippy::missing_safety_doc)] // sealed trait, safety is below
-pub unsafe trait SubsetIndexStorage
-where
-    Self: internal::Sealed + for<'a> ToIndexIter<'a> + core::ops::Deref<Target = [usize]> + Default,
-{
-    // # Safety
-    //
-    // Methods must behave like the ones on Vec
-    type IntoIter: Iterator<Item = usize> + DoubleEndedIterator + ExactSizeIterator + FusedIterator;
-
-    #[doc(hidden)]
-    fn into_index_iter(self, _: internal::Guard) -> Self::IntoIter;
-
-    #[doc(hidden)]
-    fn index_iter(&self, _: internal::Guard) -> <Self as ToIndexIter<'_>>::Iter;
-}
-
-impl<'a> ToIndexIter<'a> for &[usize] {
-    type Iter = ::core::iter::Copied<::core::slice::Iter<'a, usize>>;
-}
-
-unsafe impl<'a> SubsetIndexStorage for &'a [usize] {
-    type IntoIter = ::core::iter::Copied<::core::slice::Iter<'a, usize>>;
-
-    fn into_index_iter(self, _: internal::Guard) -> Self::IntoIter {
-        core::iter::IntoIterator::into_iter(self).copied()
-    }
-
-    fn index_iter(&self, _: internal::Guard) -> <Self as ToIndexIter<'_>>::Iter {
-        <[usize]>::iter(self).copied()
-    }
-}
-
-impl<'a> ToIndexIter<'a> for Vec<usize> {
-    type Iter = ::core::iter::Copied<::core::slice::Iter<'a, usize>>;
-}
-
-unsafe impl SubsetIndexStorage for Vec<usize> {
-    type IntoIter = alloc::vec::IntoIter<usize>;
-
-    fn into_index_iter(self, _: internal::Guard) -> Self::IntoIter {
-        core::iter::IntoIterator::into_iter(self)
-    }
-
-    fn index_iter(&self, _: internal::Guard) -> <Self as ToIndexIter<'_>>::Iter {
-        <[usize]>::iter(self).copied()
     }
 }
 
@@ -1116,6 +951,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use super::super::indices::UniqueSlice;
     use super::*;
     use crate::util::is_unique;
     use crate::HashValue;
@@ -1139,13 +975,13 @@ mod tests {
             bucket(1, 14),
         ];
         // SAFETY: inner is unique slice of usize, no interior  mutability and it's not mutable iterator
-        let indices = unsafe { Unique::new_unchecked([0usize, 2, 3, 5].as_slice()) };
+        let indices = unsafe { UniqueSlice::from_slice_unchecked([0usize, 2, 3, 5].as_slice()) };
 
-        let iter1 = SubsetIterMut::new(&mut pairs, indices.slice_iter().copied());
+        let iter1 = SubsetIterMut::new(&mut pairs, indices.iter());
         let items = iter1.collect::<Vec<_>>();
         assert!(is_unique(&items));
 
-        let mut iter2 = SubsetIterMut::new(&mut pairs, indices.slice_iter().copied());
+        let mut iter2 = SubsetIterMut::new(&mut pairs, indices.iter());
         let items = [
             iter2.next(),
             iter2.nth(1),

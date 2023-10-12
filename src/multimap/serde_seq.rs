@@ -5,7 +5,6 @@ use ::core::marker::PhantomData;
 use ::serde::de::{SeqAccess, Visitor};
 use ::serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::IndexStorage;
 use crate::IndexMultimap;
 
 /// Serializes an [`IndexMultimap`] as an ordered sequence.
@@ -25,13 +24,12 @@ use crate::IndexMultimap;
 ///
 /// Requires crate feature `"serde"`
 pub fn serialize<K, V, S, Indices, T>(
-    map: &IndexMultimap<K, V, S, Indices>,
+    map: &IndexMultimap<K, V, S>,
     serializer: T,
 ) -> Result<T::Ok, T::Error>
 where
     K: Serialize + Hash + Eq,
     V: Serialize,
-    Indices: IndexStorage,
     S: BuildHasher,
     T: Serializer,
 {
@@ -39,16 +37,15 @@ where
 }
 
 /// Visitor to deserialize a *sequenced* [`IndexMultimap`]
-struct SeqVisitor<K, V, S, Indices>(PhantomData<(K, V, S, Indices)>);
+struct SeqVisitor<K, V, S>(PhantomData<(K, V, S)>);
 
-impl<'de, K, V, Indices, S> Visitor<'de> for SeqVisitor<K, V, S, Indices>
+impl<'de, K, V, S> Visitor<'de> for SeqVisitor<K, V, S>
 where
     K: Deserialize<'de> + Eq + Hash,
     V: Deserialize<'de>,
-    Indices: IndexStorage,
     S: Default + BuildHasher,
 {
-    type Value = IndexMultimap<K, V, S, Indices>;
+    type Value = IndexMultimap<K, V, S>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "a sequenced map")
@@ -87,12 +84,11 @@ where
 /// Requires crate feature `"serde"`
 pub fn deserialize<'de, D, K, V, S, Indices>(
     deserializer: D,
-) -> Result<IndexMultimap<K, V, S, Indices>, D::Error>
+) -> Result<IndexMultimap<K, V, S>, D::Error>
 where
     D: Deserializer<'de>,
     K: Deserialize<'de> + Eq + Hash,
     V: Deserialize<'de>,
-    Indices: IndexStorage,
     S: Default + BuildHasher,
 {
     deserializer.deserialize_seq(SeqVisitor(PhantomData))

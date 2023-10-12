@@ -1,4 +1,3 @@
-use indexmap::multimap::IndexStorage;
 //use indexmap::IndexMultimap;
 use indexmap::IndexSet;
 use itertools::Itertools;
@@ -287,14 +286,13 @@ where
     }
 }
 
-fn do_ops<K, V, I, S>(
+fn do_ops<K, V, S>(
     ops: &[Op<K, V>],
-    a: &mut indexmap::IndexMultimap<K, V, S, I>,
+    a: &mut indexmap::IndexMultimap<K, V, S>,
     b: &mut HashMap<K, Vec<V>>,
 ) where
     K: Hash + Eq + Clone + std::fmt::Debug,
     V: Clone + std::fmt::Debug,
-    I: IndexStorage + std::fmt::Debug,
     S: BuildHasher,
 {
     for op in ops {

@@ -165,14 +165,12 @@ where
     }
 }
 
-use crate::multimap::IndexStorage;
 use crate::IndexMultimap;
 
-impl<K, V, S, Indices> Serialize for IndexMultimap<K, V, S, Indices>
+impl<K, V, S> Serialize for IndexMultimap<K, V, S>
 where
     K: Serialize + Hash + Eq,
     V: Serialize,
-    Indices: IndexStorage,
     S: BuildHasher,
 {
     fn serialize<T>(&self, serializer: T) -> Result<T::Ok, T::Error>
@@ -183,16 +181,15 @@ where
     }
 }
 
-struct IndexMultimapVisitor<K, V, S, Indices>(PhantomData<(K, V, S, Indices)>);
+struct IndexMultimapVisitor<K, V, S>(PhantomData<(K, V, S)>);
 
-impl<'de, K, V, S, Indices> Visitor<'de> for IndexMultimapVisitor<K, V, S, Indices>
+impl<'de, K, V, S> Visitor<'de> for IndexMultimapVisitor<K, V, S>
 where
     K: Deserialize<'de> + Eq + Hash,
     V: Deserialize<'de>,
-    Indices: IndexStorage,
     S: Default + BuildHasher,
 {
-    type Value = IndexMultimap<K, V, S, Indices>;
+    type Value = IndexMultimap<K, V, S>;
 
     fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(formatter, "a map")
@@ -213,11 +210,10 @@ where
     }
 }
 
-impl<'de, K, V, S, Indices> Deserialize<'de> for IndexMultimap<K, V, S, Indices>
+impl<'de, K, V, S> Deserialize<'de> for IndexMultimap<K, V, S>
 where
     K: Deserialize<'de> + Eq + Hash,
     V: Deserialize<'de>,
-    Indices: IndexStorage,
     S: Default + BuildHasher,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -228,11 +224,10 @@ where
     }
 }
 
-impl<'de, K, V, S, Indices, E> IntoDeserializer<'de, E> for IndexMultimap<K, V, S, Indices>
+impl<'de, K, V, S, E> IntoDeserializer<'de, E> for IndexMultimap<K, V, S>
 where
     K: IntoDeserializer<'de, E> + Eq + Hash,
     V: IntoDeserializer<'de, E>,
-    Indices: IndexStorage,
     S: BuildHasher,
     E: Error,
 {

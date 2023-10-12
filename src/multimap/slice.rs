@@ -1,6 +1,6 @@
 use ::core::ops::{self, Bound, Index, IndexMut};
 
-use super::{IndexMultimap, IndexStorage};
+use super::IndexMultimap;
 use crate::map::Slice;
 
 // We can't have `impl<I: RangeBounds<usize>> Index<I>` because that conflicts
@@ -8,10 +8,9 @@ use crate::map::Slice;
 // Instead, we repeat the implementations for all the core range types.
 macro_rules! impl_index {
     ($($range:ty),*) => {$(
-        impl<K, V, S, Indices> Index<$range> for IndexMultimap<K, V, S, Indices>
+        impl<K, V, S> Index<$range> for IndexMultimap<K, V, S>
         where
             K: Eq,
-            Indices: IndexStorage
         {
             type Output = Slice<K, V>;
 
@@ -20,10 +19,9 @@ macro_rules! impl_index {
             }
         }
 
-        impl<K, V, S, Indices> IndexMut<$range> for IndexMultimap<K, V, S, Indices>
+        impl<K, V, S> IndexMut<$range> for IndexMultimap<K, V, S>
         where
             K: Eq,
-            Indices: IndexStorage
         {
             fn index_mut(&mut self, range: $range) -> &mut Self::Output {
                 Slice::from_mut_slice(&mut self.core.as_mut_pairs()[range])

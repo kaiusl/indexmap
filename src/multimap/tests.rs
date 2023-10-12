@@ -8,7 +8,7 @@ use ::std::string::String;
 
 use super::*;
 
-type IndexMultimapVec<K, V> = IndexMultimap<K, V, RandomState, Vec<usize>>;
+type IndexMultimapVec<K, V> = IndexMultimap<K, V, RandomState>;
 
 #[test]
 fn it_works() {
@@ -97,10 +97,8 @@ fn extend() {
 }
 
 #[track_caller]
-fn check_subentries<K, V>(
-    subentries: &Subset<'_, K, V, impl SubsetIndexStorage>,
-    expected: &[(usize, &K, &V)],
-) where
+fn check_subentries<K, V>(subentries: &Subset<'_, K, V>, expected: &[(usize, &K, &V)])
+where
     K: Eq + Debug,
     V: Eq + Debug,
 {
@@ -119,7 +117,7 @@ fn check_subentries<K, V>(
 
 #[track_caller]
 fn check_subentries_mut(
-    subentries: &mut SubsetMut<'_, i32, i32, impl SubsetIndexStorage>,
+    subentries: &mut SubsetMut<'_, i32, i32>,
     expected: &[(usize, &i32, &mut i32)],
 ) {
     assert_eq!(subentries.len(), expected.len());

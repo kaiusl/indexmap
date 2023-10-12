@@ -1,36 +1,26 @@
 #![allow(unsafe_code)]
 
-use ::core::iter::Copied;
-use ::core::slice;
 use core::{fmt, ops};
 
 use super::{
-    equivalent, IndexMultimapCore, IndexStorage, RawBucket, ShiftRemove, Subset, SubsetIter,
-    SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, Unique,
-    UniqueSorted,
+    equivalent, IndexMultimapCore, IndicesBucket, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
+    SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
 };
 use crate::util::{DebugIterAsList, DebugIterAsNumberedCompactList};
 use crate::{Bucket, HashValue};
 
 /// Entry for an existing key-value pair or a vacant location to
 /// insert one.
-pub enum Entry<'a, K, V, Indices> {
+pub enum Entry<'a, K, V> {
     /// Existing slot with equivalent key.
-    Occupied(OccupiedEntry<'a, K, V, Indices>),
+    Occupied(OccupiedEntry<'a, K, V>),
     /// Vacant slot (no equivalent key in the map).
-    Vacant(VacantEntry<'a, K, V, Indices>),
+    Vacant(VacantEntry<'a, K, V>),
 }
 
-impl<'a, K, V, Indices> Entry<'a, K, V, Indices>
-where
-    Indices: IndexStorage,
-{
+impl<'a, K, V> Entry<'a, K, V> {
     #[inline]
-    pub(super) fn new(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
-        hash: HashValue,
-        key: K,
-    ) -> Self
+    pub(super) fn new(map: &'a mut IndexMultimapCore<K, V>, hash: HashValue, key: K) -> Self
     where
         K: Eq,
     {
@@ -74,7 +64,7 @@ where
     /// Modifies the entries if it is occupied.
     pub fn and_modify<F>(self, f: F) -> Self
     where
-        F: FnOnce(SubsetMut<'_, K, V, &'_ [usize]>),
+        F: FnOnce(SubsetMut<'_, K, V>),
     {
         match self {
             Entry::Occupied(mut entry) => {
@@ -91,7 +81,7 @@ where
     /// Otherwise a mutable iterator over an already existent values is returned.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert(self, default: V) -> OccupiedEntry<'a, K, V, Indices> {
+    pub fn or_insert(self, default: V) -> OccupiedEntry<'a, K, V> {
         match self {
             Entry::Occupied(entry) => entry,
             Entry::Vacant(entry) => entry.insert_entry(default),
@@ -104,7 +94,7 @@ where
     /// Otherwise a mutable iterator over an already existent values is returned.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert_with<F>(self, call: F) -> OccupiedEntry<'a, K, V, Indices>
+    pub fn or_insert_with<F>(self, call: F) -> OccupiedEntry<'a, K, V>
     where
         F: FnOnce() -> V,
     {
@@ -120,7 +110,7 @@ where
     /// Otherwise a mutable iterator over an already existent values is returned.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn or_insert_with_key<F>(self, call: F) -> OccupiedEntry<'a, K, V, Indices>
+    pub fn or_insert_with_key<F>(self, call: F) -> OccupiedEntry<'a, K, V>
     where
         F: FnOnce(&K) -> V,
     {
@@ -139,7 +129,7 @@ where
     /// Otherwise a mutable iterator over an already existent values is returned.
     ///
     /// Computes in **O(1)** time (amortized average).
-    pub fn or_default(self) -> OccupiedEntry<'a, K, V, Indices>
+    pub fn or_default(self) -> OccupiedEntry<'a, K, V>
     where
         V: Default,
     {
@@ -150,7 +140,7 @@ where
     }
 
     /// Insert provided `value` in the entry and return an occupied entry referring to it.
-    pub fn insert_append(self, value: V) -> OccupiedEntry<'a, K, V, Indices> {
+    pub fn insert_append(self, value: V) -> OccupiedEntry<'a, K, V> {
         match self {
             Entry::Occupied(mut entry) => {
                 entry.insert_append_take_owned_key(value);
@@ -161,11 +151,10 @@ where
     }
 }
 
-impl<K, V, Indices> fmt::Debug for Entry<'_, K, V, Indices>
+impl<K, V> fmt::Debug for Entry<'_, K, V>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    Indices: fmt::Debug + IndexStorage,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -222,21 +211,17 @@ enum SingleOrSlice<'a, T> {
 /// It is part of the [`Entry`] enum.
 ///
 /// [`IndexMultimap`]: super::IndexMultimap
-pub struct VacantEntry<'a, K, V, Indices> {
-    map: &'a mut IndexMultimapCore<K, V, Indices>,
+pub struct VacantEntry<'a, K, V> {
+    map: &'a mut IndexMultimapCore<K, V>,
     hash: HashValue,
     key: K,
 }
 
-impl<'a, K, V, Indices> VacantEntry<'a, K, V, Indices> {
+impl<'a, K, V> VacantEntry<'a, K, V> {
     /// SAFETY:
     ///   * key must not exist in the map
     #[inline]
-    unsafe fn new_unchecked(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
-        hash: HashValue,
-        key: K,
-    ) -> Self {
+    unsafe fn new_unchecked(map: &'a mut IndexMultimapCore<K, V>, hash: HashValue, key: K) -> Self {
         Self { map, hash, key }
     }
 
@@ -257,19 +242,13 @@ impl<'a, K, V, Indices> VacantEntry<'a, K, V, Indices> {
 
     /// Inserts the entry's key and the given value into the map,
     /// and returns a mutable reference to the value.
-    pub fn insert(self, value: V) -> (usize, &'a K, &'a mut V)
-    where
-        Indices: IndexStorage,
-    {
+    pub fn insert(self, value: V) -> (usize, &'a K, &'a mut V) {
         let (i, _) = self.map.push(self.hash, self.key, value);
         let entry = &mut self.map.pairs[i];
         (i, &entry.key, &mut entry.value)
     }
 
-    fn insert_entry(self, value: V) -> OccupiedEntry<'a, K, V, Indices>
-    where
-        Indices: IndexStorage,
-    {
+    fn insert_entry(self, value: V) -> OccupiedEntry<'a, K, V> {
         let (_, bucket) = self.map.push(self.hash, self.key, value);
         if cfg!(debug_assertions) {
             let indices = unsafe { bucket.as_ref() };
@@ -281,7 +260,7 @@ impl<'a, K, V, Indices> VacantEntry<'a, K, V, Indices> {
     }
 }
 
-impl<K, V, Indices> fmt::Debug for VacantEntry<'_, K, V, Indices>
+impl<K, V> fmt::Debug for VacantEntry<'_, K, V>
 where
     K: fmt::Debug,
 {
@@ -301,7 +280,7 @@ where
 ///
 /// [`Entry`]: super::Entry
 /// [`IndexMultimap`]: super::super::IndexMultimap
-pub struct OccupiedEntry<'a, K, V, Indices> {
+pub struct OccupiedEntry<'a, K, V> {
     // SAFETY:
     //   * The lifetime of the map reference also constrains the raw bucket,
     //     which is essentially a raw pointer into the map indices.
@@ -313,28 +292,25 @@ pub struct OccupiedEntry<'a, K, V, Indices> {
     // None of our methods directly modify map.indices (except when we consume self),
     // which means that the internal raw table won't reallocate and the bucket
     // must be alive for the lifetime of self.
-    map: &'a mut IndexMultimapCore<K, V, Indices>,
-    raw_bucket: RawBucket<UniqueSorted<Indices>>,
+    map: &'a mut IndexMultimapCore<K, V>,
+    raw_bucket: IndicesBucket,
     hash: HashValue,
     key: Option<K>,
 }
 
 // `hashbrown::raw::Bucket` is only `Send`, not `Sync`.
 // SAFETY: `&self` only accesses the bucket to read it.
-unsafe impl<K: Sync, V: Sync, Indices: Sync> Sync for OccupiedEntry<'_, K, V, Indices> {}
+unsafe impl<K: Sync, V: Sync> Sync for OccupiedEntry<'_, K, V> {}
 
-impl<'a, K, V, Indices> OccupiedEntry<'a, K, V, Indices>
-where
-    Indices: IndexStorage,
-{
+impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// SAFETY:
     ///   * `bucket` must point into map.indices
     ///   * `bucket` must be live at the creation moment
     ///   * we must be the only ones with the `bucket` pointer
     #[inline]
     unsafe fn new_unchecked(
-        map: &'a mut IndexMultimapCore<K, V, Indices>,
-        bucket: RawBucket<UniqueSorted<Indices>>,
+        map: &'a mut IndexMultimapCore<K, V>,
+        bucket: IndicesBucket,
         hash: HashValue,
         key: Option<K>,
     ) -> Self {
@@ -532,7 +508,7 @@ where
     /// being dropped (is *leaked*),
     /// the map may have lost and leaked elements arbitrarily,
     /// including pairs not associated with this entry.
-    pub fn swap_remove(self) -> SwapRemove<'a, K, V, Indices>
+    pub fn swap_remove(self) -> SwapRemove<'a, K, V>
     where
         K: Eq,
     {
@@ -561,7 +537,7 @@ where
     /// being dropped (is *leaked*),
     /// the map may have lost and leaked elements arbitrarily,
     /// including pairs not associated with this entry.
-    pub fn shift_remove(self) -> ShiftRemove<'a, K, V, Indices>
+    pub fn shift_remove(self) -> ShiftRemove<'a, K, V>
     where
         K: Eq,
     {
@@ -571,19 +547,18 @@ where
     }
 
     /// Returns an iterator over all the pairs in this entry.
-    pub fn iter(&self) -> SubsetIter<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+    pub fn iter(&self) -> SubsetIter<'_, K, V> {
         SubsetIter::new(
             &self.map.pairs,
             // SAFETY: we have &mut map keep keeping the bucket stable
-            unsafe { self.raw_bucket.as_ref() }.iter().copied(),
+            unsafe { self.raw_bucket.as_ref() }.iter(),
         )
     }
 
     /// Returns a mutable iterator over all the pairs in this entry.
-    pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+    pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        let indices_iter = Unique::from(indices.slice_iter());
-        SubsetIterMut::new(&mut self.map.pairs, indices_iter.copied())
+        SubsetIterMut::new(&mut self.map.pairs, indices.as_unique_slice().iter())
     }
 
     /// Returns an iterator over all the keys in this entry.
@@ -592,52 +567,50 @@ where
     /// But there may be an observable differences if the key type has any
     /// distinguishing features outside of [`Hash`] and [`Eq`], like
     /// extra fields or the memory address of an allocation.
-    pub fn keys(&self) -> SubsetKeys<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+    pub fn keys(&self) -> SubsetKeys<'_, K, V> {
         SubsetKeys::new(
             &self.map.pairs,
             // SAFETY: we have &mut map keep keeping the bucket stable
-            unsafe { self.raw_bucket.as_ref() }.iter().copied(),
+            unsafe { self.raw_bucket.as_ref() }.iter(),
         )
     }
 
     /// Converts into a mutable iterator over all the keys in this subset.
-    pub fn into_keys(self) -> SubsetKeys<'a, K, V, Copied<slice::Iter<'a, usize>>> {
+    pub fn into_keys(self) -> SubsetKeys<'a, K, V> {
         SubsetKeys::new(
             &self.map.pairs,
             // SAFETY: we have &mut map keep keeping the bucket stable
-            unsafe { self.raw_bucket.as_ref() }.iter().copied(),
+            unsafe { self.raw_bucket.as_ref() }.iter(),
         )
     }
 
     /// Returns an iterator over all the values in this entry.
-    pub fn values(&self) -> SubsetValues<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+    pub fn values(&self) -> SubsetValues<'_, K, V> {
         SubsetValues::new(
             &self.map.pairs,
             // SAFETY: we have &mut map keep keeping the bucket stable
-            unsafe { self.raw_bucket.as_ref() }.iter().copied(),
+            unsafe { self.raw_bucket.as_ref() }.iter(),
         )
     }
 
     /// Returns a mutable iterator over all the values in this entry.
-    pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V, Copied<slice::Iter<'_, usize>>> {
+    pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        let indices_iter = Unique::from(indices.slice_iter());
-        SubsetValuesMut::new(&mut self.map.pairs, indices_iter.copied())
+        SubsetValuesMut::new(&mut self.map.pairs, indices.as_unique_slice().iter())
     }
 
     /// Converts into an iterator over all the values in this entry.
-    pub fn into_values(self) -> SubsetValuesMut<'a, K, V, Copied<slice::Iter<'a, usize>>> {
+    pub fn into_values(self) -> SubsetValuesMut<'a, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        let indices_iter = Unique::from(indices.slice_iter());
-        SubsetValuesMut::new(&mut self.map.pairs, indices_iter.copied())
+        SubsetValuesMut::new(&mut self.map.pairs, indices.as_unique_slice().iter())
     }
 
     /// Returns a slice like construct with all the values associated with this entry in the map.
-    pub fn as_subset(&self) -> Subset<'_, K, V, &'_ [usize]> {
+    pub fn as_subset(&self) -> Subset<'_, K, V> {
         Subset::new(&self.map.pairs, self.indices())
     }
 
-    pub fn into_subset(self) -> Subset<'a, K, V, &'a [usize]> {
+    pub fn into_subset(self) -> Subset<'a, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
         Subset::new(&self.map.pairs, indices.as_slice())
     }
@@ -646,62 +619,51 @@ where
     ///
     /// If you need a reference which may outlive the destruction of the
     /// pair, see [`into_mut`](Self::into_mut).
-    pub fn as_subset_mut(&mut self) -> SubsetMut<'_, K, V, &'_ [usize]> {
+    pub fn as_subset_mut(&mut self) -> SubsetMut<'_, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        SubsetMut::new(&mut self.map.pairs, indices.into())
+        SubsetMut::new(&mut self.map.pairs, indices.as_unique_slice())
     }
 
     /// Converts into a slice like construct with all the values associated with
     /// this pair in the map, with a lifetime bound to the map itself.
-    pub fn into_subset_mut(self) -> SubsetMut<'a, K, V, &'a [usize]> {
+    pub fn into_subset_mut(self) -> SubsetMut<'a, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        SubsetMut::new(&mut self.map.pairs, indices.into())
+        SubsetMut::new(&mut self.map.pairs, indices.as_unique_slice())
     }
 }
 
-impl<'a, K, V, Indices> IntoIterator for &'a OccupiedEntry<'_, K, V, Indices>
-where
-    Indices: IndexStorage,
-{
+impl<'a, K, V> IntoIterator for &'a OccupiedEntry<'_, K, V> {
     type Item = (usize, &'a K, &'a V);
-    type IntoIter = SubsetIter<'a, K, V, Copied<slice::Iter<'a, usize>>>;
+    type IntoIter = SubsetIter<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
 }
 
-impl<'a, K, V, Indices> IntoIterator for &'a mut OccupiedEntry<'_, K, V, Indices>
-where
-    Indices: IndexStorage,
-{
+impl<'a, K, V> IntoIterator for &'a mut OccupiedEntry<'_, K, V> {
     type Item = (usize, &'a K, &'a mut V);
-    type IntoIter = SubsetIterMut<'a, K, V, Copied<slice::Iter<'a, usize>>>;
+    type IntoIter = SubsetIterMut<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
     }
 }
 
-impl<'a, K, V, Indices> IntoIterator for OccupiedEntry<'a, K, V, Indices>
-where
-    Indices: IndexStorage,
-{
+impl<'a, K, V> IntoIterator for OccupiedEntry<'a, K, V> {
     type Item = (usize, &'a K, &'a mut V);
-    type IntoIter = SubsetIterMut<'a, K, V, Copied<slice::Iter<'a, usize>>>;
+    type IntoIter = SubsetIterMut<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        let indices_iter = Unique::from(indices.slice_iter());
-        SubsetIterMut::new(&mut self.map.pairs, indices_iter.copied())
+        SubsetIterMut::new(&mut self.map.pairs, indices.as_unique_slice().iter())
     }
 }
 
-impl<K, V, Indices> fmt::Debug for OccupiedEntry<'_, K, V, Indices>
+impl<K, V> fmt::Debug for OccupiedEntry<'_, K, V>
 where
     K: fmt::Debug,
     V: fmt::Debug,
-    Indices: IndexStorage + fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = f.debug_struct(stringify!(OccupiedEntry));
