@@ -549,7 +549,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Returns an iterator over all the pairs in this entry.
     pub fn iter(&self) -> SubsetIter<'_, K, V> {
         unsafe {
-            SubsetIter::new_unchecked(
+            SubsetIter::from_slice_unchecked(
                 &self.map.pairs,
                 // SAFETY: we have &mut map keep keeping the bucket stable
                 self.raw_bucket.as_ref().iter(),
@@ -561,7 +561,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
         unsafe {
-            SubsetIterMut::new_unchecked(&mut self.map.pairs, indices.as_unique_slice().iter())
+            SubsetIterMut::from_slice_unchecked(
+                &mut self.map.pairs,
+                indices.as_unique_slice().iter(),
+            )
         }
     }
 
@@ -573,7 +576,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// extra fields or the memory address of an allocation.
     pub fn keys(&self) -> SubsetKeys<'_, K, V> {
         unsafe {
-            SubsetKeys::new_unchecked(
+            SubsetKeys::from_slice_unchecked(
                 &self.map.pairs,
                 // SAFETY: we have &mut map keep keeping the bucket stable
                 self.raw_bucket.as_ref().iter(),
@@ -584,7 +587,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Converts into a mutable iterator over all the keys in this subset.
     pub fn into_keys(self) -> SubsetKeys<'a, K, V> {
         unsafe {
-            SubsetKeys::new_unchecked(
+            SubsetKeys::from_slice_unchecked(
                 &self.map.pairs,
                 // SAFETY: we have &mut map keep keeping the bucket stable
                 self.raw_bucket.as_ref().iter(),
@@ -595,7 +598,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Returns an iterator over all the values in this entry.
     pub fn values(&self) -> SubsetValues<'_, K, V> {
         unsafe {
-            SubsetValues::new_unchecked(
+            SubsetValues::from_slice_unchecked(
                 &self.map.pairs,
                 // SAFETY: we have &mut map keep keeping the bucket stable
                 self.raw_bucket.as_ref().iter(),
@@ -607,7 +610,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
         unsafe {
-            SubsetValuesMut::new_unchecked(&mut self.map.pairs, indices.as_unique_slice().iter())
+            SubsetValuesMut::from_slice_unchecked(
+                &mut self.map.pairs,
+                indices.as_unique_slice().iter(),
+            )
         }
     }
 
@@ -615,18 +621,21 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     pub fn into_values(self) -> SubsetValuesMut<'a, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
         unsafe {
-            SubsetValuesMut::new_unchecked(&mut self.map.pairs, indices.as_unique_slice().iter())
+            SubsetValuesMut::from_slice_unchecked(
+                &mut self.map.pairs,
+                indices.as_unique_slice().iter(),
+            )
         }
     }
 
     /// Returns a slice like construct with all the values associated with this entry in the map.
     pub fn as_subset(&self) -> Subset<'_, K, V> {
-        unsafe { Subset::new_unchecked(&self.map.pairs, self.indices()) }
+        unsafe { Subset::from_slice_unchecked(&self.map.pairs, self.indices()) }
     }
 
     pub fn into_subset(self) -> Subset<'a, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        unsafe { Subset::new_unchecked(&self.map.pairs, indices.as_slice()) }
+        unsafe { Subset::from_slice_unchecked(&self.map.pairs, indices.as_slice()) }
     }
 
     /// Returns a slice like construct with all values associated with this entry in the map.
@@ -635,14 +644,14 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// pair, see [`into_mut`](Self::into_mut).
     pub fn as_subset_mut(&mut self) -> SubsetMut<'_, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, indices.as_unique_slice()) }
+        unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices.as_unique_slice()) }
     }
 
     /// Converts into a slice like construct with all the values associated with
     /// this pair in the map, with a lifetime bound to the map itself.
     pub fn into_subset_mut(self) -> SubsetMut<'a, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
-        unsafe { SubsetMut::new_unchecked(&mut self.map.pairs, indices.as_unique_slice()) }
+        unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices.as_unique_slice()) }
     }
 }
 
@@ -671,7 +680,10 @@ impl<'a, K, V> IntoIterator for OccupiedEntry<'a, K, V> {
     fn into_iter(self) -> Self::IntoIter {
         let indices = unsafe { self.raw_bucket.as_ref() };
         unsafe {
-            SubsetIterMut::new_unchecked(&mut self.map.pairs, indices.as_unique_slice().iter())
+            SubsetIterMut::from_slice_unchecked(
+                &mut self.map.pairs,
+                indices.as_unique_slice().iter(),
+            )
         }
     }
 }

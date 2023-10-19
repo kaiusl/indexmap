@@ -2,7 +2,29 @@
 
 // This module contains subset structs and iterators that can give references to
 // some subset of key-value pairs in the map.
+//
+// # Impl details
+//
+// Subsets (and their iterators) are effectively a pointer to slice of pairs
+// and a set of indices used to index into that slice.
+// A subset or it's iterator will only touch item's to which it's indices point to.
+// That means it's okay for multiple mutable subsets to be alive at the same time
+// if their indices are disjoint.
+// In that case there is no way to create multiple aliasing mutable references.
+//
+// This detail can be used by `get_many_mut` methods or `SubsetMut::split_at_mut`
+// or similar methods.
+//
+// It's worth pointing out that while the non-mut subset and iterators can be
+// implemented in safe Rust, they are unsound in the context if multiple mutable
+// subsets can be alive at the same time. The reason being mutable subsets can
+// return non-mutable iterators or be turned into non-mutable subset.
+// A safe implementation however needs to create a
+// reference to whole pairs slice. This in turn can potentially create
+// aliasing references if there are multiple mutable subsets alive at
+// that time.
 
+use core::ptr::{self, NonNull};
 use core::slice;
 
 use ::core::fmt;
@@ -22,26 +44,57 @@ use crate::Bucket;
 /// [`IndexMultimap::get`]: crate::IndexMultimap::get
 /// [`OccupiedEntry::get`]: crate::multimap::OccupiedEntry::get
 pub struct Subset<'a, K, V> {
+    // # Guarantees
+    //
+    // * implementation will only create references to pairs that `indices` point to
+    //   that is, it's okay to create mutable references to pairs that are
+    //   disjoint from this subset's pairs while this subset is alive
+    //
     // # Safety
     //
+    // * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
     // * every index in indices must be in bounds to index into pairs
-    pairs: &'a [Bucket<K, V>],
+    //
+    // * Also see the top of the module for more details. *
+    pairs: NonNull<Bucket<K, V>>,
+    pairs_len: usize,
     indices: &'a [usize],
+    marker: PhantomData<&'a [Bucket<K, V>]>,
 }
 
 impl<'a, K, V> Subset<'a, K, V> {
     /// # Safety
     ///
     /// * `indices` must be in bounds to index into `pairs`.
-    pub(super) unsafe fn new_unchecked(pairs: &'a [Bucket<K, V>], indices: &'a [usize]) -> Self {
-        Self { pairs, indices }
+    pub(super) unsafe fn from_slice_unchecked(
+        pairs: &'a [Bucket<K, V>],
+        indices: &'a [usize],
+    ) -> Self {
+        let pairs_len = pairs.len();
+        let pairs = unsafe { NonNull::new_unchecked(pairs.as_ptr().cast_mut()) };
+        unsafe { Self::from_raw_unchecked(pairs, pairs_len, indices) }
+    }
+
+    /// # Safety
+    ///
+    /// * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
+    /// * `indices` must be in bounds to index into `pairs`
+    pub(super) unsafe fn from_raw_unchecked(
+        pairs: NonNull<Bucket<K, V>>,
+        pairs_len: usize,
+        indices: &'a [usize],
+    ) -> Self {
+        Self {
+            pairs,
+            pairs_len,
+            indices,
+            marker: PhantomData,
+        }
     }
 
     pub(crate) fn empty() -> Self {
-        Self {
-            pairs: Default::default(),
-            indices: Default::default(),
-        }
+        // SAFETY: no actual access of pairs will ever be made
+        unsafe { Self::from_slice_unchecked(&[], &[]) }
     }
 
     /// Returns the number of pairs in this subset
@@ -61,19 +114,19 @@ impl<'a, K, V> Subset<'a, K, V> {
     /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
     pub fn nth(&self, n: usize) -> Option<(usize, &'a K, &'a V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked(self.pairs, self.indices.get(n)) }
+        unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.get(n)) }
     }
 
     /// Return a reference to the first pair in this subset or `None` if this subset is empty.
     pub fn first(&self) -> Option<(usize, &'a K, &'a V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked(self.pairs, self.indices.first()) }
+        unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.first()) }
     }
 
     /// Returns a reference to the last pair in this subset or `None` if this subset is empty.
     pub fn last(&self) -> Option<(usize, &'a K, &'a V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked(self.pairs, self.indices.last()) }
+        unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.last()) }
     }
 
     /// # Safety
@@ -81,14 +134,15 @@ impl<'a, K, V> Subset<'a, K, V> {
     /// * If `index` is `Some`, it must be in bounds to index into `pairs`.
     #[inline]
     unsafe fn get_item_unchecked<'b>(
-        pairs: &'b [Bucket<K, V>],
+        pairs: NonNull<Bucket<K, V>>,
+        pairs_len: usize,
         index: Option<&usize>,
     ) -> Option<(usize, &'b K, &'b V)> {
         match index {
             Some(&index) => {
-                debug_assert!(index < pairs.len(), "index out of bounds");
+                debug_assert!(index < pairs_len, "index out of bounds");
                 // SAFETY: caller must guarantee that `index` is in bounds
-                let Bucket { key, value, .. } = unsafe { pairs.get_unchecked(index) };
+                let Bucket { key, value, .. } = unsafe { &*pairs.as_ptr().add(index) };
                 Some((index, key, value))
             }
             None => None,
@@ -99,7 +153,7 @@ impl<'a, K, V> Subset<'a, K, V> {
     pub fn iter(&self) -> SubsetIter<'a, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetIter::new_unchecked(self.pairs, self.indices.iter()) }
+        unsafe { SubsetIter::from_raw_unchecked(self.pairs, self.pairs_len, self.indices.iter()) }
     }
 
     /// Returns an iterator over all the keys in this subset.
@@ -109,14 +163,14 @@ impl<'a, K, V> Subset<'a, K, V> {
     pub fn keys(&self) -> SubsetKeys<'a, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetKeys::new_unchecked(self.pairs, self.indices.iter()) }
+        unsafe { SubsetKeys::from_raw_unchecked(self.pairs, self.pairs_len, self.indices.iter()) }
     }
 
     /// Returns an iterator over all the values in this subset.
     pub fn values(&self) -> SubsetValues<'a, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetValues::new_unchecked(self.pairs, self.indices.iter()) }
+        unsafe { SubsetValues::from_raw_unchecked(self.pairs, self.pairs_len, self.indices.iter()) }
     }
 }
 
@@ -144,9 +198,9 @@ impl<'a, K, V> core::ops::Index<usize> for Subset<'a, K, V> {
 
     fn index(&self, index: usize) -> &Self::Output {
         let index = self.indices[index];
-        debug_assert!(index < self.pairs.len(), "index out of bounds");
+        debug_assert!(index < self.pairs_len, "index out of bounds");
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        &unsafe { self.pairs.get_unchecked(index) }.value
+        unsafe { &(*self.pairs.as_ptr().add(index)).value }
     }
 }
 
@@ -154,7 +208,9 @@ impl<'a, K, V> Clone for Subset<'a, K, V> {
     fn clone(&self) -> Self {
         Self {
             pairs: self.pairs,
+            pairs_len: self.pairs_len,
             indices: self.indices,
+            marker: PhantomData,
         }
     }
 }
@@ -181,30 +237,57 @@ where
 /// [`OccupiedEntry::get_mut`]: crate::multimap::OccupiedEntry::get_mut
 /// [`Entry::or_insert`]: crate::multimap::Entry::or_insert
 pub struct SubsetMut<'a, K, V> {
+    // # Guarantees
+    //
+    // * implementation will only create references to pairs that `indices` point to
+    //   that is, it's okay to create mutable references to pairs that are
+    //   disjoint from this subset's pairs while this subset is alive
+    //
     // # Safety
     //
+    // * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
     // * every index in indices must be in bounds to index into pairs
-    pairs: &'a mut [Bucket<K, V>],
+    //
+    // * Also see the top of the module for more details. *
+    pairs: NonNull<Bucket<K, V>>,
+    pairs_len: usize,
     indices: &'a UniqueSlice<usize>,
+    marker: PhantomData<&'a mut [Bucket<K, V>]>,
 }
 
 impl<'a, K, V> SubsetMut<'a, K, V> {
     /// # Safety
     ///
     /// * `ìndices` must be in bounds to index into `pairs`.
-    pub(crate) unsafe fn new_unchecked(
+    pub(crate) unsafe fn from_slice_unchecked(
         pairs: &'a mut [Bucket<K, V>],
         indices: &'a UniqueSlice<usize>,
     ) -> Self {
-        Self { pairs, indices }
+        let pairs_len = pairs.len();
+        let pairs = unsafe { NonNull::new_unchecked(pairs.as_mut_ptr()) };
+        unsafe { Self::from_raw_unchecked(pairs, pairs_len, indices) }
+    }
+
+    /// # Safety
+    ///
+    /// * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
+    /// * `indices` must be in bounds to index into `pairs`
+    pub(super) unsafe fn from_raw_unchecked(
+        pairs: NonNull<Bucket<K, V>>,
+        pairs_len: usize,
+        indices: &'a UniqueSlice<usize>,
+    ) -> Self {
+        Self {
+            pairs,
+            pairs_len,
+            indices,
+            marker: PhantomData,
+        }
     }
 
     pub(crate) fn empty() -> Self {
         // SAFETY: no access will ever be actually performed
-        Self {
-            pairs: Default::default(),
-            indices: Default::default(),
-        }
+        unsafe { Self::from_slice_unchecked(&mut [], &UniqueSlice::from_slice_unchecked(&[])) }
     }
 
     /// Returns the number of pairs in this subset.
@@ -226,55 +309,55 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     /// Returns a reference to an `n`th key-value pair in this subset or `None` if `n >= self.len()`.
     pub fn nth(&self, n: usize) -> Option<(usize, &K, &V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked(self.pairs, self.indices.get(n)) }
+        unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.get(n)) }
     }
 
     /// Returns a mutable reference to an `n`th pair in this subset or `None` if `n >= self.len()`.
     pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked_mut(self.pairs, self.indices.get(n)) }
+        unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.get(n)) }
     }
 
     /// Converts `self` into a long lived mutable reference to an `n`th pair in this subset or `None` if `n >= self.len()`.
     pub fn into_nth(self, n: usize) -> Option<(usize, &'a K, &'a mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked_mut(self.pairs, self.indices.get(n)) }
+        unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.get(n)) }
     }
 
     /// Return a reference to the first pair in this subset or `None` if this subset is empty.
     pub fn first(&self) -> Option<(usize, &K, &V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked(self.pairs, self.indices.first()) }
+        unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.first()) }
     }
 
     /// Return a mutable reference to the first pair in this subset or `None` if this subset is empty.
     pub fn first_mut(&mut self) -> Option<(usize, &K, &mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked_mut(self.pairs, self.indices.first()) }
+        unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.first()) }
     }
 
     /// Converts `self` into long lived mutable reference to the first pair in this subset or `None` if this subset is empty.
     pub fn into_first_mut(self) -> Option<(usize, &'a K, &'a mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked_mut(self.pairs, self.indices.first()) }
+        unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.first()) }
     }
 
     /// Returns a reference to the last pair in this subset or `None` if this subset is empty.
     pub fn last(&self) -> Option<(usize, &K, &V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked(self.pairs, self.indices.last()) }
+        unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.last()) }
     }
 
     /// Returns a mutable reference to the last pair in this subset or `None` if this subset is empty.
     pub fn last_mut(&mut self) -> Option<(usize, &K, &mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked_mut(self.pairs, self.indices.last()) }
+        unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.last()) }
     }
 
     /// Converts `self` into long lived mutable reference to the last pair in this subset or `None` if this subset is empty.
     pub fn into_last_mut(self) -> Option<(usize, &'a K, &'a mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        unsafe { Self::get_item_unchecked_mut(self.pairs, self.indices.last()) }
+        unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.last()) }
     }
 
     /// # Safety
@@ -282,14 +365,15 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     /// * If `index` is `Some`, it must be in bounds to index into `pairs`.
     #[inline]
     unsafe fn get_item_unchecked<'b>(
-        pairs: &'b [Bucket<K, V>],
+        pairs: NonNull<Bucket<K, V>>,
+        pairs_len: usize,
         index: Option<&usize>,
     ) -> Option<(usize, &'b K, &'b V)> {
         match index {
             Some(&index) => {
-                debug_assert!(index < pairs.len(), "index out of bounds");
+                debug_assert!(index < pairs_len, "index out of bounds");
                 // SAFETY: caller must guarantee that `index` is in bounds
-                let Bucket { key, value, .. } = unsafe { pairs.get_unchecked(index) };
+                let Bucket { key, value, .. } = unsafe { &*pairs.as_ptr().add(index) };
                 Some((index, key, value))
             }
             None => None,
@@ -301,14 +385,15 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     /// * If `index` is `Some`, it must be in bounds to index into `pairs`.
     #[inline]
     unsafe fn get_item_unchecked_mut<'b>(
-        pairs: &'b mut [Bucket<K, V>],
+        pairs: NonNull<Bucket<K, V>>,
+        pairs_len: usize,
         index: Option<&usize>,
     ) -> Option<(usize, &'b K, &'b mut V)> {
         match index {
             Some(&index) => {
-                debug_assert!(index < pairs.len(), "index out of bounds");
+                debug_assert!(index < pairs_len, "index out of bounds");
                 // SAFETY: caller must guarantee that `index` is in bounds
-                let Bucket { key, value, .. } = unsafe { pairs.get_unchecked_mut(index) };
+                let Bucket { key, value, .. } = unsafe { &mut *pairs.as_ptr().add(index) };
                 Some((index, key, value))
             }
             None => None,
@@ -319,14 +404,22 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     pub fn iter(&self) -> SubsetIter<'_, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetIter::new_unchecked(self.pairs, self.indices.as_slice().iter()) }
+        unsafe {
+            SubsetIter::from_raw_unchecked(
+                self.pairs,
+                self.pairs_len,
+                self.indices.as_slice().iter(),
+            )
+        }
     }
 
     /// Returns a mutable iterator over all the pairs in this subset.
     pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetIterMut::new_unchecked(self.pairs, self.indices.iter()) }
+        unsafe {
+            SubsetIterMut::from_raw_unchecked(self.pairs, self.pairs_len, self.indices.iter())
+        }
     }
 
     /// Returns an iterator over all the keys in this subset.
@@ -336,35 +429,57 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     pub fn keys(&self) -> SubsetKeys<'_, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetKeys::new_unchecked(self.pairs, self.indices.as_slice().iter()) }
+        unsafe {
+            SubsetKeys::from_raw_unchecked(
+                self.pairs,
+                self.pairs_len,
+                self.indices.as_slice().iter(),
+            )
+        }
     }
 
     /// Converts into a iterator over all the keys in this subset.
     pub fn into_keys(self) -> SubsetKeys<'a, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetKeys::new_unchecked(self.pairs, self.indices.as_slice().into_iter()) }
+        unsafe {
+            SubsetKeys::from_raw_unchecked(
+                self.pairs,
+                self.pairs_len,
+                self.indices.as_slice().into_iter(),
+            )
+        }
     }
 
     /// Returns an iterator over all the values in this subset.
     pub fn values(&self) -> SubsetValues<'_, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetValues::new_unchecked(self.pairs, self.indices.as_slice().iter()) }
+        unsafe {
+            SubsetValues::from_raw_unchecked(
+                self.pairs,
+                self.pairs_len,
+                self.indices.as_slice().iter(),
+            )
+        }
     }
 
     /// Returns a mutable iterator over all the values in this subset.
     pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetValuesMut::new_unchecked(self.pairs, self.indices.iter()) }
+        unsafe {
+            SubsetValuesMut::from_raw_unchecked(self.pairs, self.pairs_len, self.indices.iter())
+        }
     }
 
     /// Converts into a mutable iterator over all the values in this subset.
     pub fn into_values(self) -> SubsetValuesMut<'a, K, V> {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetValuesMut::new_unchecked(self.pairs, self.indices.iter()) }
+        unsafe {
+            SubsetValuesMut::from_raw_unchecked(self.pairs, self.pairs_len, self.indices.iter())
+        }
     }
 }
 
@@ -385,7 +500,9 @@ impl<'a, K, V> IntoIterator for SubsetMut<'a, K, V> {
     fn into_iter(self) -> Self::IntoIter {
         // SAFETY: `self.indices` (and consequently it's iterator) only contains
         // valid indices to index into `self.pairs`.
-        unsafe { SubsetIterMut::new_unchecked(self.pairs, self.indices.iter()) }
+        unsafe {
+            SubsetIterMut::from_raw_unchecked(self.pairs, self.pairs_len, self.indices.iter())
+        }
     }
 }
 
@@ -412,18 +529,18 @@ impl<K, V> core::ops::Index<usize> for SubsetMut<'_, K, V> {
 
     fn index(&self, index: usize) -> &Self::Output {
         let index = self.indices[index];
-        debug_assert!(index < self.pairs.len(), "index out of bounds");
+        debug_assert!(index < self.pairs_len, "index out of bounds");
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        &unsafe { self.pairs.get_unchecked(index) }.value
+        unsafe { &(*self.pairs.as_ptr().add(index)).value }
     }
 }
 
 impl<K, V> core::ops::IndexMut<usize> for SubsetMut<'_, K, V> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         let index = self.indices[index];
-        debug_assert!(index < self.pairs.len(), "index out of bounds");
+        debug_assert!(index < self.pairs_len, "index out of bounds");
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-        &mut unsafe { self.pairs.get_unchecked_mut(index) }.value
+        unsafe { &mut (*self.pairs.as_ptr().add(index)).value }
     }
 }
 
@@ -431,9 +548,9 @@ macro_rules! iter_methods {
     (@get_item $self:ident, $index_value:expr, $index:ident, $pair:ident, $($return:tt)*) => {
         match $index_value {
             Some(&$index) => {
-                debug_assert!($index < $self.pairs.len());
+                debug_assert!($index < $self.pairs_len, "expected indices to be in bounds");
                 // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-                let $pair = unsafe { $self.pairs.get_unchecked($index) };
+                let $pair = unsafe { &*$self.pairs.as_ptr().add($index) };
                 Some($($return)*)
             }
             None => None,
@@ -445,9 +562,28 @@ macro_rules! iter_methods {
         {
             /// # Safety
             ///
-            /// * `ìndices` must be in bounds to index into `pairs`.
-            pub(super) unsafe fn new_unchecked(pairs: &'a [Bucket<K, V>], indices: slice::Iter<'a, usize>) -> Self {
-                Self { pairs, indices }
+            /// * `indices` must be in bounds to index into `pairs`.
+            pub(super) unsafe fn from_slice_unchecked(pairs: &'a [Bucket<K, V>], indices: slice::Iter<'a, usize>) -> Self {
+                let pairs_len = pairs.len();
+                let pairs = unsafe { NonNull::new_unchecked(pairs.as_ptr().cast_mut()) };
+                unsafe { Self::from_raw_unchecked(pairs, pairs_len, indices) }
+            }
+
+            /// # Safety
+            ///
+            /// * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
+            /// * `indices` must be in bounds to index into `pairs`
+            pub(super) unsafe fn from_raw_unchecked(
+                pairs: NonNull<Bucket<K, V>>,
+                pairs_len: usize,
+                indices: slice::Iter<'a, usize>,
+            ) -> Self {
+                Self {
+                    pairs,
+                    pairs_len,
+                    indices,
+                    marker: PhantomData,
+                }
             }
         }
 
@@ -486,9 +622,9 @@ macro_rules! iter_methods {
             {
                 self.indices
                     .filter_map(|&$index| {
-                        debug_assert!($index < self.pairs.len());
+                        debug_assert!($index < self.pairs_len);
                         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-                        let $pair = unsafe { self.pairs.get_unchecked($index) };
+                        let $pair = unsafe { &*self.pairs.as_ptr().add($index) };
                         Some($($return)*)
                     })
                     .collect()
@@ -517,7 +653,9 @@ macro_rules! iter_methods {
             fn clone(&self) -> Self {
                 Self {
                     pairs: self.pairs,
+                    pairs_len: self.pairs_len,
                     indices: self.indices.clone(),
+                    marker: PhantomData
                 }
             }
         }
@@ -530,9 +668,9 @@ macro_rules! iter_methods {
         {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 let pairs = self.indices.clone().map(|$index| {
-                    debug_assert!(*$index < self.pairs.len());
+                    debug_assert!(*$index < self.pairs_len);
                     // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
-                    let $pair = unsafe { self.pairs.get_unchecked(*$index) };
+                    let $pair = unsafe { &*self.pairs.as_ptr().add(*$index) };
                     $($return)*
                 });
                 debug_subset(f, stringify!($name), pairs)
@@ -550,11 +688,22 @@ macro_rules! iter_methods {
 /// [`SubsetMut::iter`]: super::SubsetMut::iter
 /// [`IndexMultimap`]: crate::IndexMultimap
 pub struct SubsetIter<'a, K, V> {
+    // # Guarantees
+    //
+    // * implementation will only create references to pairs that `indices` point to
+    //   that is, it's okay to create mutable references to pairs that are
+    //   disjoint from this subset's pairs while this subset is alive
+    //
     // # Safety
     //
+    // * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
     // * every index in indices must be in bounds to index into pairs
-    pairs: &'a [Bucket<K, V>],
+    //
+    // * Also see the top of the module for more details. *
+    pairs: NonNull<Bucket<K, V>>,
+    pairs_len: usize,
     indices: slice::Iter<'a, usize>,
+    marker: PhantomData<&'a [Bucket<K, V>]>,
 }
 
 iter_methods!(
@@ -575,11 +724,22 @@ iter_methods!(
 /// [`SubsetMut::keys`]: super::SubsetMut::keys
 /// [`IndexMultimap`]: crate::IndexMultimap
 pub struct SubsetKeys<'a, K, V> {
+    // # Guarantees
+    //
+    // * implementation will only create references to pairs that `indices` point to
+    //   that is, it's okay to create mutable references to pairs that are
+    //   disjoint from this subset's pairs while this subset is alive
+    //
     // # Safety
     //
+    // * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
     // * every index in indices must be in bounds to index into pairs
-    pairs: &'a [Bucket<K, V>],
+    //
+    // * Also see the top of the module for more details. *
+    pairs: NonNull<Bucket<K, V>>,
+    pairs_len: usize,
     indices: slice::Iter<'a, usize>,
+    marker: PhantomData<&'a [Bucket<K, V>]>,
 }
 
 iter_methods!(
@@ -600,11 +760,22 @@ iter_methods!(
 /// [`SubsetMut::values`]: super::SubsetMut::values
 /// [`IndexMultimap`]: crate::IndexMultimap
 pub struct SubsetValues<'a, K, V> {
+    // # Guarantees
+    //
+    // * implementation will only create references to pairs that `indices` point to
+    //   that is, it's okay to create mutable references to pairs that are
+    //   disjoint from this subset's pairs while this subset is alive
+    //
     // # Safety
     //
+    // * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
     // * every index in indices must be in bounds to index into pairs
-    pairs: &'a [Bucket<K, V>],
+    //
+    // * Also see the top of the module for more details. *
+    pairs: NonNull<Bucket<K, V>>,
+    pairs_len: usize,
     indices: slice::Iter<'a, usize>,
+    marker: PhantomData<&'a [Bucket<K, V>]>,
 }
 
 iter_methods!(
@@ -624,30 +795,52 @@ iter_methods!(
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`SubsetMut::iter_mut`]: crate::multimap::SubsetMut::iter_mut
 pub struct SubsetIterMut<'a, K, V> {
+    // # Guarantees
+    //
+    // * implementation will only create references to pairs that `indices` point to
+    //   that is, it's okay to create mutable references to pairs that are
+    //   disjoint from this subset's pairs while this subset is alive
+    //
     // # Safety
     //
+    // * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
     // * every index in indices must be in bounds to index into pairs
-    // * pairs_start must be a pointer to the start of pairs_len contiguous initialized buckets
-    pairs_start: *mut Bucket<K, V>,
+    //
+    // * Also see the top of the module for more details. *
+    pairs: NonNull<Bucket<K, V>>,
     pairs_len: usize,
     indices: UniqueIter<slice::Iter<'a, usize>>,
     // What self.pairs really is, constructors should take this to bind the lifetime properly
-    _marker: PhantomData<&'a mut [Bucket<K, V>]>,
+    marker: PhantomData<&'a mut [Bucket<K, V>]>,
 }
 
 impl<'a, K, V> SubsetIterMut<'a, K, V> {
     /// # Safety
     ///
     /// * `indices` must be in bounds to index into `pairs`.
-    pub(super) unsafe fn new_unchecked(
+    pub(super) unsafe fn from_slice_unchecked(
         pairs: &'a mut [Bucket<K, V>],
         indices: UniqueIter<slice::Iter<'a, usize>>,
     ) -> Self {
+        let pairs_len = pairs.len();
+        let pairs = unsafe { NonNull::new_unchecked(pairs.as_ptr().cast_mut()) };
+        unsafe { Self::from_raw_unchecked(pairs, pairs_len, indices) }
+    }
+
+    /// # Safety
+    ///
+    /// * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
+    /// * `indices` must be in bounds to index into `pairs`
+    pub(super) unsafe fn from_raw_unchecked(
+        pairs: NonNull<Bucket<K, V>>,
+        pairs_len: usize,
+        indices: UniqueIter<slice::Iter<'a, usize>>,
+    ) -> Self {
         Self {
-            pairs_start: pairs.as_mut_ptr(),
-            pairs_len: pairs.len(),
+            pairs,
+            pairs_len,
             indices,
-            _marker: PhantomData,
+            marker: PhantomData,
         }
     }
 
@@ -664,7 +857,7 @@ impl<'a, K, V> SubsetIterMut<'a, K, V> {
         //    invalidate these references as it should.
         self.indices.clone().map(|&i| {
             debug_assert!(i < self.pairs_len);
-            let pair = unsafe { &*self.pairs_start.add(i) };
+            let pair = unsafe { &*self.pairs.as_ptr().add(i) };
             (i, &pair.key, &pair.value)
         })
     }
@@ -681,7 +874,7 @@ impl<'a, K, V> SubsetIterMut<'a, K, V> {
     ///   returned references are alive
     #[inline]
     unsafe fn get_item_mut(
-        pairs_start: *mut Bucket<K, V>,
+        pairs_start: NonNull<Bucket<K, V>>,
         pairs_len: usize,
         index: usize,
     ) -> (usize, &'a K, &'a mut V) {
@@ -696,7 +889,7 @@ impl<'a, K, V> SubsetIterMut<'a, K, V> {
         //   * no one else can have access to the pairs slice as we
         //     borrowed it mutably for 'a => it's valid to return
         //     &'a mut into the slice
-        let pair = unsafe { &mut *pairs_start.add(index) };
+        let pair = unsafe { &mut *pairs_start.as_ptr().add(index) };
         (index, &pair.key, &mut pair.value)
     }
 }
@@ -710,9 +903,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.indices.next() {
-            Some(&index) => {
-                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
-            }
+            Some(&index) => Some(unsafe { Self::get_item_mut(self.pairs, self.pairs_len, index) }),
             None => None,
         }
     }
@@ -733,18 +924,14 @@ where
         Self: Sized,
     {
         match self.indices.last() {
-            Some(&index) => {
-                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
-            }
+            Some(&index) => Some(unsafe { Self::get_item_mut(self.pairs, self.pairs_len, index) }),
             None => None,
         }
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
         match self.indices.nth(n) {
-            Some(&index) => {
-                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
-            }
+            Some(&index) => Some(unsafe { Self::get_item_mut(self.pairs, self.pairs_len, index) }),
             None => None,
         }
     }
@@ -754,7 +941,7 @@ where
         Self: Sized,
     {
         self.indices
-            .map(|&index| unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
+            .map(|&index| unsafe { Self::get_item_mut(self.pairs, self.pairs_len, index) })
             .collect()
     }
 }
@@ -766,18 +953,14 @@ where
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.indices.next_back() {
-            Some(&index) => {
-                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
-            }
+            Some(&index) => Some(unsafe { Self::get_item_mut(self.pairs, self.pairs_len, index) }),
             None => None,
         }
     }
 
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         match self.indices.nth_back(n) {
-            Some(&index) => {
-                Some(unsafe { Self::get_item_mut(self.pairs_start, self.pairs_len, index) })
-            }
+            Some(&index) => Some(unsafe { Self::get_item_mut(self.pairs, self.pairs_len, index) }),
             None => None,
         }
     }
@@ -818,21 +1001,35 @@ where
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`SubsetMut::values_mut`]: crate::multimap::SubsetMut::values_mut
 pub struct SubsetValuesMut<'a, K, V> {
-    // SAFETY: see SubsetIterMut's definition
+    // SAFETY: see `SubsetIterMut`'s definition
     inner: SubsetIterMut<'a, K, V>,
 }
 
 impl<'a, K, V> SubsetValuesMut<'a, K, V> {
     /// # Safety
     ///
-    /// * `ìndices` must be in bounds to index into `pairs`.
+    /// * `indices` must be in bounds to index into `pairs`.
     #[inline]
-    pub(super) unsafe fn new_unchecked(
+    pub(super) unsafe fn from_slice_unchecked(
         pairs: &'a mut [Bucket<K, V>],
         indices: UniqueIter<slice::Iter<'a, usize>>,
     ) -> Self {
         Self {
-            inner: unsafe { SubsetIterMut::new_unchecked(pairs, indices) },
+            inner: unsafe { SubsetIterMut::from_slice_unchecked(pairs, indices) },
+        }
+    }
+
+    /// # Safety
+    ///
+    /// * `pairs` must be a valid pointer to `pairs_len` contiguous initialized buckets
+    /// * `indices` must be in bounds to index into `pairs`
+    pub(super) unsafe fn from_raw_unchecked(
+        pairs: NonNull<Bucket<K, V>>,
+        pairs_len: usize,
+        indices: UniqueIter<slice::Iter<'a, usize>>,
+    ) -> Self {
+        Self {
+            inner: unsafe { SubsetIterMut::from_raw_unchecked(pairs, pairs_len, indices) },
         }
     }
 }
@@ -978,11 +1175,11 @@ mod tests {
         // SAFETY: inner is unique slice of usize, no interior  mutability and it's not mutable iterator
         let indices = unsafe { UniqueSlice::from_slice_unchecked([0usize, 2, 3, 5].as_slice()) };
 
-        let iter1 = unsafe { SubsetIterMut::new_unchecked(&mut pairs, indices.iter()) };
+        let iter1 = unsafe { SubsetIterMut::from_slice_unchecked(&mut pairs, indices.iter()) };
         let items = iter1.collect::<Vec<_>>();
         assert!(is_unique(&items));
 
-        let mut iter2 = unsafe { SubsetIterMut::new_unchecked(&mut pairs, indices.iter()) };
+        let mut iter2 = unsafe { SubsetIterMut::from_slice_unchecked(&mut pairs, indices.iter()) };
         let items = [
             iter2.next(),
             iter2.nth(1),
