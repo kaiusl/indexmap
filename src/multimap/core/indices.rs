@@ -141,7 +141,7 @@ impl ops::Deref for Indices {
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub(super) struct UniqueSlice<T> {
+pub(crate) struct UniqueSlice<T> {
     inner: [T],
 }
 
@@ -192,7 +192,7 @@ mod iterators {
     use core::iter::FusedIterator;
 
     #[derive(Debug, Clone)]
-    pub(in super::super) struct UniqueSortedIter<Inner> {
+    pub(crate) struct UniqueSortedIter<Inner> {
         inner: Inner,
     }
 
@@ -200,7 +200,7 @@ mod iterators {
         /// # Safety
         ///
         /// * items yielded by `ìter` must be unique and sorted
-        pub(in super::super) unsafe fn new_unchecked(iter: Inner) -> Self {
+        pub(crate) unsafe fn new_unchecked(iter: Inner) -> Self {
             UniqueSortedIter { inner: iter }
         }
     }
@@ -265,7 +265,7 @@ mod iterators {
     impl<I> FusedIterator for UniqueSortedIter<I> where I: Iterator + FusedIterator {}
 
     #[derive(Debug, Clone)]
-    pub(in super::super) struct UniqueIter<Inner> {
+    pub(crate) struct UniqueIter<Inner> {
         inner: Inner,
     }
 

@@ -510,7 +510,8 @@ impl<K, V> IndexMultimapCore<K, V> {
         let eq = equivalent(key, &self.pairs);
         if let Some(indices) = self.indices.get(hash.get(), eq) {
             self.debug_assert_indices(indices);
-            Subset::new(&self.pairs, indices)
+            // SAFETY: we only store in bounds indices (it's one of our invariants)
+            unsafe { Subset::new_unchecked(&self.pairs, indices) }
         } else {
             Subset::empty()
         }
@@ -523,7 +524,8 @@ impl<K, V> IndexMultimapCore<K, V> {
         let eq = equivalent(key, &self.pairs);
         if let Some(indices) = self.indices.get(hash.get(), eq) {
             self.debug_assert_indices(indices);
-            SubsetMut::new(&mut self.pairs, indices.as_unique_slice())
+            // SAFETY: we only store in bounds indices (it's one of our invariants)
+            unsafe { SubsetMut::new_unchecked(&mut self.pairs, indices.as_unique_slice()) }
         } else {
             SubsetMut::empty()
         }
