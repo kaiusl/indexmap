@@ -823,7 +823,7 @@ impl<'a, K, V> SubsetIterMut<'a, K, V> {
         indices: UniqueIter<slice::Iter<'a, usize>>,
     ) -> Self {
         let pairs_len = pairs.len();
-        let pairs = unsafe { NonNull::new_unchecked(pairs.as_ptr().cast_mut()) };
+        let pairs = unsafe { NonNull::new_unchecked(pairs.as_mut_ptr()) };
         unsafe { Self::from_raw_unchecked(pairs, pairs_len, indices) }
     }
 
