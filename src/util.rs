@@ -98,6 +98,25 @@ where
     (1..).zip(slice).all(|(i, it)| !slice[i..].contains(it))
 }
 
+/// This checks every index against each other, and against `len`.
+///
+/// This will do `binomial(N + 1, 2) = N * (N + 1) / 2 = 0, 1, 3, 6, 10, ..`
+/// comparison operations.
+pub(crate) fn check_unique_and_in_bounds<const N: usize>(indices: &[usize; N], len: usize) -> bool {
+    // Implementation borrowed from `std::slice::get_many_check_valid`.
+
+    // NB: The optimizer should inline the loops into a sequence
+    // of instructions without additional branching.
+    let mut valid = true;
+    for (i, &idx) in indices.iter().enumerate() {
+        valid &= idx < len;
+        for &idx2 in &indices[..i] {
+            valid &= idx != idx2;
+        }
+    }
+    valid
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

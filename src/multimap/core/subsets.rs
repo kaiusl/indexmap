@@ -33,7 +33,10 @@ use ::core::iter::FusedIterator;
 use ::core::marker::PhantomData;
 
 use super::indices::{UniqueIter, UniqueSlice};
-use crate::util::{debug_iter_as_list, debug_iter_as_numbered_compact_list, try_simplify_range};
+use crate::util::{
+    check_unique_and_in_bounds, debug_iter_as_list, debug_iter_as_numbered_compact_list,
+    try_simplify_range,
+};
 use crate::Bucket;
 
 /// Slice like construct over a subset of the key-value pairs in the [`IndexMultimap`].
@@ -540,6 +543,43 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
             }
             None => None,
         }
+    }
+
+    /// Returns mutable references to many items at once or `None` if any index
+    /// is out-of-bounds, or if the same index was passed more than once.
+    pub fn get_many_mut<const N: usize>(
+        &mut self,
+        indices: [usize; N],
+    ) -> Option<[(usize, &K, &mut V); N]> {
+        unsafe { Self::get_many_mut_core(self.pairs, self.pairs_len, self.indices, indices) }
+    }
+
+    /// Returns mutable references to many items at once or `None` if any index
+    /// is out-of-bounds, or if the same index was passed more than once.
+    pub fn into_many_mut<const N: usize>(
+        self,
+        indices: [usize; N],
+    ) -> Option<[(usize, &'a K, &'a mut V); N]> {
+        unsafe { Self::get_many_mut_core(self.pairs, self.pairs_len, self.indices, indices) }
+    }
+
+    #[inline]
+    unsafe fn get_many_mut_core<'b, const N: usize>(
+        pairs: NonNull<Bucket<K, V>>,
+        pairs_len: usize,
+        subset_indices: &'b UniqueSlice<usize>,
+        get_indices: [usize; N],
+    ) -> Option<[(usize, &'b K, &'b mut V); N]> {
+        if !check_unique_and_in_bounds(&get_indices, subset_indices.len()) {
+            return None;
+        }
+
+        Some(get_indices.map(|i| {
+            let i = unsafe { *subset_indices.get_unchecked(i) };
+            debug_assert!(i < pairs_len, "index out of bounds");
+            let Bucket { ref key, value, .. } = unsafe { &mut *pairs.as_ptr().add(i) };
+            (i, key, value)
+        }))
     }
 
     /// Returns an iterator over all the pairs in this subset.

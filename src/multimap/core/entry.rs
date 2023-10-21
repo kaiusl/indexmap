@@ -7,7 +7,9 @@ use super::{
     equivalent, IndexMultimapCore, IndicesBucket, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
     SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
 };
-use crate::util::{try_simplify_range, DebugIterAsList, DebugIterAsNumberedCompactList};
+use crate::util::{
+    check_unique_and_in_bounds, try_simplify_range, DebugIterAsList, DebugIterAsNumberedCompactList,
+};
 use crate::{Bucket, HashValue};
 
 /// Entry for an existing key-value pair or a vacant location to
@@ -530,6 +532,45 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
             }
             None => None,
         }
+    }
+
+    /// Returns mutable references to many items at once or `None` if any index
+    /// is out-of-bounds, or if the same index was passed more than once.
+    pub fn get_many_mut<const N: usize>(
+        &mut self,
+        indices: [usize; N],
+    ) -> Option<[(usize, &K, &mut V); N]> {
+        unsafe { Self::get_many_mut_core(&mut self.map.pairs, self.raw_bucket.clone(), indices) }
+    }
+
+    /// Returns mutable references to many items at once or `None` if any index
+    /// is out-of-bounds, or if the same index was passed more than once.
+    pub fn into_many_mut<const N: usize>(
+        self,
+        indices: [usize; N],
+    ) -> Option<[(usize, &'a K, &'a mut V); N]> {
+        unsafe { Self::get_many_mut_core(&mut self.map.pairs, self.raw_bucket, indices) }
+    }
+
+    #[inline]
+    unsafe fn get_many_mut_core<'b, const N: usize>(
+        pairs: &'b mut [Bucket<K, V>],
+        subset_indices: IndicesBucket,
+        get_indices: [usize; N],
+    ) -> Option<[(usize, &'b K, &'b mut V); N]> {
+        let subset_indices = unsafe { subset_indices.as_ref() };
+        let pairs_len = pairs.len();
+        if !check_unique_and_in_bounds(&get_indices, subset_indices.len()) {
+            return None;
+        }
+
+        let pairs = pairs.as_mut_ptr();
+        Some(get_indices.map(|i| {
+            let i = unsafe { *subset_indices.get_unchecked(i) };
+            debug_assert!(i < pairs_len, "index out of bounds");
+            let Bucket { ref key, value, .. } = unsafe { &mut *pairs.add(i) };
+            (i, key, value)
+        }))
     }
 
     /// Remove all the key-value pairs for this entry and return an iterator
