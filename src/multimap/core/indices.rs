@@ -3,9 +3,10 @@
 
 use ::alloc::vec::Vec;
 use ::core::{mem, ops, slice};
+use core::ops::RangeBounds;
 pub(super) use iterators::{UniqueIter, UniqueSortedIter};
 
-use crate::util::is_sorted_and_unique;
+use crate::util::{is_sorted_and_unique, try_simplify_range};
 
 /// Unique and sorted set of indices
 #[derive(Debug, Clone)]
@@ -171,11 +172,56 @@ impl<T> UniqueSlice<T> {
         &*self
     }
 
+    pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<&Self> {
+        let range = try_simplify_range(range, self.inner.len())?;
+        match self.inner.get(range) {
+            Some(inner) => Some(unsafe { UniqueSlice::from_slice_unchecked(inner) }),
+            None => None,
+        }
+    }
+
     pub fn iter(&self) -> UniqueIter<slice::Iter<'_, T>> {
         // SAFETY: slice::Iter yields each item in the slice only once.
         // Since our slice (`self.inner`) contains unique items,
         // `self.inner.iter()` is an iterator which returns unique items.
         unsafe { UniqueIter::new_unchecked(self.inner.iter()) }
+    }
+
+    /// Divides one slice into two at an index.
+    ///
+    /// The first will contain all indices from `[0, mid)`
+    /// (excluding the index mid itself) and the second will contain all
+    /// indices from `[mid, len)`` (excluding the index `len` itself).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `mid > len`.
+    pub(crate) fn split_at(&self, mid: usize) -> (&Self, &Self) {
+        let (left, right) = self.inner.split_at(mid);
+        unsafe {
+            (
+                UniqueSlice::from_slice_unchecked(left),
+                UniqueSlice::from_slice_unchecked(right),
+            )
+        }
+    }
+
+    /// Returns the first and all the rest of the elements of the slice, or None if it is empty.
+    pub(crate) fn split_first(&self) -> Option<(&T, &Self)> {
+        match self.inner.split_first() {
+            Some((first, tail)) => {
+                Some((first, unsafe { UniqueSlice::from_slice_unchecked(tail) }))
+            }
+            None => None,
+        }
+    }
+
+    /// Returns the last and all the rest of the elements of the slice, or None if it is empty
+    pub(crate) fn split_last(&self) -> Option<(&T, &Self)> {
+        match self.inner.split_last() {
+            Some((last, head)) => Some((last, unsafe { UniqueSlice::from_slice_unchecked(head) })),
+            None => None,
+        }
     }
 }
 
