@@ -1,12 +1,13 @@
 #![allow(unsafe_code)]
 
+use core::ops::RangeBounds;
 use core::{fmt, ops};
 
 use super::{
     equivalent, IndexMultimapCore, IndicesBucket, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
     SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
 };
-use crate::util::{DebugIterAsList, DebugIterAsNumberedCompactList};
+use crate::util::{try_simplify_range, DebugIterAsList, DebugIterAsNumberedCompactList};
 use crate::{Bucket, HashValue};
 
 /// Entry for an existing key-value pair or a vacant location to
@@ -486,6 +487,49 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         let index = *self.indices().last().unwrap();
         let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
         (index, key, value)
+    }
+
+    /// Returns a immutable subset of key-value pairs in the given range of indices.
+    ///
+    /// Valid indices are *0 <= index < self.len()*
+    pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<Subset<'_, K, V>> {
+        let indices = self.indices();
+        let range = try_simplify_range(range, indices.len())?;
+        match indices.get(range) {
+            Some(indices) => {
+                Some(unsafe { Subset::from_slice_unchecked(&self.map.pairs, indices) })
+            }
+            None => None,
+        }
+    }
+
+    /// Returns a mutable subset of key-value pairs in the given range of indices.
+    ///
+    /// Valid indices are *0 <= index < self.len()*
+    pub fn get_range_mut<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Option<SubsetMut<'_, K, V>> {
+        let indices = unsafe { self.raw_bucket.as_ref() }.as_unique_slice();
+        match indices.get_range(range) {
+            Some(indices) => {
+                Some(unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices) })
+            }
+            None => None,
+        }
+    }
+
+    /// Converts `self` into a mutable subset of key-value pairs in the given range of indices.
+    ///
+    /// Valid indices are *0 <= index < self.len()*
+    pub fn into_range<R: RangeBounds<usize>>(self, range: R) -> Option<SubsetMut<'a, K, V>> {
+        let indices = unsafe { self.raw_bucket.as_ref() }.as_unique_slice();
+        match indices.get_range(range) {
+            Some(indices) => {
+                Some(unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices) })
+            }
+            None => None,
+        }
     }
 
     /// Remove all the key-value pairs for this entry and return an iterator
