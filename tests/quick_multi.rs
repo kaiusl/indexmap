@@ -17,7 +17,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::{Bound, Deref};
 
-use indexmap::multimap::Entry as OEntry;
+use indexmap::multimap::{Entry as OEntry, Subset};
 
 fn set<'a, T: 'a, I>(iter: I) -> HashSet<T>
 where
@@ -56,7 +56,7 @@ macro_rules! quickcheck_limit {
                         $($code)*
                     }
                     let mut quickcheck = QuickCheck::new()
-                    .gen(Gen::new(10)).tests(10).max_tests(100)
+                    //.gen(Gen::new(100)).tests(100).max_tests(1000)
                     ;
                     if cfg!(miri) {
                         quickcheck = quickcheck
@@ -254,6 +254,97 @@ quickcheck_limit! {
             items.contains(&&value) && map[i] == value
         })
     }
+
+
+    fn entry_retain(insert: Vec<(i8, (i8, bool))>) -> bool {
+        let mut map = IndexMultimap::new();
+        map.extend(insert.iter().map(|(k, v)| (*k, *v)));
+        let keys = insert.iter().map(|(k, _)| *k).collect::<HashSet<_>>();
+
+        for key in keys {
+            let orig_map = map.clone();
+            let entry = map.entry(key);
+            let entry = match entry {
+                OEntry::Occupied(e) => e,
+                OEntry::Vacant(_) => unreachable!(),
+            };
+
+            let should_remove_all = !insert.iter().any(|(k, (_, remove))| k == &key && !remove);
+
+            let result = entry.retain(|_, _, (_, remove)| !*remove);
+            if should_remove_all {
+                if result.is_some() {
+                    return false;
+                }
+            } else {
+                let subset = result.unwrap().into_subset();
+                let expected: Vec<_> = orig_map
+                    .iter()
+                    .filter(|(k, (_, remove))| !(*k == &key && *remove))
+                    .enumerate()
+                    .filter(|(_, (k, _))| *k == &key)
+                    .map(|(i, (k, v))| (i, k, v))
+                    .collect();
+                if !check_subentries(&subset, &expected) {
+                    return false;
+                }
+            }
+
+            let expected_map: Vec<_> = orig_map
+                .iter()
+                .filter(|(k, (_, remove))| !(*k == &key && *remove))
+                .map(|(k, v)| (*k, *v))
+                .collect();
+            if !check_map(&map, &expected_map) {
+                return false;
+            }
+
+        }
+
+        true
+    }
+}
+
+fn check_subentries<K, V>(subentries: &Subset<'_, K, V>, expected: &[(usize, &K, &V)]) -> bool
+where
+    K: Eq + Debug,
+    V: Eq + Debug,
+{
+    let mut result = subentries.len() == expected.len();
+    result &= subentries.first().as_ref() == expected.first();
+    result &= subentries.last().as_ref() == expected.last();
+    result &= itertools::equal(subentries.iter(), expected.iter().copied());
+    result &= itertools::equal(subentries.indices(), expected.iter().map(|(i, _, _)| i));
+    result &= itertools::equal(subentries.keys(), expected.iter().map(|(_, k, _)| *k));
+    result &= itertools::equal(subentries.values(), expected.iter().map(|(_, _, v)| *v));
+    for i in 0..subentries.len() {
+        result &= subentries.nth(i).as_ref() == expected.get(i);
+    }
+
+    result
+}
+
+// Checks that the map yield given items in the given order by index and by key
+fn check_map<K, V>(map: &IndexMultimap<K, V>, expected: &[(K, V)]) -> bool
+where
+    K: core::fmt::Debug + Eq + std::hash::Hash,
+    V: core::fmt::Debug + Eq,
+{
+    let mut result = map.len_pairs() == expected.len();
+    result &= itertools::equal(map.iter(), expected.iter().map(|(k, v)| (k, v)));
+    for (index, (key, val)) in expected.iter().enumerate() {
+        result &= &map[index] == val;
+        result &= map.get_index(index) == Some((key, val));
+
+        let expected_items = expected
+            .iter()
+            .enumerate()
+            .filter(|(_, (k, _))| k == key)
+            .map(|(i, (k, v))| (i, k, v));
+
+        result &= itertools::equal(map.get(key).iter(), expected_items);
+    }
+    result
 }
 
 use crate::Op::*;

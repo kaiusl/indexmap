@@ -264,20 +264,24 @@ fn get() {
 
 // Checks that the map yield given items in the given order by index and by key
 #[track_caller]
-fn assert_map_eq(map: &IndexMultimapVec<i32, i32>, expected: &[(i32, i32)]) {
+fn assert_map_eq<K, V>(map: &IndexMultimapVec<K, V>, expected: &[(K, V)])
+where
+    K: fmt::Debug + Eq + std::hash::Hash,
+    V: fmt::Debug + Eq,
+{
     assert_eq!(map.len_pairs(), expected.len());
     itertools::assert_equal(map.iter(), expected.iter().map(|(k, v)| (k, v)));
-    for (index, &(key, val)) in expected.iter().enumerate() {
-        assert_eq!(&map[index], &val);
-        assert_eq!(map.get_index(index), Some((&key, &val)));
+    for (index, (key, val)) in expected.iter().enumerate() {
+        assert_eq!(&map[index], val);
+        assert_eq!(map.get_index(index), Some((key, val)));
 
         let expected_items = expected
             .iter()
             .enumerate()
-            .filter(|(_, (k, _))| k == &key)
+            .filter(|(_, (k, _))| k == key)
             .map(|(i, (k, v))| (i, k, v));
 
-        itertools::assert_equal(map.get(&key).iter(), expected_items);
+        itertools::assert_equal(map.get(key).iter(), expected_items);
     }
 }
 
@@ -864,6 +868,199 @@ fn retain() {
     map.retain(|k, _| !(k == &0 || k == &23));
     let expected = [2, 12, 8, 19, 7, 11, 5, 3, 17, 19, 22].map(|a| (a, a * 2));
     assert_map_eq(&map, &expected);
+}
+
+fn test_entry_retain(insert: &[(i32, (i32, bool))]) {
+    let mut map = IndexMultimapVec::new();
+    map.extend(insert.iter().map(|(k, v)| (*k, *v)));
+
+    let e = map.entry(4);
+    let e = match e {
+        Entry::Occupied(e) => e,
+        Entry::Vacant(_) => unreachable!(),
+    };
+
+    let should_remove_all = !insert.iter().any(|(k, (_, remove))| k == &4i32 && !remove);
+
+    let result = e.retain(|_, _, (_, remove)| !*remove);
+    if should_remove_all {
+        assert!(result.is_none());
+    } else {
+        let result = result.unwrap();
+        let subset = result.as_subset();
+        let expected: Vec<_> = insert
+            .iter()
+            .filter(|(k, (_, remove))| !(k == &4i32 && *remove))
+            .enumerate()
+            .filter(|(_, (k, _))| k == &4i32)
+            .map(|(i, (k, v))| (i, k, v))
+            .collect();
+        check_subentries(&subset, &expected);
+    }
+
+    let expected: Vec<_> = insert
+        .iter()
+        .filter(|(k, (_, remove))| !(k == &4i32 && *remove))
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    assert_map_eq(&map, &expected);
+}
+
+#[test]
+fn entry_retain_drop_panics() {
+    static DROPS: AtomicU32 = AtomicU32::new(0);
+
+    #[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+    struct DropMayPanic(bool, String);
+
+    impl Drop for DropMayPanic {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, ::core::sync::atomic::Ordering::SeqCst);
+
+            if self.0 {
+                panic!("panic in `drop`");
+            }
+        }
+    }
+
+    let mut map = IndexMultimapVec::from_iter([
+        (1, DropMayPanic(false, String::from("a"))),
+        (2, DropMayPanic(false, String::from("a"))),
+        (3, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("remove1"))),
+        (1, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(true, String::from("remove2"))),
+        (1, DropMayPanic(false, String::from("remove3"))),
+        (1, DropMayPanic(false, String::from("a"))),
+    ]);
+
+    let e = map.entry(1);
+    let e = match e {
+        Entry::Occupied(e) => e,
+        Entry::Vacant(_) => unreachable!(),
+    };
+
+    catch_unwind(AssertUnwindSafe(|| {
+        e.retain(|_, _, v| !v.1.starts_with("remove"))
+    }))
+    .ok();
+    assert_eq!(DROPS.load(::core::sync::atomic::Ordering::SeqCst), 2);
+
+    let expected_map_items = [
+        (1, DropMayPanic(false, String::from("a"))),
+        (2, DropMayPanic(false, String::from("a"))),
+        (3, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("a"))),
+        (1, DropMayPanic(false, String::from("remove3"))),
+        (1, DropMayPanic(false, String::from("a"))),
+    ];
+    assert_map_eq(&map, &expected_map_items);
+}
+
+#[test]
+fn entry_retain() {
+    let insert = [
+        (1, (11, false)),
+        (4, (41, false)),
+        (2, (21, false)),
+        (3, (31, false)),
+        (4, (42, true)),
+        (2, (22, false)),
+        (5, (51, false)),
+        (4, (43, false)),
+    ];
+    test_entry_retain(&insert);
+
+    let insert = [
+        (1, (11, false)),
+        (4, (41, true)),
+        (2, (21, false)),
+        (3, (31, false)),
+        (4, (42, true)),
+        (2, (22, false)),
+        (5, (51, false)),
+        (4, (43, false)),
+    ];
+    test_entry_retain(&insert);
+
+    let insert = [
+        (1, (11, false)),
+        (4, (41, true)),
+        (2, (21, false)),
+        (3, (31, false)),
+        (4, (42, true)),
+        (2, (22, false)),
+        (5, (51, false)),
+        (4, (43, false)),
+        (1, (11, false)),
+        (4, (44, true)),
+        (2, (21, false)),
+        (3, (31, false)),
+    ];
+    test_entry_retain(&insert);
+}
+
+#[test]
+fn entry_retain_multiple_consecutive() {
+    let insert = [
+        (1, (11, true)),
+        (4, (41, true)),
+        (2, (21, false)),
+        (3, (31, false)),
+        (4, (42, true)),
+        (2, (22, false)),
+        (5, (51, false)),
+        (4, (43, false)),
+        (4, (44, true)),
+        (4, (45, true)),
+        (4, (46, true)),
+        (2, (21, false)),
+        (3, (31, false)),
+    ];
+    test_entry_retain(&insert);
+}
+
+#[test]
+fn entry_retain_first() {
+    let insert = [
+        (4, (41, true)),
+        (2, (21, false)),
+        (3, (31, false)),
+        (4, (42, true)),
+        (2, (22, false)),
+        (5, (51, false)),
+        (4, (43, true)),
+        (4, (44, false)),
+        (2, (21, false)),
+        (3, (31, false)),
+    ];
+    test_entry_retain(&insert);
+}
+
+#[test]
+fn entry_retain_last() {
+    let insert = [
+        (2, (21, false)),
+        (3, (31, false)),
+        (4, (42, false)),
+        (2, (22, false)),
+        (5, (51, false)),
+        (4, (43, true)),
+    ];
+    test_entry_retain(&insert);
+}
+
+#[test]
+fn entry_retain_none() {
+    let insert = [
+        (2, (21, false)),
+        (3, (31, false)),
+        (4, (42, true)),
+        (2, (22, false)),
+        (5, (51, false)),
+        (4, (43, true)),
+    ];
+    test_entry_retain(&insert);
 }
 
 #[test]

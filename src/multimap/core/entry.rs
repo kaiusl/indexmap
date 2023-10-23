@@ -1,7 +1,7 @@
 #![allow(unsafe_code)]
 
 use core::ops::RangeBounds;
-use core::{fmt, ops};
+use core::{fmt, ops, ptr};
 
 use super::{
     equivalent, IndexMultimapCore, IndicesBucket, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
@@ -629,6 +629,144 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         // SAFETY: This is safe because it can only happen once (self is consumed)
         // and bucket has not been removed from the map.indices
         unsafe { ShiftRemove::new_raw(self.map, self.raw_bucket) }
+    }
+
+    /// Retains only the elements specified by the predicate in this entry.
+    ///
+    /// In other words, remove all elements e such that `f(&mut e)` returns `false`.
+    /// This method operates in place, visiting each element exactly once in the
+    /// original order, and preserves the order of the retained elements.
+    ///
+    /// This can be more efficient than [`IndexMultimap::retain`] since we don't
+    /// need to traverse all the pairs in the map.
+    pub fn retain<F>(mut self, mut keep: F) -> Option<Self>
+    where
+        F: FnMut(usize, &K, &mut V) -> bool,
+        K: Eq,
+    {
+        /// Drop guard in case dropping any K/V panics or the user provided predicate panics
+        struct BackShiftOnDrop<'b, K, V>
+        where
+            K: Eq,
+        {
+            inner: &'b mut IndexMultimapCore<K, V>,
+            start_pairs_count: usize,
+            prev_removed_index: usize,
+            delete_count: usize,
+        }
+
+        impl<'b, K, V> Drop for BackShiftOnDrop<'b, K, V>
+        where
+            K: Eq,
+        {
+            fn drop(&mut self) {
+                // Restore map to valid state
+                if self.delete_count != 0 {
+                    // Step 1: Shift back the tail
+                    let move_count = self.start_pairs_count - self.prev_removed_index - 1;
+                    if move_count > 0 {
+                        // Before: [c c hole hole hole prev_removed/hole tail tail ]
+                        // Before: [c c tail tail hole     hole          hole hole ]
+                        let pairs_ptr = self.inner.pairs.as_mut_ptr();
+                        let hole_start = unsafe {
+                            pairs_ptr.add(self.prev_removed_index - (self.delete_count - 1))
+                        };
+                        let src = unsafe { pairs_ptr.add(self.prev_removed_index + 1) };
+                        unsafe { ptr::copy(src, hole_start, move_count) }
+                    }
+
+                    // Step 2: Set correct pairs length
+                    unsafe {
+                        self.inner
+                            .pairs
+                            .set_len(self.start_pairs_count - self.delete_count)
+                    };
+
+                    // Step 3: Rebuild the hash table
+                    self.inner.rebuild_hash_table();
+                }
+            }
+        }
+
+        let mut indices = unsafe { self.raw_bucket.as_ref() }.iter();
+
+        let start_set_count = self.len();
+        let mut guard = {
+            let start_pairs_count = self.map.pairs.len();
+            BackShiftOnDrop {
+                inner: self.map,
+                start_pairs_count,
+                prev_removed_index: 0,
+                delete_count: 0,
+            }
+        };
+
+        let pairs_ptr = guard.inner.pairs.as_mut_ptr();
+
+        // Step 1: Check until first removed value, there is nothing to backshift until then
+        while let Some(&index) = indices.next() {
+            let bucket = unsafe { &mut *pairs_ptr.add(index) };
+            let should_remove = !keep(index, &mut bucket.key, &mut bucket.value);
+
+            if should_remove {
+                // Advance early to avoid double drop if `drop_in_place` panicked.
+                guard.delete_count += 1;
+                guard.prev_removed_index = index;
+                // SAFETY: we never touch bucket again
+                unsafe { ptr::drop_in_place(bucket) };
+                break;
+            }
+        }
+
+        // Step 2: Check remaining values and backshift all the values between previously removed and the most recently removed value
+        for &index in indices {
+            let bucket = unsafe { &mut *pairs_ptr.add(index) };
+            let should_remove = !keep(index, &mut bucket.key, &mut bucket.value);
+
+            if should_remove {
+                // Advance early to avoid double drop if `drop_in_place` panicked.
+                guard.delete_count += 1;
+                let prev_removed_index = guard.prev_removed_index;
+                guard.prev_removed_index = index;
+
+                // Before: [kept kept  hole hole  prev_removed/hole shift shift shift  index/new_hole unchecked unchecked ]
+                // After : [kept kept shift shift       shift        hole  hole  hole      hole       unchecked unchecked ]
+                let move_count = index - prev_removed_index - 1;
+                if move_count > 0 {
+                    let hole_start =
+                        unsafe { pairs_ptr.add(prev_removed_index - (guard.delete_count - 2)) };
+                    let src = unsafe { pairs_ptr.add(prev_removed_index + 1) };
+                    unsafe { ptr::copy(src, hole_start, move_count) }
+                }
+
+                // SAFETY: we never touch this bucket again
+                unsafe { ptr::drop_in_place(bucket) };
+            }
+        }
+
+        let delete_count = guard.delete_count;
+        // Step 3: Backshift the tail, set correct pairs length and rebuild the hash table (indices)
+        drop(guard);
+
+        self.map.debug_assert_invariants();
+
+        // Step 4: Return a new OccupiedEntry if we didn't remove all the items
+        //   and we have a key to look up the new indices bucket
+        //   (since we need to rebuild the indices table,
+        //   current indices bucket is not valid anymore)
+        if start_set_count == delete_count {
+            None
+        } else {
+            match &self.key {
+                Some(key) => {
+                    let eq = equivalent(key, &self.map.pairs);
+                    let indices = self.map.indices.find(self.hash.get(), eq).unwrap();
+                    self.raw_bucket = indices;
+                    Some(self)
+                }
+                None => None,
+            }
+        }
     }
 
     /// Returns an iterator over all the pairs in this entry.
