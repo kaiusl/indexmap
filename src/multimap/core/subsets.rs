@@ -41,12 +41,7 @@ use crate::Bucket;
 
 /// Slice like construct over a subset of the key-value pairs in the [`IndexMultimap`].
 ///
-/// This `struct` is created by the [`IndexMultimap::get`] and [`OccupiedEntry::get`] methods.
-/// See their documentation for more.
-///
 /// [`IndexMultimap`]: crate::IndexMultimap
-/// [`IndexMultimap::get`]: crate::IndexMultimap::get
-/// [`OccupiedEntry::get`]: crate::multimap::OccupiedEntry::get
 pub struct Subset<'a, K, V> {
     // # Guarantees
     //
@@ -106,7 +101,7 @@ impl<'a, K, V> Subset<'a, K, V> {
         self.indices.len()
     }
 
-    /// Returns `true` if this subset is empty, `false` otherwise.
+    /// Returns [`true`] if this subset is empty, [`false`] otherwise.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -115,19 +110,21 @@ impl<'a, K, V> Subset<'a, K, V> {
         &self.indices
     }
 
-    /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
+    /// Returns a reference to the `n`th pair in this subset or [`None`] if <code>n >= self.[len]\()</code>.
+    ///
+    /// [len]: Self::len
     pub fn nth(&self, n: usize) -> Option<(usize, &'a K, &'a V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.get(n)) }
     }
 
-    /// Return a reference to the first pair in this subset or `None` if this subset is empty.
+    /// Return a reference to the first pair in this subset or [`None`] if this subset is empty.
     pub fn first(&self) -> Option<(usize, &'a K, &'a V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.first()) }
     }
 
-    /// Returns a reference to the last pair in this subset or `None` if this subset is empty.
+    /// Returns a reference to the last pair in this subset or [`None`] if this subset is empty.
     pub fn last(&self) -> Option<(usize, &'a K, &'a V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.last()) }
@@ -135,7 +132,9 @@ impl<'a, K, V> Subset<'a, K, V> {
 
     /// Returns a immutable subset of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are *0 <= index < self.len()*
+    /// Valid indices are <code>0 <= index < self.[len]\()</code>
+    ///
+    /// [len]: Self::len
     pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<Subset<'a, K, V>> {
         let range = try_simplify_range(range, self.indices.len())?;
         match self.indices.get(range) {
@@ -148,7 +147,7 @@ impl<'a, K, V> Subset<'a, K, V> {
 
     /// # Safety
     ///
-    /// * If `index` is `Some`, it must be in bounds to index into `pairs`.
+    /// * If `index` is [`Some`], it must be in bounds to index into `pairs`.
     #[inline]
     unsafe fn get_item_unchecked<'b>(
         pairs: NonNull<Bucket<K, V>>,
@@ -194,11 +193,13 @@ impl<'a, K, V> Subset<'a, K, V> {
     ///
     /// The first will contain all indices from `[0, mid)`
     /// (excluding the index mid itself) and the second will contain all
-    /// indices from `[mid, len)`` (excluding the index `len` itself).
+    /// indices from `[mid, len)` (excluding the index `len` itself).
     ///
     /// # Panics
     ///
-    /// Panics if `mid > len`.
+    /// Panics if <code>mid > self.[len]\()</code>.
+    ///
+    /// [len]: Self::len
     pub fn split_at(&self, mid: usize) -> (Subset<'a, K, V>, Subset<'a, K, V>) {
         let (left, right) = self.indices.split_at(mid);
         unsafe {
@@ -209,12 +210,12 @@ impl<'a, K, V> Subset<'a, K, V> {
         }
     }
 
-    /// Returns the first and all the rest of the elements of the subset, or `None` if it is empty.
+    /// Returns the first and all the rest of the elements of the subset, or [`None`] if it is empty.
     pub fn split_first(&self) -> Option<((usize, &'a K, &'a V), Subset<'a, K, V>)> {
         unsafe { Self::split_one(self.pairs, self.pairs_len, self.indices.split_first()) }
     }
 
-    /// Returns the last and all the rest of the elements of the subset, or `None` if it is empty.
+    /// Returns the last and all the rest of the elements of the subset, or [`None`] if it is empty.
     pub fn split_last(&self) -> Option<((usize, &'a K, &'a V), Subset<'a, K, V>)> {
         unsafe { Self::split_one(self.pairs, self.pairs_len, self.indices.split_last()) }
     }
@@ -243,7 +244,7 @@ impl<'a, K, V> Subset<'a, K, V> {
     }
 
     /// Takes the first element out of the subset and returns a long lived
-    /// reference to it, or `None` if subset is empty.
+    /// reference to it, or [`None`] if subset is empty.
     ///
     /// The returned element will remain in the map/pairs slice but not in this subset.
     pub fn take_first(&mut self) -> Option<(usize, &'a K, &'a V)> {
@@ -251,7 +252,7 @@ impl<'a, K, V> Subset<'a, K, V> {
     }
 
     /// Takes the last element out of the subset and returns a long lived
-    /// reference to it, or `None` if subset is empty.
+    /// reference to it, or [`None`] if subset is empty.
     ///
     /// The returned element will remain in the map/pairs slice but not in this subset.
     pub fn take_last(&mut self) -> Option<(usize, &'a K, &'a V)> {
@@ -334,14 +335,7 @@ where
 /// Slice like construct over a subset of the pairs in the [`IndexMultimap`]
 /// with mutable access to the values.
 ///
-/// This `struct` is created by the [`IndexMultimap::get_mut`],
-/// [`OccupiedEntry::get_mut`], [`Entry::or_insert`] and other similar methods.
-/// See their documentation for more.
-///
 /// [`IndexMultimap`]: crate::IndexMultimap
-/// [`IndexMultimap::get_mut`]: crate::IndexMultimap::get_mut
-/// [`OccupiedEntry::get_mut`]: crate::multimap::OccupiedEntry::get_mut
-/// [`Entry::or_insert`]: crate::multimap::Entry::or_insert
 pub struct SubsetMut<'a, K, V> {
     // # Guarantees
     //
@@ -401,7 +395,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
         self.indices.len()
     }
 
-    /// Returns `true` if this subset is empty, `false` otherwise.
+    /// Returns [`true`] if this subset is empty, [`false`] otherwise.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -412,55 +406,61 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
         &self.indices
     }
 
-    /// Returns a reference to an `n`th key-value pair in this subset or `None` if `n >= self.len()`.
+    /// Returns a reference to an `n`th key-value pair in this subset or [`None`] if <code>n >= self.[len]\()</code>.
+    ///
+    /// [len]: Self::len
     pub fn nth(&self, n: usize) -> Option<(usize, &K, &V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.get(n)) }
     }
 
-    /// Returns a mutable reference to an `n`th pair in this subset or `None` if `n >= self.len()`.
+    /// Returns a mutable reference to an `n`th pair in this subset or [`None`] if <code>n >= self.[len]\()</code>.
+    ///
+    /// [len]: Self::len
     pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.get(n)) }
     }
 
-    /// Converts `self` into a long lived mutable reference to an `n`th pair in this subset or `None` if `n >= self.len()`.
+    /// Converts `self` into a long lived mutable reference to an `n`th pair in this subset or [`None`] if <code>n >= self.[len]\()</code>.
+    ///
+    /// [len]: Self::len
     pub fn into_nth(self, n: usize) -> Option<(usize, &'a K, &'a mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.get(n)) }
     }
 
-    /// Return a reference to the first pair in this subset or `None` if this subset is empty.
+    /// Return a reference to the first pair in this subset or [`None`] if this subset is empty.
     pub fn first(&self) -> Option<(usize, &K, &V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.first()) }
     }
 
-    /// Return a mutable reference to the first pair in this subset or `None` if this subset is empty.
+    /// Return a mutable reference to the first pair in this subset or [`None`] if this subset is empty.
     pub fn first_mut(&mut self) -> Option<(usize, &K, &mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.first()) }
     }
 
-    /// Converts `self` into long lived mutable reference to the first pair in this subset or `None` if this subset is empty.
+    /// Converts `self` into long lived mutable reference to the first pair in this subset or [`None`] if this subset is empty.
     pub fn into_first_mut(self) -> Option<(usize, &'a K, &'a mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.first()) }
     }
 
-    /// Returns a reference to the last pair in this subset or `None` if this subset is empty.
+    /// Returns a reference to the last pair in this subset or [`None`] if this subset is empty.
     pub fn last(&self) -> Option<(usize, &K, &V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked(self.pairs, self.pairs_len, self.indices.last()) }
     }
 
-    /// Returns a mutable reference to the last pair in this subset or `None` if this subset is empty.
+    /// Returns a mutable reference to the last pair in this subset or [`None`] if this subset is empty.
     pub fn last_mut(&mut self) -> Option<(usize, &K, &mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.last()) }
     }
 
-    /// Converts `self` into long lived mutable reference to the last pair in this subset or `None` if this subset is empty.
+    /// Converts `self` into long lived mutable reference to the last pair in this subset or [`None`] if this subset is empty.
     pub fn into_last_mut(self) -> Option<(usize, &'a K, &'a mut V)> {
         // SAFETY: `self.indices` only contains valid indices to index into `self.pairs`.
         unsafe { Self::get_item_unchecked_mut(self.pairs, self.pairs_len, self.indices.last()) }
@@ -508,7 +508,9 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
 
     /// Returns a immutable subset of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are *0 <= index < self.len()*
+    /// Valid indices are <code>0 <= index < self.[len]\()</code>
+    ///
+    /// [len]: Self::len
     pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<Subset<'_, K, V>> {
         match self.indices.get_range(range) {
             Some(indices) => {
@@ -520,7 +522,9 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
 
     /// Returns a mutable subset of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are *0 <= index < self.len()*
+    /// Valid indices are <code>0 <= index < self.[len]\()</code>
+    ///
+    /// [len]: Self::len
     pub fn get_range_mut<R: RangeBounds<usize>>(
         &mut self,
         range: R,
@@ -535,7 +539,9 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
 
     /// Converts `self` into a mutable subset of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are *0 <= index < self.len()*
+    /// Valid indices are <code>0 <= index < self.[len]\()</code>
+    ///
+    /// [len]: Self::len
     pub fn into_range<R: RangeBounds<usize>>(self, range: R) -> Option<SubsetMut<'a, K, V>> {
         match self.indices.get_range(range) {
             Some(indices) => {
@@ -545,7 +551,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
         }
     }
 
-    /// Returns mutable references to many items at once or `None` if any index
+    /// Returns mutable references to many items at once or [`None`] if any index
     /// is out-of-bounds, or if the same index was passed more than once.
     pub fn get_many_mut<const N: usize>(
         &mut self,
@@ -554,7 +560,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
         unsafe { Self::get_many_mut_core(self.pairs, self.pairs_len, self.indices, indices) }
     }
 
-    /// Returns mutable references to many items at once or `None` if any index
+    /// Returns mutable references to many items at once or [`None`] if any index
     /// is out-of-bounds, or if the same index was passed more than once.
     pub fn into_many_mut<const N: usize>(
         self,
@@ -678,13 +684,16 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     ///
     /// The first will contain all indices from `[0, mid)`
     /// (excluding the index mid itself) and the second will contain all
-    /// indices from `[mid, len)`` (excluding the index `len` itself).
+    /// indices from `[mid, len)` (excluding the index `len` itself).
     ///
-    /// If you need a longer lived subsets, see [`Self::split_at_into].
+    /// If you need a longer lived subsets, see [`split_at_into`].
     ///
     /// # Panics
     ///
-    /// Panics if `mid > len`.
+    /// Panics if <code>mid > self.[len]\()</code>.
+    ///
+    /// [`split_at_into`]: Self::split_at_into
+    /// [len]: Self::len
     pub fn split_at(&self, mid: usize) -> (Subset<'_, K, V>, Subset<'_, K, V>) {
         let (left, right) = self.indices.split_at(mid);
         unsafe {
@@ -699,13 +708,16 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     ///
     /// The first will contain all indices from `[0, mid)`
     /// (excluding the index mid itself) and the second will contain all
-    /// indices from `[mid, len)`` (excluding the index `len` itself).
+    /// indices from `[mid, len)` (excluding the index `len` itself).
     ///
-    /// If you need a longer lived subsets, see [`Self::split_at_into`].
+    /// If you need a longer lived subsets, see [`split_at_into`].
     ///
     /// # Panics
     ///
-    /// Panics if `mid > len`.
+    /// Panics if <code>mid > self.[len]\()</code>.
+    ///
+    /// [`split_at_into`]: Self::split_at_into
+    /// [len]: Self::len
     pub fn split_at_mut(&mut self, mid: usize) -> (SubsetMut<'_, K, V>, SubsetMut<'_, K, V>) {
         let (left, right) = self.indices.split_at(mid);
         unsafe {
@@ -720,15 +732,19 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     ///
     /// The first will contain all indices from `[0, mid)`
     /// (excluding the index mid itself) and the second will contain all
-    /// indices from `[mid, len)`` (excluding the index `len` itself).
+    /// indices from `[mid, len)` (excluding the index `len` itself).
     ///
     /// This method consumes `self` in order to return a longer lived subsets.
     /// If don't need it or need to keep original complete subset around,
-    /// see [`Self::split_at_mut`] or [`Self::split_at`].
+    /// see [`split_at_mut`] or [`split_at`].
     ///
     /// # Panics
     ///
-    /// Panics if `mid > len`.
+    /// Panics if <code>mid > self.[len]\()</code>.
+    ///
+    /// [`split_at`]: Self::split_at
+    /// [`split_at_mut`]: Self::split_at_mut
+    /// [len]: Self::len
     pub fn split_at_into(self, mid: usize) -> (SubsetMut<'a, K, V>, SubsetMut<'a, K, V>) {
         let (left, right) = self.indices.split_at(mid);
         unsafe {
@@ -739,22 +755,22 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
         }
     }
 
-    /// Returns the first and all the rest of the elements of the subset, or `None` if it is empty.
+    /// Returns the first and all the rest of the elements of the subset, or [`None`] if it is empty.
     pub fn split_first(&self) -> Option<((usize, &'_ K, &'_ V), Subset<'_, K, V>)> {
         unsafe { Self::split_one(self.pairs, self.pairs_len, self.indices.split_first()) }
     }
 
-    /// Returns the first and all the rest of the elements of the subset, or `None` if it is empty.
+    /// Returns the first and all the rest of the elements of the subset, or [`None`] if it is empty.
     pub fn split_first_mut(&mut self) -> Option<((usize, &'_ K, &'_ mut V), SubsetMut<'_, K, V>)> {
         unsafe { Self::split_one_mut(self.pairs, self.pairs_len, self.indices.split_first()) }
     }
 
-    /// Returns the last and all the rest of the elements of the subset, or `None` if it is empty.
+    /// Returns the last and all the rest of the elements of the subset, or [`None`] if it is empty.
     pub fn split_last(&self) -> Option<((usize, &'_ K, &'_ V), Subset<'_, K, V>)> {
         unsafe { Self::split_one(self.pairs, self.pairs_len, self.indices.split_last()) }
     }
 
-    /// Returns the last and all the rest of the elements of the subset, or `None` if it is empty.
+    /// Returns the last and all the rest of the elements of the subset, or [`None`] if it is empty.
     pub fn split_last_mut(&mut self) -> Option<((usize, &'_ K, &'_ mut V), SubsetMut<'_, K, V>)> {
         unsafe { Self::split_one_mut(self.pairs, self.pairs_len, self.indices.split_last()) }
     }
@@ -806,7 +822,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     }
 
     /// Takes the first element out of the subset and returns a long lived
-    /// reference to it, or `None` if subset is empty.
+    /// reference to it, or [`None`] if subset is empty.
     ///
     /// The returned element will remain in the map/pairs slice but not in this subset.
     pub fn take_first(&mut self) -> Option<(usize, &'a K, &'a mut V)> {
@@ -814,7 +830,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     }
 
     /// Takes the last element out of the subset and returns a long lived
-    /// reference to it, or `None` if subset is empty.
+    /// reference to it, or [`None`] if subset is empty.
     ///
     /// The returned element will remain in the map/pairs slice but not in this subset.
     pub fn take_last(&mut self) -> Option<(usize, &'a K, &'a mut V)> {
@@ -1044,8 +1060,8 @@ macro_rules! iter_methods {
 /// This `struct` is created by the [`Subset::iter`] and [`SubsetMut::iter`].
 /// See their documentation for more.
 ///
-/// [`Subset::iter`]: super::Subset::iter
-/// [`SubsetMut::iter`]: super::SubsetMut::iter
+/// [`Subset::iter`]: crate::multimap::Subset::iter
+/// [`SubsetMut::iter`]: crate::multimap::SubsetMut::iter
 /// [`IndexMultimap`]: crate::IndexMultimap
 pub struct SubsetIter<'a, K, V> {
     // # Guarantees
@@ -1080,8 +1096,8 @@ iter_methods!(
 /// This `struct` is created by the [`Subset::keys`] and [`SubsetMut::keys`].
 /// See their documentation for more.
 ///
-/// [`Subset::keys`]: super::Subset::keys
-/// [`SubsetMut::keys`]: super::SubsetMut::keys
+/// [`Subset::keys`]: crate::multimap::Subset::keys
+/// [`SubsetMut::keys`]: crate::multimap::SubsetMut::keys
 /// [`IndexMultimap`]: crate::IndexMultimap
 pub struct SubsetKeys<'a, K, V> {
     // # Guarantees
@@ -1116,8 +1132,8 @@ iter_methods!(
 /// This `struct` is created by the [`Subset::values`] and [`SubsetMut::values`].
 /// See their documentation for more.
 ///
-/// [`Subset::values`]: super::Subset::values
-/// [`SubsetMut::values`]: super::SubsetMut::values
+/// [`Subset::values`]: crate::multimap::Subset::values
+/// [`SubsetMut::values`]: crate::multimap::SubsetMut::values
 /// [`IndexMultimap`]: crate::IndexMultimap
 pub struct SubsetValues<'a, K, V> {
     // # Guarantees

@@ -17,6 +17,10 @@
 //!   of an allocation.
 //!
 //! These definitions are used throughout this module and it's submodules.
+//!
+//! [`Equivalent`]: crate::Equivalent
+//! [`Hash`]: ::core::hash::Hash
+//! [`Eq`]: ::core::cmp::Eq
 
 use ::alloc::boxed::Box;
 use ::core::cmp::Ordering;
@@ -52,7 +56,7 @@ mod tests;
 /// A hash table where the iteration order of the key-value pairs is independent
 /// of the hash values of the keys and each key supports multiple associated values.
 ///
-/// The interface is closely compatible with the standard `HashMap`, but also
+/// The interface is closely compatible with the standard [`HashMap`], but also
 /// has additional features.
 ///
 /// # Note about docs
@@ -74,14 +78,14 @@ mod tests;
 /// All iterators traverse the map in *the order*.
 ///
 /// The insertion order is preserved, with **notable exceptions** like the
-/// [`swap_remove()`] method. Methods such as [`sort_by()`] of
+/// [`swap_remove`] method. Methods such as [`sort_by`] of
 /// course result in a new order, depending on the sorting order.
 ///
 /// # Indices
 ///
 /// The key-value pairs are indexed in a compact range without holes in the
-/// range `0..self.`[`len_pairs()`]. For example, the method [`get()`] looks up
-/// an entry with equivalent key, and the method [`get_index()`]
+/// range <code>0..self.[len_pairs]\()</code>. For example, the method [`get`] looks up
+/// an entry with equivalent key, and the method [`get_index`]
 /// looks up the key-value pair by index.
 ///
 /// # Examples
@@ -101,11 +105,15 @@ mod tests;
 /// assert_eq!(letters.get(&'y'), None);
 /// ```
 ///
-/// [`swap_remove()`]: Self::swap_remove
-/// [`sort_by()`]: Self::sort_by
-/// [`len_pairs()`]: Self::len_pairs
-/// [`get()`]: Self::get
-/// [`get_index()`]: Self::get_index
+/// [`swap_remove`]: Self::swap_remove
+/// [`sort_by`]: Self::sort_by
+/// [len_pairs]: Self::len_pairs
+/// [`get`]: Self::get
+/// [`get_index`]: Self::get_index
+/// [`HashMap`]: ::std::collections::HashMap
+/// [`Equivalent`]: crate::Equivalent
+/// [`Hash`]: ::core::hash::Hash
+/// [`Eq`]: ::core::cmp::Eq
 #[cfg(feature = "std")]
 pub struct IndexMultimap<K, V, S = RandomState> {
     core: IndexMultimapCore<K, V>,
@@ -240,7 +248,7 @@ impl<K, V, S> IndexMultimap<K, V, S> {
         self.core.len_pairs()
     }
 
-    /// Returns `true` if the map contains no key-value pairs.
+    /// Returns [`true`] if the map contains no key-value pairs.
     ///
     /// Computes in **O(1)** time.
     #[inline]
@@ -350,7 +358,9 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `at > len`.
+    /// Panics if <code>at > self.[len_pairs]\()</code>.
+    ///
+    /// [len_pairs]: Self::len_pairs
     pub fn split_off(&mut self, at: usize) -> Self
     where
         S: Clone,
@@ -433,7 +443,7 @@ where
         self.core.shrink_to(min_capacity);
     }
 
-    // Convenience method over hash_key, however in some cases we cannot borrow whole self.
+    // Convenience method over [`Self::hash_key`], however in some cases we cannot borrow whole self.
     #[inline]
     fn hash<Q>(&self, key: &Q) -> HashValue
     where
@@ -462,8 +472,10 @@ where
     ///
     /// Computes in **O(1)** time (amortized average).
     ///
-    /// See also [`entry`](#method.entry) if you you want to insert *or* modify
+    /// See also [`entry`] if you you want to insert *or* modify
     /// the corresponding key-value pair.
+    ///
+    /// [`entry`]: Self::entry
     pub fn insert_append(&mut self, key: K, value: V) -> usize {
         let hash = self.hash(&key);
         self.core.insert_append_full(hash, key, value)
@@ -478,7 +490,7 @@ where
         self.core.entry(hash, key)
     }
 
-    /// Return `true` if an equivalent to `key` exists in the map.
+    /// Return [`true`] if an equivalent to `key` exists in the map.
     ///
     /// Computes in **O(1)** time (average).
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
@@ -560,6 +572,8 @@ where
     /// being dropped (is *leaked*),
     /// the map may have lost and leaked elements arbitrarily,
     /// including pairs not associated with given key.
+    ///
+    /// [`Vec::swap_remove`]: ::alloc::vec::Vec::swap_remove
     pub fn swap_remove<Q>(&mut self, key: &Q) -> Option<SwapRemove<'_, K, V>>
     where
         Q: Hash + Equivalent<K> + ?Sized,
@@ -592,6 +606,8 @@ where
     /// being dropped (is *leaked*),
     /// the map may have lost and leaked elements arbitrarily,
     /// including pairs not associated with given key.
+    ///
+    /// [`Vec::remove`]: ::alloc::vec::Vec::remove
     pub fn shift_remove<Q>(&mut self, key: &Q) -> Option<ShiftRemove<'_, K, V>>
     where
         Q: Hash + Equivalent<K> + ?Sized,
@@ -613,7 +629,7 @@ where
     }
 
     /// Scan through each key-value pair in the map and keep those where the
-    /// closure `keep` returns `true`.
+    /// closure `keep` returns [`true`].
     ///
     /// The elements are visited in order, and remaining elements keep their
     /// order.
@@ -657,7 +673,9 @@ where
     /// Sort the map's key-value pairs by the default ordering of the keys, but
     /// may not preserve the order of equal elements.
     ///
-    /// See [`sort_unstable_by`](Self::sort_unstable_by) for details.
+    /// See [`sort_unstable_by`] for details.
+    ///
+    /// [`sort_unstable_by`]: Self::sort_unstable_by
     pub fn sort_unstable_keys(&mut self)
     where
         K: Ord,
@@ -720,9 +738,9 @@ where
     /// Clears the [`IndexMultimap`] in the given index range, returning those
     /// key-value pairs as a drain iterator.
     ///
-    /// The range may be any type that implements `RangeBounds<usize>`,
-    /// including all of the `std::ops::Range*` types, or even a tuple pair of
-    /// `Bound` start and end values. To drain the map entirely, use `RangeFull`
+    /// The range may be any type that implements <code>[RangeBounds]<[usize]></code>,
+    /// including all of the <code>[core::ops]::Range*</code> types, or even a tuple pair of
+    /// [`Bound`] start and end values. To drain the map entirely, use [`RangeFull`]
     /// like `map.drain(..)`.
     ///
     /// This shifts down all entries following the drained range to fill the
@@ -740,6 +758,10 @@ where
     /// the end point is greater than the length of the map.
     ///
     /// [`mem::forget`]: ::core::mem::forget
+    /// [`Bound`]: ::core::ops::Bound
+    /// [RangeBounds]: ::core::ops::RangeBounds
+    /// [`RangeFull`]: ::core::ops::RangeFull
+    /// [core::ops]: ::core::ops
     pub fn drain<R>(&mut self, range: R) -> Drain<'_, K, V>
     where
         R: ops::RangeBounds<usize>,
@@ -749,7 +771,7 @@ where
 
     /// Remove the key-value pair by index
     ///
-    /// Valid indices are `0 <= index < self.`[`len_pairs()`].
+    /// Valid indices are <code>0 <= index < self.[len_pairs]\()</code>.
     ///
     /// Like [`Vec::swap_remove`], the pair is removed by swapping it with the
     /// last element of the map and popping it off.
@@ -757,14 +779,15 @@ where
     ///
     /// Computes in **O(1)** time (average).
     ///
-    /// [`len_pairs()`]: Self::len_pairs
+    /// [len_pairs]: Self::len_pairs
+    /// [`Vec::swap_remove`]: ::alloc::vec::Vec::swap_remove
     pub fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)> {
         self.core.swap_remove_index(index)
     }
 
     /// Remove the key-value pair by index
     ///
-    /// Valid indices are `0 <= index < self.`[`len_pairs()`].
+    /// Valid indices are <code>0 <= index < self.[len_pairs]\()</code>.
     ///
     /// Like [`Vec::remove`], the pair is removed by shifting all of the
     /// elements that follow it, preserving their relative order.
@@ -772,7 +795,8 @@ where
     ///
     /// Computes in **O(n)** time (average).
     ///
-    /// [`len_pairs()`]: Self::len_pairs
+    /// [len_pairs]: Self::len_pairs
+    /// [`Vec::remove`]: ::alloc::vec::Vec::remove
     pub fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)> {
         self.core.shift_remove_index(index)
     }
@@ -822,33 +846,33 @@ impl<K, V, S> IndexMultimap<K, V, S> {
 
     /// Get a reference to key-value pair by index.
     ///
-    /// Valid indices are `0 <= index < self.`[`len_pairs()`]
+    /// Valid indices are <code>0 <= index < self.[len_pairs]\()</code>.
     ///
     /// Computes in **O(1)** time.
     ///
-    /// [`len_pairs()`]: Self::len_pairs
+    /// [len_pairs]: Self::len_pairs
     pub fn get_index(&self, index: usize) -> Option<(&K, &V)> {
         self.core.as_pairs().get(index).map(Bucket::refs)
     }
 
     /// Get a mutable reference to key-value pair by index.
     ///
-    /// Valid indices are `0 <= index < self.`[`len_pairs()`]
+    /// Valid indices are <code>0 <= index < self.[len_pairs]\()</code>.
     ///
     /// Computes in **O(1)** time.
     ///
-    /// [`len_pairs()`]: Self::len_pairs
+    /// [len_pairs]: Self::len_pairs
     pub fn get_index_mut(&mut self, index: usize) -> Option<(&K, &mut V)> {
         self.core.as_mut_pairs().get_mut(index).map(Bucket::ref_mut)
     }
 
     /// Returns a slice of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are `0 <= index < self.`[`len_pairs()`]
+    /// Valid indices are <code>0 <= index < self.[len_pairs]\()</code>.
     ///
     /// Computes in **O(1)** time.
     ///
-    /// [`len_pairs()`]: Self::len_pairs
+    /// [len_pairs]: Self::len_pairs
     pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<&Slice<K, V>> {
         let entries = self.core.as_pairs();
         let range = try_simplify_range(range, entries.len())?;
@@ -857,11 +881,11 @@ impl<K, V, S> IndexMultimap<K, V, S> {
 
     /// Returns a mutable slice of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are `0 <= index < self.`[`len_pairs()`]
+    /// Valid indices are <code>0 <= index < self.[len_pairs]\()</code>.
     ///
     /// Computes in **O(1)** time.
     ///
-    /// [`len_pairs()`]: Self::len_pairs
+    /// [len_pairs]: Self::len_pairs
     pub fn get_range_mut<R: RangeBounds<usize>>(&mut self, range: R) -> Option<&mut Slice<K, V>> {
         let entries = self.core.as_mut_pairs();
         let range = try_simplify_range(range, entries.len())?;
@@ -946,7 +970,7 @@ where
 /// Mutable indexing allows changing / updating indexed values
 /// that are already present.
 ///
-/// You can **not** insert new values with index syntax, use `.insert()`.
+/// You can **not** insert new values with index syntax, use [`insert_append`] method.
 ///
 /// # Examples
 ///
@@ -970,6 +994,8 @@ where
 /// map.insert("foo", 1);
 /// map[10] = 1; // panics!
 /// ```
+///
+/// [`insert_append`]: IndexMultimap::insert_append
 impl<K, V, S> IndexMut<usize> for IndexMultimap<K, V, S>
 where
     K: Eq,
@@ -1028,8 +1054,10 @@ where
     /// Create an [`IndexMultimap`] from the sequence of key-value pairs in the
     /// iterable.
     ///
-    /// `from_iter` uses the same logic as `extend`. See
-    /// [`extend`](#method.extend) for more details.
+    /// `from_iter` uses the same logic as [`extend`]. See
+    /// it's documentation for more details.
+    ///
+    /// [`extend`]: #method.extend-1
     fn from_iter<I>(pairs_iterable: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -1069,13 +1097,15 @@ where
 {
     /// Extend the map with all key-value pairs in the iterable.
     ///
-    /// This is equivalent to calling [`insert_append`](#method.insert_append) for each of
+    /// This is equivalent to calling [`insert_append`] for each of
     /// them in order, which means that for keys that already existed
     /// in the map, the new value is added to the back behind the equivalent key.
     ///
     /// New keys are inserted in the order they appear in the sequence. If
     /// equivalents of a key occur more than once, the last corresponding value
     /// prevails.
+    ///
+    /// [`insert_append`]: IndexMultimap::insert_append
     fn extend<I>(&mut self, pairs_iterable: I)
     where
         I: IntoIterator<Item = (K, V)>,
@@ -1106,7 +1136,9 @@ where
 {
     /// Extend the map with all key-value pairs in the iterable.
     ///
-    /// See the first extend method for more details.
+    /// See the [first extend] method for more details.
+    ///
+    /// [first extend]: #method.extend-1
     fn extend<I>(&mut self, pairs_iterable: I)
     where
         I: IntoIterator<Item = (&'a K, &'a V)>,

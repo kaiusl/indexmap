@@ -19,6 +19,7 @@ use crate::{Bucket, Equivalent, HashValue};
 ///
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`IndexMultimap::shift_remove`]: crate::IndexMultimap::shift_remove
+/// [`OccupiedEntry::shift_remove`]: crate::multimap::OccupiedEntry::shift_remove
 pub struct ShiftRemove<'a, K, V>
 where
     // Needed by map.debug_assert_invariants if cfg!(more_debug_assertions) in Drop impl.
@@ -332,6 +333,7 @@ where
 ///
 /// [`IndexMultimap`]: crate::IndexMultimap
 /// [`IndexMultimap::swap_remove`]: crate::IndexMultimap::swap_remove
+/// [`OccupiedEntry::swap_remove`]: crate::multimap::OccupiedEntry::swap_remove
 pub struct SwapRemove<'a, K, V>
 where
     // Needed by map.debug_assert_invariants if cfg!(more_debug_assertions) in Drop impl.

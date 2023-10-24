@@ -57,7 +57,7 @@ impl<'a, K, V> Entry<'a, K, V> {
     }
 
     /// Returns the indices where the key-value pairs exists or will be inserted.
-    /// The return value behaves like `&[`[`usize`]`]`
+    /// The return value behaves like <code>&[[usize]]</code>
     pub fn indices(&self) -> EntryIndices<'_> {
         match self {
             Entry::Occupied(entry) => EntryIndices(SingleOrSlice::Slice(entry.indices())),
@@ -168,7 +168,7 @@ where
     }
 }
 
-/// Wrapper of the indices of an [`Entry`]. Behaves like a `&[`[`usize`]`]`.
+/// Wrapper of the indices of an [`Entry`]. Behaves like a <code>&[[usize]]</code>.
 /// Always has at least one element.
 ///
 /// Returned by the [`Entry::indices`] method. See it's documentation for more.
@@ -214,7 +214,7 @@ enum SingleOrSlice<'a, T> {
 /// A view into a vacant entry in a [`IndexMultimap`].
 /// It is part of the [`Entry`] enum.
 ///
-/// [`IndexMultimap`]: super::IndexMultimap
+/// [`IndexMultimap`]: crate::IndexMultimap
 pub struct VacantEntry<'a, K, V> {
     map: &'a mut IndexMultimapCore<K, V>,
     hash: HashValue,
@@ -283,7 +283,7 @@ where
 /// It is part of the [`Entry`] enum.
 ///
 /// [`Entry`]: super::Entry
-/// [`IndexMultimap`]: super::super::IndexMultimap
+/// [`IndexMultimap`]: crate::IndexMultimap
 pub struct OccupiedEntry<'a, K, V> {
     // SAFETY:
     //   * The lifetime of the map reference also constrains the raw bucket,
@@ -432,7 +432,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Gets a reference to the entry's first key in the map.
     ///
-    /// Other keys can be accessed through [`get`](Self::get) method.
+    /// Other keys can be accessed through [`nth`](Self::nth) (and similar) method.
     ///
     /// Note that this may not be the key that was used to find the pair.
     /// There may be an observable difference if the key type has any
@@ -490,7 +490,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         unsafe { self.raw_bucket.as_mut() }
     }
 
-    /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
+    /// Returns a reference to the `n`th pair in this subset or [`None`] if <code>n >= self.[len]\()</code>.
+    ///
+    /// [len]: Self::len
     pub fn nth(&self, n: usize) -> Option<(usize, &K, &V)> {
         match self.indices().get(n) {
             Some(&index) => {
@@ -501,7 +503,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         }
     }
 
-    /// Returns a mutable reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
+    /// Returns a mutable reference to the `n`th pair in this subset or [`None`]
+    ///  if <code>n >= self.[len]\()</code>.
+    ///
+    /// [len]: Self::len
     pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
         match self.indices().get(n) {
             Some(&index) => {
@@ -512,7 +517,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         }
     }
 
-    /// Converts `self` into a long lived mutable reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
+    /// Converts `self` into a long lived mutable reference to the `n`th pair in
+    ///  this subset or [`None`] if <code>n >= self.[len]\()</code>.
+    ///
+    /// [len]: Self::len
     pub fn into_nth(self, n: usize) -> Option<(usize, &'a K, &'a mut V)> {
         match self.indices().get(n) {
             Some(&index) => {
@@ -567,7 +575,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Returns a immutable subset of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are *0 <= index < self.len()*
+    /// Valid indices are <code>0 <= index < self.[len]\()</code>
+    ///
+    /// [len]: Self::len
     pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<Subset<'_, K, V>> {
         let indices = self.indices();
         let range = try_simplify_range(range, indices.len())?;
@@ -581,7 +591,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Returns a mutable subset of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are *0 <= index < self.len()*
+    /// Valid indices are <code>0 <= index < self.[len]\()</code>
+    ///
+    /// [len]: Self::len
     pub fn get_range_mut<R: RangeBounds<usize>>(
         &mut self,
         range: R,
@@ -597,7 +609,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Converts `self` into a mutable subset of key-value pairs in the given range of indices.
     ///
-    /// Valid indices are *0 <= index < self.len()*
+    /// Valid indices are <code>0 <= index < self.[len]\()</code>
+    ///
+    /// [len]: Self::len
     pub fn into_range<R: RangeBounds<usize>>(self, range: R) -> Option<SubsetMut<'a, K, V>> {
         let indices = unsafe { self.raw_bucket.as_ref() }.as_unique_slice();
         match indices.get_range(range) {
@@ -608,7 +622,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         }
     }
 
-    /// Returns mutable references to many items at once or `None` if any index
+    /// Returns mutable references to many items at once or [`None`] if any index
     /// is out-of-bounds, or if the same index was passed more than once.
     pub fn get_many_mut<const N: usize>(
         &mut self,
@@ -617,7 +631,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         unsafe { Self::get_many_mut_core(&mut self.map.pairs, self.raw_bucket.clone(), indices) }
     }
 
-    /// Returns mutable references to many items at once or `None` if any index
+    /// Returns mutable references to many items at once or [`None`] if any index
     /// is out-of-bounds, or if the same index was passed more than once.
     pub fn into_many_mut<const N: usize>(
         self,
@@ -667,6 +681,8 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// being dropped (is *leaked*),
     /// the map may have lost and leaked elements arbitrarily,
     /// including pairs not associated with this entry.
+    ///
+    /// [`Vec::swap_remove`]: ::alloc::vec::Vec::swap_remove
     pub fn swap_remove(self) -> SwapRemove<'a, K, V>
     where
         K: Eq,
@@ -696,6 +712,8 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// being dropped (is *leaked*),
     /// the map may have lost and leaked elements arbitrarily,
     /// including pairs not associated with this entry.
+    ///
+    /// [`Vec::remove`]: ::alloc::vec::Vec::remove
     pub fn shift_remove(self) -> ShiftRemove<'a, K, V>
     where
         K: Eq,
@@ -707,12 +725,14 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Retains only the elements specified by the predicate in this entry.
     ///
-    /// In other words, remove all elements e such that `f(&mut e)` returns `false`.
+    /// In other words, remove all elements e such that `f(&mut e)` returns [`false`].
     /// This method operates in place, visiting each element exactly once in the
     /// original order, and preserves the order of the retained elements.
     ///
     /// This can be more efficient than [`IndexMultimap::retain`] since we don't
     /// need to traverse all the pairs in the map.
+    /// 
+    /// [`IndexMultimap::retain`]: crate::IndexMultimap::retain
     pub fn retain<F>(mut self, mut keep: F) -> Option<Self>
     where
         F: FnMut(usize, &K, &mut V) -> bool,
@@ -871,6 +891,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// But there may be an observable differences if the key type has any
     /// distinguishing features outside of [`Hash`] and [`Eq`], like
     /// extra fields or the memory address of an allocation.
+    /// 
+    /// [`Hash`]: ::core::hash::Hash
+    /// [`Eq`]: ::core::cmp::Eq
     pub fn keys(&self) -> SubsetKeys<'_, K, V> {
         unsafe {
             SubsetKeys::from_slice_unchecked(
@@ -937,15 +960,15 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Returns a slice like construct with all values associated with this entry in the map.
     ///
-    /// If you need a reference which may outlive the destruction of the
-    /// pair, see [`into_mut`](Self::into_mut).
+    /// If you need a references which may outlive the destruction of this entry,
+    /// see [`into_subset_mut`](Self::into_subset_mut).
     pub fn as_subset_mut(&mut self) -> SubsetMut<'_, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
         unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices.as_unique_slice()) }
     }
 
     /// Converts into a slice like construct with all the values associated with
-    /// this pair in the map, with a lifetime bound to the map itself.
+    /// this entry in the map, with a lifetime bound to the map itself.
     pub fn into_subset_mut(self) -> SubsetMut<'a, K, V> {
         let indices = unsafe { self.raw_bucket.as_ref() };
         unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices.as_unique_slice()) }
