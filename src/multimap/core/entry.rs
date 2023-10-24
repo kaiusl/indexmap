@@ -5,8 +5,8 @@ use core::{fmt, ops, ptr};
 
 use super::indices::Indices;
 use super::{
-    equivalent, IndexMultimapCore, IndicesBucket, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
-    SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
+    equivalent, get_hash, IndexMultimapCore, IndicesBucket, ShiftRemove, Subset, SubsetIter,
+    SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
 };
 use crate::util::{
     check_unique_and_in_bounds, try_simplify_range, DebugIterAsList, DebugIterAsNumberedCompactList,
@@ -153,6 +153,25 @@ impl<'a, K, V> Entry<'a, K, V> {
             Entry::Vacant(entry) => entry.insert_entry(value),
         }
     }
+
+    /// Inserts the values from `iter` using the entry's key into the map.
+    ///
+    /// Return [`Entry::Vacant`] if entry is still vacant,
+    /// which happens if entry was vacant and `iter` was empty.
+    /// Otherwise returns [`Entry::Occupied`].
+    pub fn insert_append_many<I>(self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = V>,
+        K: Clone,
+    {
+        match self {
+            Entry::Occupied(mut entry) => {
+                entry.insert_append_many(iter);
+                Entry::Occupied(entry)
+            }
+            Entry::Vacant(entry) => entry.insert_many(iter),
+        }
+    }
 }
 
 impl<K, V> fmt::Debug for Entry<'_, K, V>
@@ -261,6 +280,37 @@ impl<'a, K, V> VacantEntry<'a, K, V> {
 
         // SAFETY: push returns a live, valid bucket from the self.map
         unsafe { OccupiedEntry::new_unchecked(self.map, bucket, self.hash, None) }
+    }
+
+    /// Inserts the values from `iter` using the entry's key into the map.
+    ///
+    /// Return [`Entry::Vacant`] if iterator was empty, [`Entry::Occupied`] otherwise.
+    pub fn insert_many<T>(self, iter: T) -> Entry<'a, K, V>
+    where
+        T: IntoIterator<Item = V>,
+        K: Clone,
+    {
+        let iter = iter.into_iter();
+        let start_len_pairs = self.map.len_pairs();
+        self.map.pairs.extend(iter.map(|v| Bucket {
+            hash: self.hash,
+            key: self.key.clone(),
+            value: v,
+        }));
+
+        if start_len_pairs != self.map.pairs.len() {
+            let indices = Indices::from_range(start_len_pairs..self.map.pairs.len());
+            let bucket =
+                self.map
+                    .indices
+                    .insert(self.hash.get(), indices, get_hash(&self.map.pairs));
+
+            Entry::Occupied(unsafe {
+                OccupiedEntry::new_unchecked(self.map, bucket, self.hash, Some(self.key))
+            })
+        } else {
+            Entry::Vacant(self)
+        }
     }
 }
 
@@ -409,6 +459,42 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         unsafe { self.raw_bucket.as_mut() }.push(index);
 
         self.map.debug_assert_indices(self.indices());
+    }
+
+    /// Inserts the values from `iter` using the entry's key into the map.
+    ///
+    /// This method will clone the key.
+    pub fn insert_append_many<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = V>,
+        K: Clone,
+    {
+        // Impl:
+        // a) use vec.extend twice in order to make use of std's specializations
+        //    of extend (for example if iter is ExactSizeIterator)
+        //    downside is that will iterate twice over the items,
+        //    in general case we still may resize multiple times
+        // b) reserve ourselves and iterate once, but we cannot make use of the specializations,
+        //    so we may need to resize multiple times
+        let iter = iter.into_iter();
+        let start_len_pairs = self.map.len_pairs();
+        let key = self.clone_key();
+        self.map.pairs.extend(iter.map(|v| Bucket {
+            hash: self.hash,
+            key: key.clone(),
+            value: v,
+        }));
+
+        let indices = unsafe { self.raw_bucket.as_mut() };
+        debug_assert!(*indices.last().unwrap() < start_len_pairs);
+        // SAFETY: indices is from map, if map has `start_len_pairs` then the
+        // maximum index that could be in `indices` is `start_len_pairs - 1`,
+        // thus the range below is guaranteed to yield larger values than currently
+        // in the indices
+        // A range will also yield unique items in sorted order.
+        unsafe { indices.extend(start_len_pairs..self.map.pairs.len()) };
+
+        self.map.debug_assert_invariants();
     }
 
     /// Appends a new key-value pair to this entry by taking the owned key.
@@ -731,7 +817,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     ///
     /// This can be more efficient than [`IndexMultimap::retain`] since we don't
     /// need to traverse all the pairs in the map.
-    /// 
+    ///
     /// [`IndexMultimap::retain`]: crate::IndexMultimap::retain
     pub fn retain<F>(mut self, mut keep: F) -> Option<Self>
     where
@@ -891,7 +977,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// But there may be an observable differences if the key type has any
     /// distinguishing features outside of [`Hash`] and [`Eq`], like
     /// extra fields or the memory address of an allocation.
-    /// 
+    ///
     /// [`Hash`]: ::core::hash::Hash
     /// [`Eq`]: ::core::cmp::Eq
     pub fn keys(&self) -> SubsetKeys<'_, K, V> {
@@ -1005,6 +1091,18 @@ impl<'a, K, V> IntoIterator for OccupiedEntry<'a, K, V> {
                 indices.as_unique_slice().iter(),
             )
         }
+    }
+}
+
+impl<K, V> Extend<V> for OccupiedEntry<'_, K, V>
+where
+    K: Clone,
+{
+    fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = V>,
+    {
+        self.insert_append_many(iter)
     }
 }
 

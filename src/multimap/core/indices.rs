@@ -3,7 +3,7 @@
 
 use ::alloc::vec::Vec;
 use ::core::{mem, ops, slice};
-use core::ops::RangeBounds;
+use core::ops::{RangeBounds, Range};
 pub(super) use iterators::{UniqueIter, UniqueSortedIter};
 
 use crate::util::{is_sorted_and_unique, try_simplify_range};
@@ -176,6 +176,23 @@ impl Indices {
         }
         debug_assert!(is_sorted_and_unique(self.as_slice()));
         old
+    }
+
+    /// # Safety
+    /// 
+    /// * iter must yield indices larger than anything currently in `self` (larger than self.last())
+    ///   and they must be sorted and unique
+    pub(crate) unsafe fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = usize>,
+    {
+        self.inner.extend(iter);
+    }
+
+    pub(crate) fn from_range(range: Range<usize>) -> Self {
+        Self {
+            inner: range.collect()
+        }
     }
 }
 
