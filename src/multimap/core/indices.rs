@@ -7,6 +7,7 @@ use core::ops::RangeBounds;
 pub(super) use iterators::{UniqueIter, UniqueSortedIter};
 
 use crate::util::{is_sorted_and_unique, try_simplify_range};
+use crate::TryReserveError;
 
 /// Unique and sorted set of indices
 #[derive(Debug, Clone)]
@@ -23,6 +24,58 @@ impl Indices {
         Self { inner: vec![index] }
     }
 
+    /// Returns the total number of indices self can hold without reallocating.
+    #[inline]
+    pub(crate) fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    /// Reserve capacity for `additional` more key-value pairs.
+    #[inline]
+    pub(super) fn reserve(&mut self, additional: usize) {
+        self.inner.reserve(additional)
+    }
+
+    /// Reserve capacity for `additional` more key-value pairs, without over-allocating.
+    #[inline]
+    pub(super) fn reserve_exact(&mut self, additional: usize) {
+        self.inner.reserve_exact(additional)
+    }
+
+    /// Try to reserve capacity for `additional` more key-value pairs.
+    #[inline]
+    pub(super) fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.inner
+            .try_reserve(additional)
+            .map_err(TryReserveError::from_alloc)
+    }
+
+    /// Try to reserve capacity for `additional` more key-value pairs, without over-allocating.
+    #[inline]
+    pub(super) fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.inner
+            .try_reserve_exact(additional)
+            .map_err(TryReserveError::from_alloc)
+    }
+
+    /// Shrink the capacity of the map with a lower bound
+    ///
+    /// The capacity will remain at least as large as both the length and the supplied value.
+    ///
+    /// If the current capacity is less than the lower limit, this is a no-op.
+    #[inline]
+    pub(super) fn shrink_to(&mut self, min_capacity: usize) {
+        self.inner.shrink_to(min_capacity);
+    }
+
+    /// Shrinks the capacity of self as much as possible.
+    ///
+    /// It will drop down as close as possible to the length but the allocator
+    /// may still inform the vector that there is space for a few more elements.
+    #[inline]
+    pub(super) fn shrink_to_fit(&mut self) {
+        self.inner.shrink_to_fit()
+    }
     #[inline]
     pub(crate) fn as_unique_slice(&self) -> &UniqueSlice<usize> {
         unsafe { UniqueSlice::from_slice_unchecked(&self) }
@@ -78,11 +131,6 @@ impl Indices {
         // Thus `self.inner` remains unique and sorted.
         self.inner.retain_mut(keep);
         debug_assert!(is_sorted_and_unique(self.as_slice()))
-    }
-
-    #[inline]
-    pub(crate) fn shrink_to_fit(&mut self) {
-        self.inner.shrink_to_fit()
     }
 
     #[inline]

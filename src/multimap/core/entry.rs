@@ -3,6 +3,7 @@
 use core::ops::RangeBounds;
 use core::{fmt, ops, ptr};
 
+use super::indices::Indices;
 use super::{
     equivalent, IndexMultimapCore, IndicesBucket, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
     SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
@@ -10,7 +11,7 @@ use super::{
 use crate::util::{
     check_unique_and_in_bounds, try_simplify_range, DebugIterAsList, DebugIterAsNumberedCompactList,
 };
-use crate::{Bucket, HashValue};
+use crate::{Bucket, HashValue, TryReserveError};
 
 /// Entry for an existing key-value pair or a vacant location to
 /// insert one.
@@ -327,8 +328,67 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Returns the number of key-value pairs in this entry.
     #[allow(clippy::len_without_is_empty)] // There is always at least one pair
+    #[inline]
     pub fn len(&self) -> usize {
         self.indices().len()
+    }
+
+    /// Returns the total number of key-value pairs this entry can hold without reallocating.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        // We'll need to reallocate either if the indices vec is full or pairs vec is full.
+        let free_space_in_map = self.map.capacity_pairs() - self.map.len_pairs();
+        usize::min(
+            self.indices_inner().capacity(),
+            self.len() + free_space_in_map,
+        )
+    }
+
+    /// Reserve capacity for `additional` more key-value pairs for this entry.
+    pub fn reserve(&mut self, additional: usize) {
+        self.map.pairs.reserve(additional);
+        self.indices_inner_mut().reserve(additional)
+    }
+
+    /// Reserve capacity for `additional` more key-value pairs for this entry, without over-allocating.
+    pub fn reserve_exact(&mut self, additional: usize) {
+        self.map.pairs.reserve_exact(additional);
+        self.indices_inner_mut().reserve_exact(additional);
+    }
+
+    /// Try to reserve capacity for `additional` more key-value pairs for this entry.
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.map
+            .pairs
+            .try_reserve(additional)
+            .map_err(TryReserveError::from_alloc)?;
+        self.indices_inner_mut().try_reserve(additional)
+    }
+
+    /// Try to reserve capacity for `additional` more key-value pairs for this entry, without over-allocating.
+    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.map
+            .pairs
+            .try_reserve_exact(additional)
+            .map_err(TryReserveError::from_alloc)?;
+        self.indices_inner_mut().try_reserve_exact(additional)
+    }
+
+    /// Shrink the capacity of this entry with a lower bound.
+    ///     
+    /// The capacity will remain at least as large as both the length and the supplied value.
+    ///
+    /// If the current capacity is less than the lower limit, this is a no-op.
+    pub fn shrink_to(&mut self, min_capacity: usize) {
+        self.indices_inner_mut().shrink_to(min_capacity);
+    }
+
+    /// Shrinks the capacity of this entry as much as possible.
+    ///
+    /// It will drop down as close as possible to the length but the allocator
+    /// may still inform the vector that there is space for a few more elements.
+    pub fn shrink_to_fit(&mut self) {
+        self.indices_inner_mut().shrink_to_fit()
     }
 
     /// Appends a new key-value pair to this entry.
@@ -413,7 +473,21 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     #[inline]
     pub fn indices(&self) -> &[usize] {
         // SAFETY: we have &mut map keep keeping the bucket stable
-        unsafe { self.raw_bucket.as_ref() }.as_slice()
+        self.indices_inner().as_slice()
+    }
+
+    /// Returns the indices of all the pairs associated with this entry in the map.
+    #[inline]
+    fn indices_inner(&self) -> &Indices {
+        // SAFETY: we have &mut map keep keeping the bucket stable
+        unsafe { self.raw_bucket.as_ref() }
+    }
+
+    /// Returns the indices of all the pairs associated with this entry in the map.
+    #[inline]
+    fn indices_inner_mut(&mut self) -> &mut Indices {
+        // SAFETY: we have &mut map keep keeping the bucket stable
+        unsafe { self.raw_bucket.as_mut() }
     }
 
     /// Returns a reference to the `n`th pair in this subset or `None` if `n >= self.len()`.
