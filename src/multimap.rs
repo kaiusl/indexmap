@@ -121,7 +121,7 @@ pub struct IndexMultimap<K, V, S = RandomState> {
 }
 #[cfg(not(feature = "std"))]
 pub struct IndexMultimap<K, V, S> {
-    pub(crate) core: IndexMultimapCore<K, V>,
+    core: IndexMultimapCore<K, V>,
     hash_builder: S,
 }
 

@@ -162,7 +162,7 @@ impl<'a, K, V> Entry<'a, K, V> {
     pub fn insert_append_many<I>(self, iter: I) -> Self
     where
         I: IntoIterator<Item = V>,
-        K: Clone,
+        K: Clone + Eq,
     {
         match self {
             Entry::Occupied(mut entry) => {
@@ -288,7 +288,7 @@ impl<'a, K, V> VacantEntry<'a, K, V> {
     pub fn insert_many<T>(self, iter: T) -> Entry<'a, K, V>
     where
         T: IntoIterator<Item = V>,
-        K: Clone,
+        K: Clone + Eq,
     {
         let iter = iter.into_iter();
         let start_len_pairs = self.map.len_pairs();
@@ -467,7 +467,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     pub fn insert_append_many<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = V>,
-        K: Clone,
+        K: Clone + Eq,
     {
         // Impl:
         // a) use vec.extend twice in order to make use of std's specializations
@@ -1096,7 +1096,7 @@ impl<'a, K, V> IntoIterator for OccupiedEntry<'a, K, V> {
 
 impl<K, V> Extend<V> for OccupiedEntry<'_, K, V>
 where
-    K: Clone,
+    K: Clone + Eq,
 {
     fn extend<T>(&mut self, iter: T)
     where

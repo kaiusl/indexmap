@@ -309,7 +309,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         for indices in index_iter {
             index_count += indices.len();
             assert!(!indices.is_empty(), "found empty indices");
-            assert!(is_sorted(indices), "found unsorted indices");
+            assert!(crate::util::is_sorted(indices), "found unsorted indices");
             assert!(
                 indices.last().unwrap() < &self.pairs.len(),
                 "found out of bound index for entries in indices"
