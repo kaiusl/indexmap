@@ -11,21 +11,18 @@ use crate::IndexMultimap;
 /// This function may be used in a field attribute for deriving [`Serialize`]:
 ///
 /// ```
-/// # use indexmap::IndexMap;
+/// # use indexmap::IndexMultimap;
 /// # use serde_derive::Serialize;
 /// #[derive(Serialize)]
 /// struct Data {
-///     #[serde(serialize_with = "indexmap::serde_seq::serialize")]
-///     map: IndexMap<i32, u64>,
+///     #[serde(serialize_with = "indexmap::multimap::serde_seq::serialize")]
+///     map: IndexMultimap<i32, u64>,
 ///     // ...
 /// }
 /// ```
 ///
 /// Requires crate feature `"serde"`
-pub fn serialize<K, V, S, Indices, T>(
-    map: &IndexMultimap<K, V, S>,
-    serializer: T,
-) -> Result<T::Ok, T::Error>
+pub fn serialize<K, V, S, T>(map: &IndexMultimap<K, V, S>, serializer: T) -> Result<T::Ok, T::Error>
 where
     K: Serialize + Hash + Eq,
     V: Serialize,
@@ -70,20 +67,18 @@ where
 /// This function may be used in a field attribute for deriving [`Deserialize`]:
 ///
 /// ```
-/// # use indexmap::IndexMap;
+/// # use indexmap::IndexMultimap;
 /// # use serde_derive::Deserialize;
 /// #[derive(Deserialize)]
 /// struct Data {
-///     #[serde(deserialize_with = "indexmap::serde_seq::deserialize")]
-///     map: IndexMap<i32, u64>,
+///     #[serde(deserialize_with = "indexmap::multimap::serde_seq::deserialize")]
+///     map: IndexMultimap<i32, u64>,
 ///     // ...
 /// }
 /// ```
 ///
 /// Requires crate feature `"serde"`
-pub fn deserialize<'de, D, K, V, S, Indices>(
-    deserializer: D,
-) -> Result<IndexMultimap<K, V, S>, D::Error>
+pub fn deserialize<'de, D, K, V, S>(deserializer: D) -> Result<IndexMultimap<K, V, S>, D::Error>
 where
     D: Deserializer<'de>,
     K: Deserialize<'de> + Eq + Hash,
