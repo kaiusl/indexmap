@@ -70,7 +70,7 @@ impl<'a, K, V> Subset<'a, K, V> {
         indices: &'a [usize],
     ) -> Self {
         let pairs_len = pairs.len();
-        let pairs = unsafe { NonNull::new_unchecked(pairs.as_ptr().cast_mut()) };
+        let pairs = unsafe { NonNull::new_unchecked(pairs.as_ptr() as *mut Bucket<K, V>) };
         unsafe { Self::from_raw_unchecked(pairs, pairs_len, indices) }
     }
 
@@ -941,7 +941,7 @@ macro_rules! iter_methods {
             /// * `indices` must be in bounds to index into `pairs`.
             pub(super) unsafe fn from_slice_unchecked(pairs: &'a [Bucket<K, V>], indices: slice::Iter<'a, usize>) -> Self {
                 let pairs_len = pairs.len();
-                let pairs = unsafe { NonNull::new_unchecked(pairs.as_ptr().cast_mut()) };
+                let pairs = unsafe { NonNull::new_unchecked(pairs.as_ptr() as *mut Bucket<K, V>) };
                 unsafe { Self::from_raw_unchecked(pairs, pairs_len, indices) }
             }
 

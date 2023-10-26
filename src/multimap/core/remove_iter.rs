@@ -168,7 +168,7 @@ where
                 let prev_removed_idx = *prev_removed_idx;
                 let diff = i - prev_removed_idx - 1;
                 if diff > 0 {
-                    let src = pairs_start.add(prev_removed_idx + 1).cast_const();
+                    let src = pairs_start.add(prev_removed_idx + 1) as *const Bucket<K, V>;
                     let dst = pairs_start.add(prev_removed_idx + 1 - *del);
                     ptr::copy(src, dst, diff);
                 }
@@ -272,7 +272,7 @@ where
                         //    they may however overlap with src+tail_len
                         //  * after copy the elements at new empty slots will never be read,
                         let pairs_start = map.pairs.as_mut_ptr();
-                        let src = pairs_start.add(prev_removed_idx + 1).cast_const();
+                        let src = pairs_start.add(prev_removed_idx + 1) as *const Bucket<K, V>;
                         let dst = pairs_start.add(prev_removed_idx + 1 - del);
                         ptr::copy(src, dst, tail_len);
                     }
@@ -836,7 +836,7 @@ where
                             // [head] [drained items] [tail]
                             // ^- ptr ^- start        ^- tail
                             let ptr = (*pairs).as_mut_ptr();
-                            let src = ptr.add(tail).cast_const();
+                            let src = ptr.add(tail) as *const Bucket<K, V>;
                             let dst = ptr.add(start);
                             ptr::copy(src, dst, drain.tail_len);
                         }
