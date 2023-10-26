@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use fnv::FnvBuildHasher;
-use indexmap::{indexmap, indexset, IndexMap, IndexSet};
+use indexmap::{indexmap, indexmultimap, indexset, IndexMap, IndexMultimap, IndexSet};
 use serde::{Deserialize, Serialize};
 use serde_test::{assert_tokens, Token};
 
@@ -33,6 +33,24 @@ fn test_serde_set() {
             Token::I32(3),
             Token::I32(4),
             Token::SeqEnd,
+        ],
+    );
+}
+
+#[test]
+fn test_serde_multimap() {
+    let map = indexmultimap! { 1 => 2, 3 => 4, 1 => 5 };
+    assert_tokens(
+        &map,
+        &[
+            Token::Map { len: Some(3) },
+            Token::I32(1),
+            Token::I32(2),
+            Token::I32(3),
+            Token::I32(4),
+            Token::I32(1),
+            Token::I32(5),
+            Token::MapEnd,
         ],
     );
 }
@@ -73,6 +91,27 @@ fn test_serde_set_fnv_hasher() {
 }
 
 #[test]
+fn test_serde_multimap_fnv_hasher() {
+    let mut map: IndexMultimap<i32, i32, FnvBuildHasher> = Default::default();
+    map.insert_append(1, 2);
+    map.insert_append(3, 4);
+    map.insert_append(1, 5);
+    assert_tokens(
+        &map,
+        &[
+            Token::Map { len: Some(3) },
+            Token::I32(1),
+            Token::I32(2),
+            Token::I32(3),
+            Token::I32(4),
+            Token::I32(1),
+            Token::I32(5),
+            Token::MapEnd,
+        ],
+    );
+}
+
+#[test]
 fn test_serde_seq_map() {
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(transparent)]
@@ -108,6 +147,56 @@ fn test_serde_seq_map() {
             Token::Tuple { len: 2 },
             Token::I32(-3),
             Token::I32(-4),
+            Token::TupleEnd,
+            Token::SeqEnd,
+        ],
+    );
+}
+
+#[test]
+fn test_serde_seq_multimap() {
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(transparent)]
+    struct SeqIndexMap {
+        #[serde(with = "indexmap::multimap::serde_seq")]
+        map: IndexMultimap<i32, i32>,
+    }
+
+    impl PartialEq for SeqIndexMap {
+        fn eq(&self, other: &Self) -> bool {
+            // explicitly compare items in order
+            self.map.iter().eq(&other.map)
+        }
+    }
+
+    let map = indexmultimap! { 1 => 2, 3 => 4, 1 => 5, -1 => -2, -3 => -4, -1 => -5 };
+    assert_tokens(
+        &SeqIndexMap { map },
+        &[
+            Token::Seq { len: Some(6) },
+            Token::Tuple { len: 2 },
+            Token::I32(1),
+            Token::I32(2),
+            Token::TupleEnd,
+            Token::Tuple { len: 2 },
+            Token::I32(3),
+            Token::I32(4),
+            Token::TupleEnd,
+            Token::Tuple { len: 2 },
+            Token::I32(1),
+            Token::I32(5),
+            Token::TupleEnd,
+            Token::Tuple { len: 2 },
+            Token::I32(-1),
+            Token::I32(-2),
+            Token::TupleEnd,
+            Token::Tuple { len: 2 },
+            Token::I32(-3),
+            Token::I32(-4),
+            Token::TupleEnd,
+            Token::Tuple { len: 2 },
+            Token::I32(-1),
+            Token::I32(-5),
             Token::TupleEnd,
             Token::SeqEnd,
         ],
