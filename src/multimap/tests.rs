@@ -791,7 +791,7 @@ fn truncate() {
 
 #[test]
 fn swap_index() {
-    let mut insert = [0, 4, 2, 12, 8, 4, 19];
+    let mut insert = [0, 4, 2, 12, 8, 5, 19];
     let mut map = IndexMultimapVec::new();
     for &elt in &insert {
         map.insert_append(elt, elt * 2);
@@ -816,26 +816,39 @@ fn swap_index() {
     insert.swap(1, 1);
     let expected = insert.map(|a| (a, a * 2));
     assert_map_eq(&map, &expected);
+
+    map.swap_indices(4, 1);
+    insert.swap(4, 1);
+    let expected = insert.map(|a| (a, a * 2));
+    assert_map_eq(&map, &expected);
 }
 
 #[test]
 fn move_index() {
-    let insert = [0, 4, 2, 12, 8, 4, 19];
+    let insert = [0, 4, 2, 12, 8, 5, 19];
     let mut map = IndexMultimapVec::new();
     for &elt in &insert {
         map.insert_append(elt, elt * 2);
     }
 
     map.move_index(1, 4);
-    let expected = [0, 2, 12, 8, 4, 4, 19].map(|a| (a, a * 2));
+    let expected = [0, 2, 12, 8, 4, 5, 19].map(|a| (a, a * 2));
     assert_map_eq(&map, &expected);
 
     map.move_index(6, 0);
-    let expected = [19, 0, 2, 12, 8, 4, 4].map(|a| (a, a * 2));
+    let expected = [19, 0, 2, 12, 8, 4, 5].map(|a| (a, a * 2));
+    assert_map_eq(&map, &expected);
+
+    map.move_index(0, 5);
+    let expected = [0, 2, 12, 8, 4, 19, 5].map(|a| (a, a * 2));
     assert_map_eq(&map, &expected);
 
     map.move_index(1, 1);
-    let expected = [19, 0, 2, 12, 8, 4, 4].map(|a| (a, a * 2));
+    let expected = [0, 2, 12, 8, 4, 19, 5].map(|a| (a, a * 2));
+    assert_map_eq(&map, &expected);
+
+    map.move_index(4, 1);
+    let expected = [0, 4, 2, 12, 8, 19, 5].map(|a| (a, a * 2));
     assert_map_eq(&map, &expected);
 }
 
