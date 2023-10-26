@@ -3,8 +3,8 @@
 use core::hash::BuildHasherDefault;
 use core::hash::Hasher;
 
-use indexmap::IndexMap;
 use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexMultimap};
 
 #[derive(Default)]
 struct BadHasher(u64);
@@ -22,6 +22,7 @@ impl Hasher for BadHasher {
 
 type Map<K, V> = IndexMap<K, V, BuildHasherDefault<BadHasher>>;
 type Set<T> = IndexSet<T, BuildHasherDefault<BadHasher>>;
+type Multimap<K, V> = IndexMultimap<K, V, BuildHasherDefault<BadHasher>>;
 
 pub fn test_compile() {
     let mut map = Map::default();
@@ -33,4 +34,11 @@ pub fn test_compile() {
 
     let mut set = Set::default();
     set.insert("a");
+
+    let mut multimap = Multimap::default();
+    multimap.insert_append(1, 1);
+    multimap.insert_append(2, 4);
+    for (_, _) in multimap.iter() {}
+
+    let _multimap2 = Multimap::from_iter(Some((1, 1)));
 }
