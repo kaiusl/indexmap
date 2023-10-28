@@ -11,7 +11,7 @@ pub mod set;
 
 // This form of intermediate collection is also how Rayon collects `HashMap`.
 // Note that the order will also be preserved!
-fn collect<I: IntoParallelIterator>(iter: I) -> LinkedList<Vec<I::Item>> {
+pub(crate) fn collect<I: IntoParallelIterator>(iter: I) -> LinkedList<Vec<I::Item>> {
     iter.into_par_iter()
         .fold(Vec::new, |mut vec, elem| {
             vec.push(elem);

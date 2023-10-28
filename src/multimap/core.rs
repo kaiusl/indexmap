@@ -19,6 +19,9 @@ pub use self::subsets::{
     Subset, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut,
 };
 
+#[cfg(feature = "rayon")]
+pub use self::remove_iter::rayon::ParDrain;
+
 use self::indices::Indices;
 use crate::util::DebugIterAsNumberedCompactList;
 use crate::{Bucket, HashValue, TryReserveError};
@@ -430,6 +433,15 @@ impl<K, V> IndexMultimapCore<K, V> {
     pub(super) fn as_mut_pairs(&mut self) -> &mut [Bucket<K, V>] {
         &mut self.pairs
     }
+
+    pub(super) fn with_pairs<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut [Bucket<K, V>]),
+        K: Eq,
+    {
+        f(&mut self.pairs);
+        self.rebuild_hash_table();
+    }
 }
 
 impl<K, V> IndexMultimapCore<K, V> {
@@ -786,19 +798,16 @@ impl<K, V> IndexMultimapCore<K, V> {
         }
     }
 
-    // #[cfg(feature = "rayon")]
-    // #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
-    // pub(super) fn par_drain<R>(&mut self, range: R) -> rayon::vec::Drain<'_, Bucket<K, V>>
-    // where
-    //     K: Send + Eq,
-    //     V: Send,
-    //     R: ops::RangeBounds<usize>,
-    // {
-    //     use rayon::iter::ParallelDrainRange;
-    //     let range = simplify_range(range, self.entries.len());
-    //     self.erase_indices(range.start, range.end);
-    //     self.entries.par_drain(range)
-    // }
+    #[cfg(feature = "rayon")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+    pub(super) fn par_drain<R>(&mut self, range: R) -> ParDrain<'_, K, V>
+    where
+        K: Send + Eq,
+        V: Send,
+        R: ops::RangeBounds<usize>,
+    {
+        ParDrain::new(self, range)
+    }
 
     pub(super) fn split_off(&mut self, at: usize) -> Self
     where

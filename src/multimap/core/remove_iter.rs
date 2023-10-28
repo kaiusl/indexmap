@@ -888,6 +888,330 @@ where
     }
 }
 
+#[cfg(feature = "rayon")]
+pub mod rayon {
+    use super::*;
+    use ::alloc::vec::Vec;
+    use ::core::iter;
+    use ::core::ops::Range;
+    use ::rayon::iter::plumbing::{Consumer, Producer, ProducerCallback, UnindexedConsumer};
+    use ::rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+
+    /// A parallel draining iterator over the entries of a [`IndexMultimap`].
+    ///
+    /// This `struct` is created by the [`par_drain`] method on [`IndexMultimap`]
+    /// (provided by [rayon]'s [`ParallelDrainRange`] trait).
+    /// See its documentation for more.
+    ///
+    /// [`par_drain`]: ../struct.IndexMultimap.html#method.par_drain
+    /// [`IndexMultimap`]: crate::IndexMultimap
+    /// [rayon]: https://docs.rs/rayon/1.0/rayon
+    pub struct ParDrain<'a, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        /* ---
+        Effectively a copy of `rayon::vec::Drain` implementation (as of rayon v1.8.0),
+        with small modifications.
+
+        We must take ownership of map.indices for the duration of this struct's life.
+        This is to leave the map in consistent and valid (but empty) state in the
+        case this struct is leaked. For that reason we also need to set map.pairs.len
+        to 0. `rayon::vec::Drain` as well as `std::vec::Drain` set it to `range.start`
+        and thus we cannot directly use those implementations.
+
+        We instead take ownership of map.pairs for the duration of this struct's life,
+        and replace the one in map with empty vector.
+        It could probably implemented without taking the ownership but it would require
+        more modifications to the `rayon::vec::Drain` implementation.
+        But by taking the ownership we can pretty much use exact impl from `rayon::vec::Drain`,
+        however we still need to make a copy of it as we own the vector and `rayon::vec::Drain`
+        takes a &mut Vec.
+
+        Layout of map.pairs:
+        [head]        [start] ... [end]         [tail_start] [tail_len - 1 items]
+        ^-don't touch \-- to_remove --/         \-----------  tail  ------------/
+                        ^-items to remove/drain   ^- shift left to cover removed items
+
+        Result after drop:
+        [head] [tail], new length of vec = start + tail_len
+        --- */
+        map: &'a mut IndexMultimapCore<K, V>,
+        indices: IndicesTable,
+        pairs: Vec<Bucket<K, V>>,
+        range: Range<usize>,
+        orig_len: usize,
+    }
+
+    impl<'a, K, V> ParDrain<'a, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        pub(in crate::multimap::core) fn new<R>(
+            map: &'a mut IndexMultimapCore<K, V>,
+            range: R,
+        ) -> Self
+        where
+            K: Send + Eq,
+            V: Send,
+            R: ops::RangeBounds<usize>,
+        {
+            let range = simplify_range(range, map.pairs.len());
+            map.erase_indices(range.start, range.end);
+
+            let indices = mem::take(&mut map.indices);
+            let pairs = mem::take(&mut map.pairs);
+            let orig_len = pairs.len();
+            let range = simplify_range(range, orig_len);
+            Self {
+                map,
+                indices,
+                pairs,
+                range,
+                orig_len,
+            }
+        }
+    }
+
+    impl<'a, K, V> Drop for ParDrain<'a, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        fn drop(&mut self) {
+            struct Guard<'a, 'b, K, V>
+            where
+                K: Send,
+                V: Send,
+            {
+                inner: &'a mut ParDrain<'b, K, V>,
+            }
+
+            impl<'a, 'b, K, V> Drop for Guard<'a, 'b, K, V>
+            where
+                K: Send,
+                V: Send,
+            {
+                fn drop(&mut self) {
+                    mem::swap(&mut self.inner.map.indices, &mut self.inner.indices);
+                    mem::swap(&mut self.inner.map.pairs, &mut self.inner.pairs);
+                }
+            }
+
+            let orig_len = self.orig_len;
+            let guard = Guard { inner: self };
+            let pairs = &mut guard.inner.pairs;
+            let Range { start, end } = guard.inner.range;
+            if pairs.len() == orig_len {
+                // We must not have produced, so just call a normal drain to remove the items.
+                pairs.drain(start..end);
+            } else if start == end {
+                // Empty range, so just restore the length to its original state
+                unsafe {
+                    pairs.set_len(guard.inner.orig_len);
+                }
+            } else if end < orig_len {
+                // The producer was responsible for consuming the drained items.
+                // Move the tail items to their new place, then set the length to include them.
+                unsafe {
+                    let pairs_start = pairs.as_mut_ptr();
+                    let ptr = pairs_start.add(start);
+                    let tail_ptr = pairs_start.add(end);
+                    let tail_len = orig_len - end;
+                    ptr::copy(tail_ptr, ptr, tail_len);
+                    pairs.set_len(start + tail_len);
+                }
+            }
+        }
+    }
+
+    impl<K, V> ParallelIterator for ParDrain<'_, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        type Item = (K, V);
+
+        fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: UnindexedConsumer<Self::Item>,
+        {
+            ::rayon::iter::plumbing::bridge(self, consumer)
+        }
+        fn opt_len(&self) -> Option<usize> {
+            Some(self.len())
+        }
+    }
+
+    impl<K, V> IndexedParallelIterator for ParDrain<'_, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        fn drive<C>(self, consumer: C) -> C::Result
+        where
+            C: Consumer<Self::Item>,
+        {
+            ::rayon::iter::plumbing::bridge(self, consumer)
+        }
+        fn len(&self) -> usize {
+            self.range.len()
+        }
+        fn with_producer<CB>(mut self, callback: CB) -> CB::Output
+        where
+            CB: ProducerCallback<Self::Item>,
+        {
+            unsafe {
+                // Make the vector forget about the drained items, and temporarily the tail too.
+                self.pairs.set_len(self.range.start);
+
+                // Create the producer as the exclusive "owner" of the slice.
+                let producer = DrainProducer::from_vec(&mut self.pairs, self.range.len());
+
+                // The producer will move or drop each item from the drained range.
+                callback.callback(producer)
+            }
+        }
+    }
+
+    // Two types below (DrainProducer and SliceDrain) are private types in rayon
+    // and we need to copy them.
+    // We also make them directly use [Bucket<K, V>] and return (K, V) as item.
+    //
+    // Otherwise a direct copy of rayon's implementation.
+
+    struct DrainProducer<'data, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        slice: &'data mut [Bucket<K, V>],
+    }
+
+    impl<'data, K, V> DrainProducer<'data, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        /// Creates a draining producer, which *moves* items from the slice.
+        ///
+        /// Unsafe because `!Copy` data must not be read after the borrow is released.
+        pub(crate) unsafe fn new(slice: &mut [Bucket<K, V>]) -> DrainProducer<'_, K, V> {
+            DrainProducer { slice }
+        }
+
+        /// Creates a draining producer, which *moves* items from the tail of the vector.
+        ///
+        /// Unsafe because we're moving from beyond `vec.len()`, so the caller must ensure
+        /// that data is initialized and not read after the borrow is released.
+        unsafe fn from_vec(
+            vec: &'data mut Vec<Bucket<K, V>>,
+            len: usize,
+        ) -> DrainProducer<'data, K, V> {
+            let start = vec.len();
+            assert!(vec.capacity() - start >= len);
+
+            // The pointer is derived from `Vec` directly, not through a `Deref`,
+            // so it has provenance over the whole allocation.
+            unsafe {
+                let ptr = vec.as_mut_ptr().add(start);
+                DrainProducer::new(slice::from_raw_parts_mut(ptr, len))
+            }
+        }
+    }
+
+    impl<'data, K, V> Producer for DrainProducer<'data, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        type Item = (K, V);
+        type IntoIter = SliceDrain<'data, K, V>;
+
+        fn into_iter(mut self) -> Self::IntoIter {
+            // replace the slice so we don't drop it twice
+            let slice = mem::take(&mut self.slice);
+            SliceDrain {
+                iter: slice.iter_mut(),
+            }
+        }
+
+        fn split_at(mut self, index: usize) -> (Self, Self) {
+            // replace the slice so we don't drop it twice
+            let slice = mem::take(&mut self.slice);
+            let (left, right) = slice.split_at_mut(index);
+            unsafe { (DrainProducer::new(left), DrainProducer::new(right)) }
+        }
+    }
+
+    impl<'data, K, V> Drop for DrainProducer<'data, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        fn drop(&mut self) {
+            // extract the slice so we can use `Drop for [T]`
+            let slice_ptr: *mut [Bucket<K, V>] =
+                mem::take::<&'data mut [Bucket<K, V>]>(&mut self.slice);
+            unsafe { ptr::drop_in_place::<[Bucket<K, V>]>(slice_ptr) };
+        }
+    }
+
+    // like std::vec::Drain, without updating a source Vec
+    pub(crate) struct SliceDrain<'data, K, V> {
+        iter: slice::IterMut<'data, Bucket<K, V>>,
+    }
+
+    impl<'data, K, V> Iterator for SliceDrain<'data, K, V> {
+        type Item = (K, V);
+
+        fn next(&mut self) -> Option<(K, V)> {
+            // Coerce the pointer early, so we don't keep the
+            // reference that's about to be invalidated.
+            let ptr: *const Bucket<K, V> = self.iter.next()?;
+            let bucket = unsafe { ptr::read(ptr) };
+            Some(bucket.key_value())
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.iter.size_hint()
+        }
+
+        fn count(self) -> usize {
+            self.iter.len()
+        }
+    }
+
+    impl<'data, K, V> DoubleEndedIterator for SliceDrain<'data, K, V> {
+        fn next_back(&mut self) -> Option<Self::Item> {
+            // Coerce the pointer early, so we don't keep the
+            // reference that's about to be invalidated.
+            let ptr: *const Bucket<K, V> = self.iter.next_back()?;
+            let bucket = unsafe { ptr::read(ptr) };
+            Some(bucket.key_value())
+        }
+    }
+
+    impl<'data, K, V> ExactSizeIterator for SliceDrain<'data, K, V> {
+        fn len(&self) -> usize {
+            self.iter.len()
+        }
+    }
+
+    impl<'data, K, V> iter::FusedIterator for SliceDrain<'data, K, V> {}
+
+    impl<'data, K, V> Drop for SliceDrain<'data, K, V> {
+        fn drop(&mut self) {
+            // extract the iterator so we can use `Drop for [T]`
+            let slice_ptr: *mut [Bucket<K, V>] =
+                mem::replace(&mut self.iter, [].iter_mut()).into_slice();
+            unsafe { ptr::drop_in_place::<[Bucket<K, V>]>(slice_ptr) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;

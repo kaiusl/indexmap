@@ -305,6 +305,50 @@ quickcheck_limit! {
     }
 }
 
+#[cfg(feature = "rayon")]
+mod rayon {
+    use ::rayon::prelude::*;
+
+    use super::*;
+    quickcheck_limit! {
+        fn par_drain_full(insert: Vec<u8>) -> bool {
+            let mut map = IndexMultimap::new();
+            for &key in &insert {
+                map.insert_append(key, ());
+            }
+            let clone = map.clone();
+            let new: IndexMultimap<_, _> = map.par_drain(..).collect();
+            map.is_empty() && clone == new && clone.as_slice() == new.as_slice()
+        }
+
+        fn par_drain_bounds(insert: Vec<u8>, range: (Bound<usize>, Bound<usize>)) -> TestResult {
+            // add unique value to each key so that we can distinguish items
+            let insert = insert.into_iter().enumerate().map(|(i, k)| (k, i)).collect::<Vec<_>>();
+            let mut map = IndexMultimap::new();
+            for &(key, value) in &insert {
+                map.insert_append(key, value);
+            }
+
+            // First see if `Vec::drain` is happy with this range.
+            let result = std::panic::catch_unwind(|| {
+                let mut insert = insert.clone();
+                let drained = insert.drain(range).collect::<Vec<_>>();
+                (insert, drained)
+            });
+
+            if let Ok((remaining_expected, drained_expected)) = result {
+                let drained_map = map.par_drain(range).collect::<Vec<_>>();
+                assert_eq!(drained_expected, drained_map);
+                itertools::assert_equal(map.iter(), remaining_expected.iter().map(|(k, v)| (k, v)));
+                TestResult::passed()
+            } else {
+                // If `Vec::drain` panicked, so should we.
+                TestResult::must_fail(move || { map.drain(range); })
+            }
+        }
+    }
+}
+
 fn check_subentries<K, V>(subentries: &Subset<'_, K, V>, expected: &[(usize, &K, &V)]) -> bool
 where
     K: Eq + Debug,

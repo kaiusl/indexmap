@@ -264,7 +264,7 @@ fn get() {
 
 // Checks that the map yield given items in the given order by index and by key
 #[track_caller]
-fn assert_map_eq<K, V>(map: &IndexMultimapVec<K, V>, expected: &[(K, V)])
+pub(super) fn assert_map_eq<K, V>(map: &IndexMultimapVec<K, V>, expected: &[(K, V)])
 where
     K: fmt::Debug + Eq + std::hash::Hash,
     V: fmt::Debug + Eq,

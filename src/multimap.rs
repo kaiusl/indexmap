@@ -29,6 +29,7 @@ use ::core::hash::{BuildHasher, Hash, Hasher};
 use ::core::ops::{self, Index, IndexMut, RangeBounds};
 #[cfg(feature = "std")]
 use ::std::collections::hash_map::RandomState;
+use alloc::vec::Vec;
 use equivalent::Equivalent;
 
 use self::core::IndexMultimapCore;
@@ -43,10 +44,10 @@ use crate::{Bucket, HashValue, TryReserveError};
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 pub mod serde_seq;
-// TODO: add rayon impls
-//#[cfg(feature = "rayon")]
-//#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
-//pub use crate::rayon::multimap as rayon;
+
+#[cfg(feature = "rayon")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+pub mod rayon;
 
 mod core;
 mod slice;
@@ -304,6 +305,34 @@ impl<K, V, S> IndexMultimap<K, V, S> {
     pub fn into_values(self) -> IntoValues<K, V> {
         IntoValues::new(self.core.into_pairs())
     }
+
+    #[allow(dead_code)] // used by rayon impls
+    #[inline]
+    pub(crate) fn into_pairs(self) -> Vec<Bucket<K, V>> {
+        self.core.into_pairs()
+    }
+
+    #[allow(dead_code)] // used by rayon impls
+    #[inline]
+    pub(crate) fn as_pairs(&self) -> &[Bucket<K, V>] {
+        self.core.as_pairs()
+    }
+
+    #[allow(dead_code)] // used by rayon impls
+    #[inline]
+    pub(crate) fn as_mut_pairs(&mut self) -> &mut [Bucket<K, V>] {
+        self.core.as_mut_pairs()
+    }
+
+    #[allow(dead_code)] // used by rayon impls
+    #[inline]
+    pub(crate) fn with_pairs<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut [Bucket<K, V>]),
+        K: Eq,
+    {
+        self.core.with_pairs(f)
+    }
 }
 impl<K, V, S> IndexMultimap<K, V, S>
 where
@@ -316,39 +345,6 @@ where
     pub fn truncate(&mut self, len: usize) {
         self.core.truncate(len);
     }
-
-    // /// Clears the [`IndexMultimap`] in the given index range, returning those
-    // /// key-value pairs as a drain iterator.
-    // ///
-    // /// The range may be any type that implements [`RangeBounds`]`<usize>`,
-    // /// including all of the [`std::ops`]`::Range*` types, or even a tuple pair of
-    // /// [`Bound`] start and end values. To drain the map entirely, use [`RangeFull`]
-    // /// like `self.`[`drain`](Self::drain)`(..)`.
-    // ///
-    // /// This shifts down all entries following the drained range to fill the
-    // /// gap, and keeps the allocated memory for reuse.
-    // ///
-    // /// # Panics
-    // ///
-    // /// Panics if the starting point is greater than the end point or if
-    // /// the end point is greater than the length of the map.
-    // ///
-    // /// # Leaking
-    // ///
-    // /// If the returned iterator goes out of scope without being dropped (due
-    // /// to [`mem::forget`], for example), the map may have lost and leaked
-    // /// elements arbitrarily, including elements outside the range. This may
-    // /// lead to unexpected panics.
-    // ///
-    // /// [`RangeFull`]: ::core::ops::RangeFull
-    // /// [`Bound`]: ::core::ops::Bound
-    // /// [`mem::forget`]: ::core::mem::forget
-    // pub fn drain<R>(&mut self, range: R) -> Drain<'_, K, V>
-    // where
-    //     R: RangeBounds<usize>,
-    // {
-    //     Drain::new(self.core.drain(range))
-    // }
 
     /// Splits the collection into two at the given index.
     ///
@@ -767,6 +763,17 @@ where
         R: ops::RangeBounds<usize>,
     {
         self.core.drain(range)
+    }
+
+    #[cfg(feature = "rayon")]
+    #[inline]
+    pub(crate) fn par_drain_inner<R>(&mut self, range: R) -> self::core::ParDrain<'_, K, V>
+    where
+        K: Send + Eq,
+        V: Send,
+        R: ops::RangeBounds<usize>,
+    {
+        self.core.par_drain(range)
     }
 
     /// Remove the key-value pair by index
