@@ -708,7 +708,11 @@ mod tests {
         assert_map_eq(&map, &remaining);
     }
 
-    #[cfg(not(miri))]
+    // ignore if miri or asan is set but not if ignore_leaks is also set
+    #[cfg_attr(
+        all(not(run_leaky), any(miri, asan)),
+        ignore = "it tests what happens if we leak ParDrain"
+    )]
     #[test]
     fn drain_leak() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
