@@ -905,6 +905,7 @@ pub mod rayon {
     ///
     /// [`par_drain`]: ../struct.IndexMultimap.html#method.par_drain
     /// [`IndexMultimap`]: crate::IndexMultimap
+    /// [`ParallelDrainRange`]: ::rayon::prelude::ParallelDrainRange
     /// [rayon]: https://docs.rs/rayon/1.0/rayon
     pub struct ParDrain<'a, K, V>
     where

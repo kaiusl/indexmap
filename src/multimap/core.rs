@@ -20,6 +20,7 @@ pub use self::subsets::{
 };
 
 #[cfg(feature = "rayon")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 pub use self::remove_iter::rayon::ParDrain;
 
 use self::indices::Indices;

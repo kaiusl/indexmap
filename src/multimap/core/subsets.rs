@@ -24,9 +24,9 @@
 // aliasing references if there are multiple mutable subsets alive at
 // that time.
 
-use core::ops::RangeBounds;
-use core::ptr::NonNull;
-use core::slice;
+use ::core::ops::RangeBounds;
+use ::core::ptr::NonNull;
+use ::core::slice;
 
 use ::core::fmt;
 use ::core::iter::FusedIterator;

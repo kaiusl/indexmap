@@ -2,6 +2,7 @@
 
 use ::alloc::vec::Vec;
 use ::core::fmt::Debug;
+use ::core::ops::Bound;
 use ::core::panic::AssertUnwindSafe;
 use ::core::sync::atomic::AtomicU32;
 use ::std::panic::catch_unwind;
@@ -1594,4 +1595,439 @@ fn debugs() {
     let mut map2 = map.clone();
     let drain = map2.drain(1..3);
     println!("\nDrain = {:#?}", drain);
+}
+
+#[test]
+fn slice_index() {
+    fn check(vec_slice: &[(i32, i32)], map_slice: &Slice<i32, i32>, sub_slice: &Slice<i32, i32>) {
+        assert_eq!(map_slice as *const _, sub_slice as *const _);
+        itertools::assert_equal(
+            vec_slice.iter().copied(),
+            map_slice.iter().map(|(&k, &v)| (k, v)),
+        );
+        itertools::assert_equal(vec_slice.iter().map(|(k, _)| k), map_slice.keys());
+        itertools::assert_equal(vec_slice.iter().map(|(_, v)| v), map_slice.values());
+    }
+
+    let vec: Vec<(i32, i32)> = (0..10).map(|i| (i, i * i)).collect();
+    let map: IndexMultimap<i32, i32> = vec.iter().cloned().collect();
+    let slice = map.as_slice();
+
+    // RangeFull
+    check(&vec[..], &map[..], slice);
+
+    for i in 0usize..10 {
+        // Index
+        assert_eq!(vec[i].1, map[i]);
+        assert_eq!(vec[i].1, slice[i]);
+        assert_eq!(map.get(&(i as i32)).first().unwrap().2, &map[i]);
+        assert_eq!(map.get(&(i as i32)).first().unwrap().2, &slice[i]);
+
+        // RangeFrom
+        check(&vec[i..], &map[i..], &slice[i..]);
+
+        // RangeTo
+        check(&vec[..i], &map[..i], &slice[..i]);
+
+        // RangeToInclusive
+        check(&vec[..=i], &map[..=i], &slice[..=i]);
+
+        // (Bound<usize>, Bound<usize>)
+        let bounds = (Bound::Excluded(i), Bound::Unbounded);
+        check(&vec[i + 1..], &map[bounds], &slice[bounds]);
+
+        for j in i..=10 {
+            // Range
+            check(&vec[i..j], &map[i..j], &slice[i..j]);
+        }
+
+        for j in i..10 {
+            // RangeInclusive
+            check(&vec[i..=j], &map[i..=j], &slice[i..=j]);
+        }
+    }
+}
+
+#[test]
+fn slice_index_mut() {
+    fn check_mut(
+        vec_slice: &[(i32, i32)],
+        map_slice: &mut Slice<i32, i32>,
+        sub_slice: &mut Slice<i32, i32>,
+    ) {
+        assert_eq!(map_slice, sub_slice);
+        itertools::assert_equal(
+            vec_slice.iter().copied(),
+            map_slice.iter_mut().map(|(&k, &mut v)| (k, v)),
+        );
+        itertools::assert_equal(
+            vec_slice.iter().map(|&(_, v)| v),
+            map_slice.values_mut().map(|&mut v| v),
+        );
+    }
+
+    let vec: Vec<(i32, i32)> = (0..10).map(|i| (i, i * i)).collect();
+    let mut map: IndexMultimap<i32, i32> = vec.iter().cloned().collect();
+    let mut map2 = map.clone();
+    let slice = map2.as_mut_slice();
+
+    // RangeFull
+    check_mut(&vec[..], &mut map[..], &mut slice[..]);
+
+    for i in 0usize..10 {
+        // IndexMut
+        assert_eq!(&mut map[i], &mut slice[i]);
+
+        // RangeFrom
+        check_mut(&vec[i..], &mut map[i..], &mut slice[i..]);
+
+        // RangeTo
+        check_mut(&vec[..i], &mut map[..i], &mut slice[..i]);
+
+        // RangeToInclusive
+        check_mut(&vec[..=i], &mut map[..=i], &mut slice[..=i]);
+
+        // (Bound<usize>, Bound<usize>)
+        let bounds = (Bound::Excluded(i), Bound::Unbounded);
+        check_mut(&vec[i + 1..], &mut map[bounds], &mut slice[bounds]);
+
+        for j in i..=10 {
+            // Range
+            check_mut(&vec[i..j], &mut map[i..j], &mut slice[i..j]);
+        }
+
+        for j in i..10 {
+            // RangeInclusive
+            check_mut(&vec[i..=j], &mut map[i..=j], &mut slice[i..=j]);
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+mod rayon {
+    use ::rayon::prelude::{
+        IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
+        IntoParallelRefMutIterator, ParallelDrainRange, ParallelExtend, ParallelIterator,
+    };
+
+    use super::*;
+    use crate::multimap::tests::assert_map_eq;
+    use crate::IndexMultimap;
+
+    use ::core::panic::AssertUnwindSafe;
+    use ::core::sync::atomic::AtomicU32;
+    use std::panic::catch_unwind;
+    use std::string::String;
+
+    #[allow(dead_code)]
+    fn impls_into_parallel_ref_iterator() {
+        fn test<'a, T: IntoParallelRefIterator<'a>>(t: &'a T) {
+            t.par_iter();
+        }
+        let map: IndexMultimap<u8, u8> = IndexMultimap::new();
+        test(&map);
+    }
+
+    #[allow(dead_code)]
+    fn impls_into_parallel_ref_mut_iterator() {
+        fn test<'a, T: IntoParallelRefMutIterator<'a>>(t: &'a mut T) {
+            t.par_iter_mut();
+        }
+        let mut map: IndexMultimap<u8, u8> = IndexMultimap::new();
+        test(&mut map);
+    }
+
+    #[test]
+    fn par_iter_order() {
+        let insert = [0, 4, 2, 12, 8, 7, 11, 5, 3, 17, 19, 22, 23];
+        let mut map = IndexMultimap::new();
+
+        for &elt in &insert {
+            map.insert_append(elt, ());
+        }
+
+        assert_eq!(map.par_keys().count(), map.len_keys());
+        assert_eq!(map.par_keys().count(), insert.len());
+        insert.par_iter().zip(map.par_keys()).for_each(|(a, b)| {
+            assert_eq!(a, b);
+        });
+        (0..insert.len())
+            .into_par_iter()
+            .zip(map.par_keys())
+            .for_each(|(i, k)| {
+                assert_eq!(map.get_index(i).unwrap().0, k);
+            });
+    }
+
+    #[test]
+    fn par_partial_eq_and_eq() {
+        let mut map_a = IndexMultimap::new();
+        map_a.insert_append(1, "1");
+        map_a.insert_append(2, "2");
+        let mut map_b = map_a.clone();
+        assert!(map_a.par_eq(&map_b));
+        map_b.swap_remove(&1);
+        assert!(!map_a.par_eq(&map_b));
+        map_b.insert_append(3, "3");
+        assert!(!map_a.par_eq(&map_b));
+
+        let map_c: IndexMultimap<_, String> =
+            map_b.into_par_iter().map(|(k, v)| (k, v.into())).collect();
+        assert!(!map_a.par_eq(&map_c));
+        assert!(!map_c.par_eq(&map_a));
+    }
+
+    #[test]
+    fn par_extend() {
+        let mut map = IndexMultimap::new();
+        map.par_extend(vec![(&1, &2), (&3, &4)]);
+        map.par_extend(vec![(5, 6)]);
+        assert_eq!(
+            map.into_par_iter().collect::<Vec<_>>(),
+            vec![(1, 2), (3, 4), (5, 6)]
+        );
+    }
+
+    #[test]
+    fn par_keys() {
+        let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+        let map: IndexMultimap<_, _> = vec.into_par_iter().collect();
+        let keys: Vec<_> = map.par_keys().copied().collect();
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(&1));
+        assert!(keys.contains(&2));
+        assert!(keys.contains(&3));
+    }
+
+    #[test]
+    fn par_values() {
+        let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
+        let map: IndexMultimap<_, _> = vec.into_par_iter().collect();
+        let values: Vec<_> = map.par_values().copied().collect();
+        assert_eq!(values.len(), 3);
+        assert!(values.contains(&'a'));
+        assert!(values.contains(&'b'));
+        assert!(values.contains(&'c'));
+    }
+
+    #[test]
+    fn par_values_mut() {
+        let vec = vec![(1, 1), (2, 2), (3, 3)];
+        let mut map: IndexMultimap<_, _> = vec.into_par_iter().collect();
+        map.par_values_mut().for_each(|value| *value *= 2);
+        let values: Vec<_> = map.par_values().copied().collect();
+        assert_eq!(values.len(), 3);
+        assert!(values.contains(&2));
+        assert!(values.contains(&4));
+        assert!(values.contains(&6));
+    }
+
+    #[test]
+    fn par_drain_all() {
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        let drained = map.par_drain(..).collect::<Vec<_>>();
+        assert_eq!(&drained, &items);
+        assert!(map.is_empty());
+
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        let drained = map.par_drain(0..7).collect::<Vec<_>>();
+        assert_eq!(&drained, &items);
+        assert!(map.is_empty());
+
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        let drained = map.par_drain(0..=6).collect::<Vec<_>>();
+        assert_eq!(&drained, &items);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn par_drain_none() {
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        let drained = map.par_drain(items.len()..).collect::<Vec<_>>();
+        assert!(drained.is_empty());
+        assert_eq!(map.len_pairs(), 7);
+
+        let drained = map.par_drain(3..3).collect::<Vec<_>>();
+        assert!(drained.is_empty());
+        assert_eq!(map.len_pairs(), 7);
+    }
+
+    #[test]
+    fn par_drain_out_of_bounds() {
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+        let len = map.len_pairs();
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(map.par_drain((len + 1)..)))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(map.par_drain(..(len + 1))))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(map.par_drain(..=len)))).is_err());
+    }
+
+    #[test]
+    fn par_drain_start_to_mid() {
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        let drained = map.par_drain(..3).collect::<Vec<_>>();
+        assert_eq!(&drained, &items[..3]);
+
+        let remaining = &items[3..];
+        assert_map_eq(&map, remaining);
+    }
+
+    #[test]
+    fn par_drain_mid_to_end() {
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        let drained = map.par_drain(3..).collect::<Vec<_>>();
+        assert_eq!(&drained, &items[3..]);
+
+        let remaining = &items[..3];
+        println!("{map:#?}");
+        assert_map_eq(&map, remaining);
+    }
+
+    #[test]
+    fn par_drain_mid_to_mid() {
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        let drained = map.par_drain(3..6).collect::<Vec<_>>();
+        assert_eq!(&drained, &items[3..6]);
+
+        let remaining = [&items[0..3], &items[6..]].concat();
+        assert_map_eq(&map, &remaining);
+    }
+
+    #[test]
+    fn par_drain_empty() {
+        let mut map: IndexMultimap<i32, i32> = IndexMultimap::new();
+        let mut map2: IndexMultimap<i32, i32> = map.par_drain(..).collect();
+        assert!(map.is_empty());
+        assert!(map2.is_empty());
+    }
+
+    #[test]
+    fn par_drain_rev() {
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        let drained = map.par_drain(2..5).rev().collect::<Vec<_>>();
+        let mut expected = items[2..5].to_vec();
+        expected.reverse();
+        assert_eq!(&drained, &expected);
+
+        let remaining = [&items[..2], &items[5..]].concat();
+        assert_map_eq(&map, &remaining);
+    }
+
+    // ignore if miri or asan is set but not if ignore_leaks is also set
+    #[cfg_attr(
+        all(not(run_leaky), any(miri, asan)),
+        ignore = "it tests what happens if we leak ParDrain"
+    )]
+    #[test]
+    fn par_drain_leak() {
+        let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        ::core::mem::forget(map.par_drain(2..));
+
+        println!("{map:#?}");
+        //map.extend(items);
+        assert!(map.is_empty());
+        assert_eq!(map.len_keys(), 0);
+        assert_eq!(map.len_pairs(), 0);
+    }
+
+    #[test]
+    fn par_drain_drop_panic() {
+        static DROPS: AtomicU32 = AtomicU32::new(0);
+
+        #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+        struct MaybePanicOnDrop(bool, bool, String);
+
+        impl Drop for MaybePanicOnDrop {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, ::core::sync::atomic::Ordering::SeqCst);
+
+                //println!("dropping {:?}", self);
+                if self.0 {
+                    self.1 = true;
+                    panic!("panic in `Drop`: {}", self.2)
+                }
+            }
+        }
+
+        let items = [
+            (1, MaybePanicOnDrop(false, false, String::from("0"))),
+            (2, MaybePanicOnDrop(false, false, String::from("1"))),
+            (1, MaybePanicOnDrop(false, false, String::from("2"))),
+            (3, MaybePanicOnDrop(false, false, String::from("3"))),
+            (1, MaybePanicOnDrop(false, false, String::from("4"))),
+            (1, MaybePanicOnDrop(true, false, String::from("5"))),
+            (1, MaybePanicOnDrop(false, false, String::from("6"))),
+            (1, MaybePanicOnDrop(false, false, String::from("7"))),
+        ];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        catch_unwind(AssertUnwindSafe(|| drop(map.par_drain(4..7)))).ok();
+        assert_eq!(DROPS.load(::core::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn par_drain_drop_panic_consumed() {
+        static DROPS: AtomicU32 = AtomicU32::new(0);
+
+        #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+        struct MaybePanicOnDrop(bool, bool, String);
+
+        impl Drop for MaybePanicOnDrop {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, ::core::sync::atomic::Ordering::SeqCst);
+
+                //println!("dropping {:?}", self);
+                if self.0 {
+                    self.1 = true;
+                    panic!("panic in `Drop`: {}", self.2)
+                }
+            }
+        }
+
+        let items = [
+            (1, MaybePanicOnDrop(false, false, String::from("0"))),
+            (2, MaybePanicOnDrop(false, false, String::from("1"))),
+            (1, MaybePanicOnDrop(false, false, String::from("2"))),
+            (3, MaybePanicOnDrop(false, false, String::from("3"))),
+            (1, MaybePanicOnDrop(false, false, String::from("4"))),
+            (1, MaybePanicOnDrop(true, false, String::from("5"))),
+            (1, MaybePanicOnDrop(false, false, String::from("6"))),
+            (1, MaybePanicOnDrop(false, false, String::from("7"))),
+        ];
+        let mut map = IndexMultimap::new();
+        map.extend(items);
+
+        catch_unwind(AssertUnwindSafe(|| map.par_drain(4..7).for_each(drop))).ok();
+        //println!("{map:#?}");
+        assert_eq!(DROPS.load(::core::sync::atomic::Ordering::SeqCst), 3);
+    }
 }

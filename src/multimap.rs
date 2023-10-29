@@ -23,23 +23,25 @@
 //! [`Eq`]: ::core::cmp::Eq
 
 use ::alloc::boxed::Box;
+use ::alloc::vec::Vec;
 use ::core::cmp::Ordering;
 use ::core::fmt;
 use ::core::hash::{BuildHasher, Hash, Hasher};
 use ::core::ops::{self, Index, IndexMut, RangeBounds};
 #[cfg(feature = "std")]
 use ::std::collections::hash_map::RandomState;
-use alloc::vec::Vec;
-use equivalent::Equivalent;
+
+use ::equivalent::Equivalent;
 
 use self::core::IndexMultimapCore;
+use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
+use crate::util::try_simplify_range;
+use crate::{Bucket, HashValue, TryReserveError};
+
 pub use self::core::{
     Drain, Entry, EntryIndices, OccupiedEntry, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
     SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
 };
-use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
-use crate::util::{debug_iter_as_list, try_simplify_range};
-use crate::{Bucket, HashValue, TryReserveError};
 
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -47,10 +49,30 @@ pub mod serde_seq;
 
 #[cfg(feature = "rayon")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
-pub mod rayon;
+pub mod rayon {
+    //! Parallel iterator types for [`IndexMultimap`] with [rayon].
+    //!
+    //! You will rarely need to interact with this module directly unless you need to name one of the
+    //! iterator types.
+    //!
+    //! [rayon]: https://docs.rs/rayon/1.0/rayon
+    //! [`IndexMultimap`]: crate::IndexMultimap
+
+    // This is a facade module for the parallel iterators of rayon.
+    // Actual types are implemented in modules according to their kind.
+    // Trait and method implementations are next to the types they are implemented for.
+    pub use super::core::ParDrain;
+    pub use super::iter::rayon::{
+        IntoParIter, ParIter, ParIterMut, ParKeys, ParValues, ParValuesMut,
+    };
+}
+
+#[cfg(feature = "rayon")]
+use self::rayon::{IntoParIter, ParKeys, ParValues, ParValuesMut};
 
 mod core;
-mod slice;
+mod iter;
+
 #[cfg(test)]
 mod tests;
 
@@ -152,6 +174,8 @@ where
     V: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::util::debug_iter_as_list;
+
         let iter = self.iter().zip(0usize..).map(|((k, v), i)| (i, k, v));
         debug_iter_as_list(f, Some("IndexMultimap"), iter)
     }
@@ -928,6 +952,199 @@ impl<K, V, S> IndexMultimap<K, V, S> {
     }
 }
 
+// The rayon implementation blocks below are outside of rayon module so that in docs
+// they would be ordered below the main impl blocks above.
+
+/// Parallel iterator methods and other parallel methods.
+///
+/// The following methods **require crate feature `"rayon"`**.
+///
+/// See also the [`IntoParallelIterator`] implementations.
+///
+/// [`IntoParallelIterator`]: ::rayon::prelude::IntoParallelIterator
+#[cfg(feature = "rayon")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+impl<K, V, S> IndexMultimap<K, V, S> {
+    /// Return a parallel iterator over the keys of the map.
+    ///
+    /// While parallel iterators can process items in any order, their relative order
+    /// in the map is still preserved for operations like `reduce` and `collect`.
+    pub fn par_keys(&self) -> ParKeys<'_, K, V>
+    where
+        K: Sync,
+        V: Sync,
+    {
+        ParKeys {
+            entries: self.as_pairs(),
+        }
+    }
+
+    /// Return a parallel iterator over the values of the map.
+    ///
+    /// While parallel iterators can process items in any order, their relative order
+    /// in the map is still preserved for operations like `reduce` and `collect`.
+    pub fn par_values(&self) -> ParValues<'_, K, V>
+    where
+        K: Sync,
+        V: Sync,
+    {
+        ParValues {
+            entries: self.as_pairs(),
+        }
+    }
+
+    /// Return a parallel iterator over mutable references to the values of the map.
+    ///
+    /// While parallel iterators can process items in any order, their relative order
+    /// in the map is still preserved for operations like `reduce` and `collect`.
+    pub fn par_values_mut(&mut self) -> ParValuesMut<'_, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
+        ParValuesMut {
+            entries: self.as_mut_pairs(),
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+impl<K, V, S> IndexMultimap<K, V, S>
+where
+    K: Hash + Eq,
+    S: BuildHasher,
+{
+    /// Returns [`true`] if `self` contains all of the same key-value pairs as `other`,
+    /// regardless of each map's indexed order, determined in parallel.
+    pub fn par_eq<V2, S2>(&self, other: &IndexMultimap<K, V2, S2>) -> bool
+    where
+        K: Sync,
+        V: PartialEq<V2> + Sync,
+        S: BuildHasher,
+        V2: Sync,
+        S2: BuildHasher + Sync,
+    {
+        use ::rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
+
+        self.len_pairs() == other.len_pairs()
+            && self.par_iter().all(move |(key, this_v)| {
+                other
+                    .get(key)
+                    .into_iter()
+                    .any(|(_, _, other_v)| this_v == other_v)
+            })
+    }
+
+    /// Sort the map’s key-value pairs in parallel, by the default ordering of the keys.
+    pub fn par_sort_keys(&mut self)
+    where
+        K: Ord + Send,
+        V: Send,
+    {
+        use ::rayon::prelude::ParallelSliceMut;
+
+        self.with_pairs(|entries| {
+            entries.par_sort_by(|a, b| K::cmp(&a.key, &b.key));
+        });
+    }
+
+    /// Sort the map’s key-value pairs in place and in parallel, using the comparison
+    /// function `cmp`.
+    ///
+    /// The comparison function receives two key and value pairs to compare (you
+    /// can sort by keys or values or their combination as needed).
+    pub fn par_sort_by<F>(&mut self, cmp: F)
+    where
+        F: Fn(&K, &V, &K, &V) -> Ordering + Sync,
+        K: Send,
+        V: Send,
+    {
+        use ::rayon::prelude::ParallelSliceMut;
+
+        self.with_pairs(|entries| {
+            entries.par_sort_by(move |a, b| cmp(&a.key, &a.value, &b.key, &b.value));
+        });
+    }
+
+    /// Sort the key-value pairs of the map in parallel and return a by-value parallel
+    /// iterator of the key-value pairs with the result.
+    pub fn par_sorted_by<F>(self, cmp: F) -> IntoParIter<K, V>
+    where
+        F: Fn(&K, &V, &K, &V) -> Ordering + Sync,
+        K: Send,
+        V: Send,
+    {
+        use ::rayon::prelude::ParallelSliceMut;
+
+        let mut entries = self.into_pairs();
+        entries.par_sort_by(move |a, b| cmp(&a.key, &a.value, &b.key, &b.value));
+        IntoParIter { entries }
+    }
+
+    /// Sort the map's key-value pairs in parallel, by the default ordering of the keys.
+    pub fn par_sort_unstable_keys(&mut self)
+    where
+        K: Ord + Send,
+        V: Send,
+    {
+        use ::rayon::prelude::ParallelSliceMut;
+
+        self.with_pairs(|entries| {
+            entries.par_sort_unstable_by(|a, b| K::cmp(&a.key, &b.key));
+        });
+    }
+
+    /// Sort the map's key-value pairs in place and in parallel, using the comparison
+    /// function `cmp`.
+    ///
+    /// The comparison function receives two key and value pairs to compare (you
+    /// can sort by keys or values or their combination as needed).
+    pub fn par_sort_unstable_by<F>(&mut self, cmp: F)
+    where
+        F: Fn(&K, &V, &K, &V) -> Ordering + Sync,
+        K: Send,
+        V: Send,
+    {
+        use ::rayon::prelude::ParallelSliceMut;
+
+        self.with_pairs(|entries| {
+            entries.par_sort_unstable_by(move |a, b| cmp(&a.key, &a.value, &b.key, &b.value));
+        });
+    }
+
+    /// Sort the key-value pairs of the map in parallel and return a by-value parallel
+    /// iterator of the key-value pairs with the result.
+    pub fn par_sorted_unstable_by<F>(self, cmp: F) -> IntoParIter<K, V>
+    where
+        F: Fn(&K, &V, &K, &V) -> Ordering + Sync,
+        K: Send,
+        V: Send,
+    {
+        use ::rayon::prelude::ParallelSliceMut;
+
+        let mut entries = self.into_pairs();
+        entries.par_sort_unstable_by(move |a, b| cmp(&a.key, &a.value, &b.key, &b.value));
+        IntoParIter { entries }
+    }
+
+    /// Sort the map’s key-value pairs in place and in parallel, using a sort-key extraction
+    /// function.
+    pub fn par_sort_by_cached_key<T, F>(&mut self, sort_key: F)
+    where
+        T: Ord + Send,
+        F: Fn(&K, &V) -> T + Sync,
+        K: Send,
+        V: Send,
+    {
+        use ::rayon::prelude::ParallelSliceMut;
+
+        self.with_pairs(move |entries| {
+            entries.par_sort_by_cached_key(move |a| sort_key(&a.key, &a.value));
+        });
+    }
+}
+
 /// Access [`IndexMultimap`] values at indexed positions.
 ///
 /// # Examples
@@ -1197,4 +1414,170 @@ where
     V: Eq,
     S: BuildHasher,
 {
+}
+
+// We can't have `impl<I: RangeBounds<usize>> Index<I>` because that conflicts
+// both upstream with `Index<usize>` and downstream with `Index<&Q>`.
+// Instead, we repeat the implementations for all the core range types.
+macro_rules! impl_index {
+    ($($range:ty),*) => {$(
+        impl<K, V, S> Index<$range> for IndexMultimap<K, V, S>
+        where
+            K: Eq,
+        {
+            type Output = Slice<K, V>;
+
+            fn index(&self, range: $range) -> &Self::Output {
+                Slice::from_slice(&self.core.as_pairs()[range])
+            }
+        }
+
+        impl<K, V, S> IndexMut<$range> for IndexMultimap<K, V, S>
+        where
+            K: Eq,
+        {
+            fn index_mut(&mut self, range: $range) -> &mut Self::Output {
+                Slice::from_mut_slice(&mut self.core.as_mut_pairs()[range])
+            }
+        }
+    )*}
+}
+impl_index!(
+    ops::Range<usize>,
+    ops::RangeFrom<usize>,
+    ops::RangeFull,
+    ops::RangeInclusive<usize>,
+    ops::RangeTo<usize>,
+    ops::RangeToInclusive<usize>,
+    (ops::Bound<usize>, ops::Bound<usize>)
+);
+
+#[cfg(feature = "rayon")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+mod rayon_trait_impls {
+    use ::core::hash::{BuildHasher, Hash};
+    use ::core::ops::RangeBounds;
+
+    use ::alloc::vec::Vec;
+    use ::rayon::prelude::{
+        FromParallelIterator, IntoParallelIterator, ParallelDrainRange, ParallelExtend,
+    };
+
+    use crate::rayon::collect;
+    use crate::IndexMultimap;
+
+    use super::core::ParDrain;
+    use super::rayon::{IntoParIter, ParIter, ParIterMut};
+
+    impl<K, V, S> IntoParallelIterator for IndexMultimap<K, V, S>
+    where
+        K: Send,
+        V: Send,
+    {
+        type Item = (K, V);
+        type Iter = IntoParIter<K, V>;
+
+        fn into_par_iter(self) -> Self::Iter {
+            IntoParIter {
+                entries: self.into_pairs(),
+            }
+        }
+    }
+
+    impl<'a, K, V, S> IntoParallelIterator for &'a IndexMultimap<K, V, S>
+    where
+        K: Sync,
+        V: Sync,
+    {
+        type Item = (&'a K, &'a V);
+        type Iter = ParIter<'a, K, V>;
+
+        fn into_par_iter(self) -> Self::Iter {
+            ParIter {
+                entries: self.as_pairs(),
+            }
+        }
+    }
+
+    impl<'a, K, V, S> IntoParallelIterator for &'a mut IndexMultimap<K, V, S>
+    where
+        K: Sync + Send,
+        V: Send,
+    {
+        type Item = (&'a K, &'a mut V);
+        type Iter = ParIterMut<'a, K, V>;
+
+        fn into_par_iter(self) -> Self::Iter {
+            ParIterMut {
+                entries: self.as_mut_pairs(),
+            }
+        }
+    }
+
+    impl<'a, K, V, S> ParallelDrainRange<usize> for &'a mut IndexMultimap<K, V, S>
+    where
+        K: Send + Eq + Hash,
+        V: Send,
+        S: BuildHasher,
+    {
+        type Item = (K, V);
+        type Iter = ParDrain<'a, K, V>;
+
+        fn par_drain<R: RangeBounds<usize>>(self, range: R) -> Self::Iter {
+            self.par_drain_inner(range)
+        }
+    }
+
+    impl<K, V, S> FromParallelIterator<(K, V)> for IndexMultimap<K, V, S>
+    where
+        K: Eq + Hash + Send,
+        V: Send,
+        S: BuildHasher + Default + Send,
+    {
+        fn from_par_iter<I>(iter: I) -> Self
+        where
+            I: IntoParallelIterator<Item = (K, V)>,
+        {
+            let list = collect(iter);
+            let len = list.iter().map(Vec::len).sum();
+            // TODO: can we get accurate pairs and keys len?
+            let mut map = Self::with_capacity_and_hasher(len, len, S::default());
+            for vec in list {
+                map.extend(vec);
+            }
+            map
+        }
+    }
+
+    impl<K, V, S> ParallelExtend<(K, V)> for IndexMultimap<K, V, S>
+    where
+        K: Eq + Hash + Send,
+        V: Send,
+        S: BuildHasher + Send,
+    {
+        fn par_extend<I>(&mut self, iter: I)
+        where
+            I: IntoParallelIterator<Item = (K, V)>,
+        {
+            for vec in collect(iter) {
+                self.extend(vec);
+            }
+        }
+    }
+
+    impl<'a, K: 'a, V: 'a, S> ParallelExtend<(&'a K, &'a V)> for IndexMultimap<K, V, S>
+    where
+        K: Copy + Eq + Hash + Send + Sync,
+        V: Copy + Send + Sync,
+        S: BuildHasher + Send,
+    {
+        fn par_extend<I>(&mut self, iter: I)
+        where
+            I: IntoParallelIterator<Item = (&'a K, &'a V)>,
+        {
+            for vec in collect(iter) {
+                self.extend(vec);
+            }
+        }
+    }
 }
