@@ -973,6 +973,33 @@ pub mod rayon {
                 orig_len,
             }
         }
+
+        /// Returns the remaining items of this iterator as a slice.
+        #[must_use]
+        fn as_slice(&self) -> &Slice<K, V> {
+            Slice::from_slice(&self.pairs[self.range.clone()])
+        }
+    }
+
+    impl<K, V> fmt::Debug for ParDrain<'_, K, V>
+    where
+        K: Send + fmt::Debug + Eq,
+        V: Send + fmt::Debug,
+    {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            if cfg!(feature = "test_debug") {
+                f.debug_struct("ParDrain")
+                    .field("range", &self.range)
+                    .field("orig_len", &self.orig_len)
+                    .field(
+                        "to_remove",
+                        &DebugIterAsNumberedCompactList::new(self.as_slice().iter()),
+                    )
+                    .finish()
+            } else {
+                debug_iter_as_list(f, Some("ParDrain"), self.as_slice().iter())
+            }
+        }
     }
 
     impl<'a, K, V> Drop for ParDrain<'a, K, V>

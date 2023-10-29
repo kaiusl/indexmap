@@ -6,6 +6,7 @@
 //! [rayon]: https://docs.rs/rayon/1.0/rayon
 
 use crate::rayon::collect;
+use crate::util::debug_iter_as_list;
 use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
 use rayon::prelude::*;
 
@@ -50,7 +51,7 @@ pub struct IntoParIter<K, V> {
 impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for IntoParIter<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let iter = self.entries.iter().map(Bucket::refs);
-        f.debug_list().entries(iter).finish()
+        debug_iter_as_list(f, Some("IntoParIter"), iter)
     }
 }
 
@@ -100,7 +101,7 @@ impl<K, V> Clone for ParIter<'_, K, V> {
 impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for ParIter<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let iter = self.entries.iter().map(Bucket::refs);
-        f.debug_list().entries(iter).finish()
+        debug_iter_as_list(f, Some("ParIter"), iter)
     }
 }
 
@@ -144,7 +145,7 @@ pub struct ParIterMut<'a, K, V> {
 impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for ParIterMut<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let iter = self.entries.iter().map(Bucket::refs);
-        f.debug_list().entries(iter).finish()
+        debug_iter_as_list(f, Some("ParIterMut"), iter)
     }
 }
 
@@ -246,7 +247,7 @@ impl<K, V> Clone for ParKeys<'_, K, V> {
 impl<K: fmt::Debug, V> fmt::Debug for ParKeys<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let iter = self.entries.iter().map(Bucket::key_ref);
-        f.debug_list().entries(iter).finish()
+        debug_iter_as_list(f, Some("ParKeys"), iter)
     }
 }
 
@@ -279,7 +280,7 @@ impl<K, V> Clone for ParValues<'_, K, V> {
 impl<K, V: fmt::Debug> fmt::Debug for ParValues<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let iter = self.entries.iter().map(Bucket::value_ref);
-        f.debug_list().entries(iter).finish()
+        debug_iter_as_list(f, Some("ParValues"), iter)
     }
 }
 
@@ -322,7 +323,7 @@ pub struct ParValuesMut<'a, K, V> {
 impl<K, V: fmt::Debug> fmt::Debug for ParValuesMut<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let iter = self.entries.iter().map(Bucket::value_ref);
-        f.debug_list().entries(iter).finish()
+        debug_iter_as_list(f, Some("ParValuesMut"), iter)
     }
 }
 
