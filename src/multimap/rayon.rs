@@ -490,7 +490,7 @@ mod tests {
     use std::string::String;
 
     #[allow(dead_code)]
-    fn par_iter() {
+    fn impls_into_parallel_ref_iterator() {
         fn test<'a, T: IntoParallelRefIterator<'a>>(t: &'a T) {
             t.par_iter();
         }
@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    fn par_iter_mut() {
+    fn impls_into_parallel_ref_mut_iterator() {
         fn test<'a, T: IntoParallelRefMutIterator<'a>>(t: &'a mut T) {
             t.par_iter_mut();
         }
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_order() {
+    fn par_iter_order() {
         let insert = [0, 4, 2, 12, 8, 7, 11, 5, 3, 17, 19, 22, 23];
         let mut map = IndexMultimap::new();
 
@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_eq_and_eq() {
+    fn par_partial_eq_and_eq() {
         let mut map_a = IndexMultimap::new();
         map_a.insert_append(1, "1");
         map_a.insert_append(2, "2");
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn extend() {
+    fn par_extend() {
         let mut map = IndexMultimap::new();
         map.par_extend(vec![(&1, &2), (&3, &4)]);
         map.par_extend(vec![(5, 6)]);
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn keys() {
+    fn par_keys() {
         let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
         let map: IndexMultimap<_, _> = vec.into_par_iter().collect();
         let keys: Vec<_> = map.par_keys().copied().collect();
@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn values() {
+    fn par_values() {
         let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
         let map: IndexMultimap<_, _> = vec.into_par_iter().collect();
         let values: Vec<_> = map.par_values().copied().collect();
@@ -581,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn values_mut() {
+    fn par_values_mut() {
         let vec = vec![(1, 1), (2, 2), (3, 3)];
         let mut map: IndexMultimap<_, _> = vec.into_par_iter().collect();
         map.par_values_mut().for_each(|value| *value *= 2);
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_all() {
+    fn par_drain_all() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
         let mut map = IndexMultimap::new();
         map.extend(items);
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_none() {
+    fn par_drain_none() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
         let mut map = IndexMultimap::new();
         map.extend(items);
@@ -635,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_out_of_bounds() {
+    fn par_drain_out_of_bounds() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
         let mut map = IndexMultimap::new();
         map.extend(items);
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_start_to_mid() {
+    fn par_drain_start_to_mid() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
         let mut map = IndexMultimap::new();
         map.extend(items);
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_mid_to_end() {
+    fn par_drain_mid_to_end() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
         let mut map = IndexMultimap::new();
         map.extend(items);
@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_mid_to_mid() {
+    fn par_drain_mid_to_mid() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
         let mut map = IndexMultimap::new();
         map.extend(items);
@@ -686,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_empty() {
+    fn par_drain_empty() {
         let mut map: IndexMultimap<i32, i32> = IndexMultimap::new();
         let mut map2: IndexMultimap<i32, i32> = map.par_drain(..).collect();
         assert!(map.is_empty());
@@ -694,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_rev() {
+    fn par_drain_rev() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
         let mut map = IndexMultimap::new();
         map.extend(items);
@@ -714,7 +714,7 @@ mod tests {
         ignore = "it tests what happens if we leak ParDrain"
     )]
     #[test]
-    fn drain_leak() {
+    fn par_drain_leak() {
         let items = [(0, 0), (4, 41), (4, 42), (3, 3), (4, 43), (5, 51), (5, 52)];
         let mut map = IndexMultimap::new();
         map.extend(items);
@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_drop_panic() {
+    fn par_drain_drop_panic() {
         static DROPS: AtomicU32 = AtomicU32::new(0);
 
         #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
@@ -765,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_drop_panic_consumed() {
+    fn par_drain_drop_panic_consumed() {
         static DROPS: AtomicU32 = AtomicU32::new(0);
 
         #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
