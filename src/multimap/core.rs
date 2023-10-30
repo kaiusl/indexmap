@@ -9,19 +9,19 @@
 //!
 //! However, we should probably not let this show in the public API or docs.
 
-use ::alloc::vec::Vec;
-use ::core::{cmp, fmt, ops};
-use ::equivalent::Equivalent;
-
 pub use self::entry::{Entry, EntryIndices, OccupiedEntry, VacantEntry};
+#[cfg(feature = "rayon")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+pub use self::remove_iter::rayon::ParDrain;
 pub use self::remove_iter::{Drain, ShiftRemove, SwapRemove};
 pub use self::subsets::{
     Subset, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut,
 };
 
-#[cfg(feature = "rayon")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
-pub use self::remove_iter::rayon::ParDrain;
+use ::alloc::vec::Vec;
+use ::core::{cmp, fmt, ops};
+
+use ::equivalent::Equivalent;
 
 use self::indices::Indices;
 use crate::util::DebugIterAsNumberedCompactList;
@@ -228,7 +228,6 @@ impl<K, V> IndexMultimapCore<K, V> {
     #[cfg(any(not(debug_assertions), not(feature = "more_debug_assertions")))]
     fn debug_assert_invariants(&self) {}
 
-    #[allow(unsafe_code)]
     #[cfg(all(debug_assertions, feature = "std", feature = "more_debug_assertions"))]
     #[track_caller]
     fn debug_assert_invariants(&self)
@@ -296,7 +295,6 @@ impl<K, V> IndexMultimapCore<K, V> {
         }
     }
 
-    #[allow(unsafe_code)]
     #[cfg(all(
         debug_assertions,
         not(feature = "std"),

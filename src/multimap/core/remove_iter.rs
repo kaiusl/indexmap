@@ -1,8 +1,8 @@
 #![allow(unsafe_code)]
 
 use ::core::iter::FusedIterator;
-use ::core::ptr::{self, NonNull};
-use ::core::{fmt, mem, ops, slice};
+use ::core::ptr::NonNull;
+use ::core::{fmt, mem, ops, ptr, slice};
 
 use super::indices::UniqueSortedIter;
 use super::{
@@ -69,7 +69,7 @@ where
     indices_to_remove: UniqueSortedIter<alloc::vec::IntoIter<usize>>,
 }
 
-impl<'a, K: 'a, V: 'a> ShiftRemove<'a, K, V>
+impl<'a, K, V> ShiftRemove<'a, K, V>
 where
     K: Eq,
 {
@@ -890,12 +890,14 @@ where
 
 #[cfg(feature = "rayon")]
 pub mod rayon {
-    use super::*;
     use ::alloc::vec::Vec;
     use ::core::iter;
     use ::core::ops::Range;
+
     use ::rayon::iter::plumbing::{Consumer, Producer, ProducerCallback, UnindexedConsumer};
     use ::rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+
+    use super::*;
 
     /// A parallel draining iterator over the entries of a [`IndexMultimap`].
     ///
@@ -1242,7 +1244,7 @@ pub mod rayon {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use ::alloc::vec::Vec;
 
     use super::*;
 

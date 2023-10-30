@@ -1,7 +1,6 @@
 #![allow(unsafe_code)]
 
-use core::ops::RangeBounds;
-use core::{fmt, ops, ptr};
+use ::core::{fmt, ops, ptr};
 
 use super::indices::Indices;
 use super::{
@@ -525,7 +524,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// distinguishing features outside of [`Hash`] and [`Eq`], like
     /// extra fields or the memory address of an allocation.
     ///
-    /// [`Hash`]: core::hash::Hash
+    /// [`Hash`]: ::core::hash::Hash
     pub fn key(&self) -> &K {
         &self.map.pairs[self.indices()[0]].key
     }
@@ -664,7 +663,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Valid indices are <code>0 <= index < self.[len]\()</code>
     ///
     /// [len]: Self::len
-    pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<Subset<'_, K, V>> {
+    pub fn get_range<R>(&self, range: R) -> Option<Subset<'_, K, V>>
+    where
+        R: ops::RangeBounds<usize>,
+    {
         let indices = self.indices();
         let range = try_simplify_range(range, indices.len())?;
         match indices.get(range) {
@@ -680,10 +682,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Valid indices are <code>0 <= index < self.[len]\()</code>
     ///
     /// [len]: Self::len
-    pub fn get_range_mut<R: RangeBounds<usize>>(
-        &mut self,
-        range: R,
-    ) -> Option<SubsetMut<'_, K, V>> {
+    pub fn get_range_mut<R>(&mut self, range: R) -> Option<SubsetMut<'_, K, V>>
+    where
+        R: ops::RangeBounds<usize>,
+    {
         let indices = unsafe { self.raw_bucket.as_ref() }.as_unique_slice();
         match indices.get_range(range) {
             Some(indices) => {
@@ -698,7 +700,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Valid indices are <code>0 <= index < self.[len]\()</code>
     ///
     /// [len]: Self::len
-    pub fn into_range<R: RangeBounds<usize>>(self, range: R) -> Option<SubsetMut<'a, K, V>> {
+    pub fn into_range<R>(self, range: R) -> Option<SubsetMut<'a, K, V>>
+    where
+        R: ops::RangeBounds<usize>,
+    {
         let indices = unsafe { self.raw_bucket.as_ref() }.as_unique_slice();
         match indices.get_range(range) {
             Some(indices) => {
@@ -727,11 +732,11 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     }
 
     #[inline]
-    unsafe fn get_many_mut_core<'b, const N: usize>(
-        pairs: &'b mut [Bucket<K, V>],
+    unsafe fn get_many_mut_core<const N: usize>(
+        pairs: &mut [Bucket<K, V>],
         subset_indices: IndicesBucket,
         get_indices: [usize; N],
-    ) -> Option<[(usize, &'b K, &'b mut V); N]> {
+    ) -> Option<[(usize, &K, &mut V); N]> {
         let subset_indices = unsafe { subset_indices.as_ref() };
         let pairs_len = pairs.len();
         if !check_unique_and_in_bounds(&get_indices, subset_indices.len()) {

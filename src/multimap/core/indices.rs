@@ -1,11 +1,12 @@
 #![allow(unsafe_code)]
 #![warn(clippy::missing_safety_doc)]
 
+pub(super) use self::iterators::{UniqueIter, UniqueSortedIter};
+
 use ::alloc::vec;
 use ::alloc::vec::Vec;
+use ::core::ops::{Range, RangeBounds};
 use ::core::{mem, ops, slice};
-use core::ops::{Range, RangeBounds};
-pub(super) use iterators::{UniqueIter, UniqueSortedIter};
 
 use crate::util::{is_sorted_and_unique, try_simplify_range};
 use crate::TryReserveError;
@@ -79,7 +80,7 @@ impl Indices {
     }
     #[inline]
     pub(crate) fn as_unique_slice(&self) -> &UniqueSlice<usize> {
-        unsafe { UniqueSlice::from_slice_unchecked(&self) }
+        unsafe { UniqueSlice::from_slice_unchecked(self.as_slice()) }
     }
 
     #[inline]
@@ -235,10 +236,13 @@ impl<T> UniqueSlice<T> {
         unsafe { &*(slice as *const [T] as *const Self) }
     }
     pub fn as_slice(&self) -> &[T] {
-        &*self
+        &self.inner
     }
 
-    pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<&Self> {
+    pub fn get_range<R>(&self, range: R) -> Option<&Self>
+    where
+        R: RangeBounds<usize>,
+    {
         let range = try_simplify_range(range, self.inner.len())?;
         match self.inner.get(range) {
             Some(inner) => Some(unsafe { UniqueSlice::from_slice_unchecked(inner) }),
@@ -301,7 +305,7 @@ impl<'a, T> IntoIterator for &'a UniqueSlice<T> {
 }
 
 mod iterators {
-    use core::iter::FusedIterator;
+    use ::core::iter::FusedIterator;
 
     #[derive(Debug, Clone)]
     pub(crate) struct UniqueSortedIter<Inner> {
@@ -347,9 +351,10 @@ mod iterators {
         }
 
         #[inline]
-        fn collect<B: FromIterator<Self::Item>>(self) -> B
+        fn collect<B>(self) -> B
         where
             Self: Sized,
+            B: FromIterator<Self::Item>,
         {
             self.inner.collect()
         }
@@ -468,7 +473,7 @@ mod tests {
 
     #[test]
     fn push_panic() {
-        use std::panic::catch_unwind;
+        use ::std::panic::catch_unwind;
         catch_unwind(|| {
             let mut i = Indices::one(5);
             i.push(5);

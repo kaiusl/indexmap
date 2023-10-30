@@ -22,6 +22,11 @@
 //! [`Hash`]: ::core::hash::Hash
 //! [`Eq`]: ::core::cmp::Eq
 
+pub use self::core::{
+    Drain, Entry, EntryIndices, OccupiedEntry, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
+    SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
+};
+
 use ::alloc::boxed::Box;
 use ::alloc::vec::Vec;
 use ::core::cmp::Ordering;
@@ -34,14 +39,11 @@ use ::std::collections::hash_map::RandomState;
 use ::equivalent::Equivalent;
 
 use self::core::IndexMultimapCore;
+#[cfg(feature = "rayon")]
+use self::rayon::{IntoParIter, ParKeys, ParValues, ParValuesMut};
 use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
 use crate::util::try_simplify_range;
 use crate::{Bucket, HashValue, TryReserveError};
-
-pub use self::core::{
-    Drain, Entry, EntryIndices, OccupiedEntry, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
-    SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
-};
 
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -67,12 +69,8 @@ pub mod rayon {
     };
 }
 
-#[cfg(feature = "rayon")]
-use self::rayon::{IntoParIter, ParKeys, ParValues, ParValuesMut};
-
 mod core;
 mod iter;
-
 #[cfg(test)]
 mod tests;
 
@@ -904,7 +902,10 @@ impl<K, V, S> IndexMultimap<K, V, S> {
     /// Computes in **O(1)** time.
     ///
     /// [len_pairs]: Self::len_pairs
-    pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<&Slice<K, V>> {
+    pub fn get_range<R>(&self, range: R) -> Option<&Slice<K, V>>
+    where
+        R: RangeBounds<usize>,
+    {
         let entries = self.core.as_pairs();
         let range = try_simplify_range(range, entries.len())?;
         entries.get(range).map(Slice::from_slice)
@@ -917,7 +918,10 @@ impl<K, V, S> IndexMultimap<K, V, S> {
     /// Computes in **O(1)** time.
     ///
     /// [len_pairs]: Self::len_pairs
-    pub fn get_range_mut<R: RangeBounds<usize>>(&mut self, range: R) -> Option<&mut Slice<K, V>> {
+    pub fn get_range_mut<R>(&mut self, range: R) -> Option<&mut Slice<K, V>>
+    where
+        R: RangeBounds<usize>,
+    {
         let entries = self.core.as_mut_pairs();
         let range = try_simplify_range(range, entries.len())?;
         entries.get_mut(range).map(Slice::from_mut_slice)
@@ -1173,7 +1177,7 @@ where
 /// map.insert("foo", 1);
 /// println!("{:?}", map[10]); // panics!
 /// ```
-impl<K, V, S> Index<usize> for IndexMultimap<K, V, S>
+impl<K, V, S> ops::Index<usize> for IndexMultimap<K, V, S>
 where
     K: Eq,
 {
@@ -1220,7 +1224,7 @@ where
 /// ```
 ///
 /// [`insert_append`]: IndexMultimap::insert_append
-impl<K, V, S> IndexMut<usize> for IndexMultimap<K, V, S>
+impl<K, V, S> ops::IndexMut<usize> for IndexMultimap<K, V, S>
 where
     K: Eq,
 {
@@ -1455,19 +1459,18 @@ impl_index!(
 #[cfg(feature = "rayon")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 mod rayon_trait_impls {
+    use ::alloc::vec::Vec;
     use ::core::hash::{BuildHasher, Hash};
     use ::core::ops::RangeBounds;
 
-    use ::alloc::vec::Vec;
     use ::rayon::prelude::{
         FromParallelIterator, IntoParallelIterator, ParallelDrainRange, ParallelExtend,
     };
 
-    use crate::rayon::collect;
-    use crate::IndexMultimap;
-
     use super::core::ParDrain;
     use super::rayon::{IntoParIter, ParIter, ParIterMut};
+    use crate::rayon::collect;
+    use crate::IndexMultimap;
 
     impl<K, V, S> IntoParallelIterator for IndexMultimap<K, V, S>
     where

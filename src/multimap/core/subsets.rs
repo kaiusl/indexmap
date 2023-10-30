@@ -24,13 +24,11 @@
 // aliasing references if there are multiple mutable subsets alive at
 // that time.
 
-use ::core::ops::RangeBounds;
-use ::core::ptr::NonNull;
-use ::core::slice;
-
-use ::core::fmt;
 use ::core::iter::FusedIterator;
 use ::core::marker::PhantomData;
+use ::core::ops::RangeBounds;
+use ::core::ptr::NonNull;
+use ::core::{fmt, ops, slice};
 
 use super::indices::{UniqueIter, UniqueSlice};
 use crate::util::{
@@ -107,7 +105,7 @@ impl<'a, K, V> Subset<'a, K, V> {
     }
 
     pub fn indices(&self) -> &'a [usize] {
-        &self.indices
+        self.indices
     }
 
     /// Returns a reference to the `n`th pair in this subset or [`None`] if <code>n >= self.[len]\()</code>.
@@ -135,7 +133,10 @@ impl<'a, K, V> Subset<'a, K, V> {
     /// Valid indices are <code>0 <= index < self.[len]\()</code>
     ///
     /// [len]: Self::len
-    pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<Subset<'a, K, V>> {
+    pub fn get_range<R>(&self, range: R) -> Option<Subset<'a, K, V>>
+    where
+        R: RangeBounds<usize>,
+    {
         let range = try_simplify_range(range, self.indices.len())?;
         match self.indices.get(range) {
             Some(indices) => {
@@ -300,7 +301,7 @@ impl<'a, K, V> IntoIterator for &'a Subset<'_, K, V> {
     }
 }
 
-impl<'a, K, V> core::ops::Index<usize> for Subset<'a, K, V> {
+impl<'a, K, V> ops::Index<usize> for Subset<'a, K, V> {
     type Output = V;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -387,7 +388,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
 
     pub(crate) fn empty() -> Self {
         // SAFETY: no access will ever be actually performed
-        unsafe { Self::from_slice_unchecked(&mut [], &UniqueSlice::from_slice_unchecked(&[])) }
+        unsafe { Self::from_slice_unchecked(&mut [], UniqueSlice::from_slice_unchecked(&[])) }
     }
 
     /// Returns the number of pairs in this subset.
@@ -403,7 +404,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     /// Returns a slice of indices where the key-value pairs of this subset are
     /// located in the map.
     pub fn indices(&self) -> &[usize] {
-        &self.indices
+        self.indices
     }
 
     /// Returns a reference to an `n`th key-value pair in this subset or [`None`] if <code>n >= self.[len]\()</code>.
@@ -511,7 +512,10 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     /// Valid indices are <code>0 <= index < self.[len]\()</code>
     ///
     /// [len]: Self::len
-    pub fn get_range<R: RangeBounds<usize>>(&self, range: R) -> Option<Subset<'_, K, V>> {
+    pub fn get_range<R>(&self, range: R) -> Option<Subset<'_, K, V>>
+    where
+        R: RangeBounds<usize>,
+    {
         match self.indices.get_range(range) {
             Some(indices) => {
                 Some(unsafe { Subset::from_raw_unchecked(self.pairs, self.pairs_len, indices) })
@@ -525,10 +529,10 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     /// Valid indices are <code>0 <= index < self.[len]\()</code>
     ///
     /// [len]: Self::len
-    pub fn get_range_mut<R: RangeBounds<usize>>(
-        &mut self,
-        range: R,
-    ) -> Option<SubsetMut<'_, K, V>> {
+    pub fn get_range_mut<R>(&mut self, range: R) -> Option<SubsetMut<'_, K, V>>
+    where
+        R: RangeBounds<usize>,
+    {
         match self.indices.get_range(range) {
             Some(indices) => {
                 Some(unsafe { SubsetMut::from_raw_unchecked(self.pairs, self.pairs_len, indices) })
@@ -542,7 +546,10 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
     /// Valid indices are <code>0 <= index < self.[len]\()</code>
     ///
     /// [len]: Self::len
-    pub fn into_range<R: RangeBounds<usize>>(self, range: R) -> Option<SubsetMut<'a, K, V>> {
+    pub fn into_range<R>(self, range: R) -> Option<SubsetMut<'a, K, V>>
+    where
+        R: RangeBounds<usize>,
+    {
         match self.indices.get_range(range) {
             Some(indices) => {
                 Some(unsafe { SubsetMut::from_raw_unchecked(self.pairs, self.pairs_len, indices) })
@@ -634,7 +641,7 @@ impl<'a, K, V> SubsetMut<'a, K, V> {
             SubsetKeys::from_raw_unchecked(
                 self.pairs,
                 self.pairs_len,
-                self.indices.as_slice().into_iter(),
+                self.indices.as_slice().iter(),
             )
         }
     }
@@ -900,7 +907,7 @@ impl<'a, K, V> IntoIterator for &'a mut SubsetMut<'_, K, V> {
     }
 }
 
-impl<K, V> core::ops::Index<usize> for SubsetMut<'_, K, V> {
+impl<K, V> ops::Index<usize> for SubsetMut<'_, K, V> {
     type Output = V;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -911,7 +918,7 @@ impl<K, V> core::ops::Index<usize> for SubsetMut<'_, K, V> {
     }
 }
 
-impl<K, V> core::ops::IndexMut<usize> for SubsetMut<'_, K, V> {
+impl<K, V> ops::IndexMut<usize> for SubsetMut<'_, K, V> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         let index = self.indices[index];
         debug_assert!(index < self.pairs_len, "index out of bounds");
@@ -1270,11 +1277,7 @@ impl<'a, K, V> SubsetIterMut<'a, K, V> {
     }
 }
 
-impl<'a, K, V> Iterator for SubsetIterMut<'a, K, V>
-where
-    K: 'a,
-    V: 'a,
-{
+impl<'a, K, V> Iterator for SubsetIterMut<'a, K, V> {
     type Item = (usize, &'a K, &'a mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1322,11 +1325,7 @@ where
     }
 }
 
-impl<'a, K, V> DoubleEndedIterator for SubsetIterMut<'a, K, V>
-where
-    K: 'a,
-    V: 'a,
-{
+impl<'a, K, V> DoubleEndedIterator for SubsetIterMut<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.indices.next_back() {
             Some(&index) => Some(unsafe { Self::get_item_mut(self.pairs, self.pairs_len, index) }),
@@ -1342,22 +1341,13 @@ where
     }
 }
 
-impl<'a, K, V> ExactSizeIterator for SubsetIterMut<'a, K, V>
-where
-    K: 'a,
-    V: 'a,
-{
+impl<'a, K, V> ExactSizeIterator for SubsetIterMut<'a, K, V> {
     fn len(&self) -> usize {
         self.indices.len()
     }
 }
 
-impl<'a, K, V> FusedIterator for SubsetIterMut<'a, K, V>
-where
-    K: 'a,
-    V: 'a,
-{
-}
+impl<'a, K, V> FusedIterator for SubsetIterMut<'a, K, V> {}
 
 impl<K, V: fmt::Debug> fmt::Debug for SubsetIterMut<'_, K, V>
 where
@@ -1410,11 +1400,7 @@ impl<'a, K, V> SubsetValuesMut<'a, K, V> {
     }
 }
 
-impl<'a, K, V> Iterator for SubsetValuesMut<'a, K, V>
-where
-    K: 'a,
-    V: 'a,
-{
+impl<'a, K, V> Iterator for SubsetValuesMut<'a, K, V> {
     type Item = &'a mut V;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1460,11 +1446,7 @@ where
     }
 }
 
-impl<'a, K, V> DoubleEndedIterator for SubsetValuesMut<'a, K, V>
-where
-    K: 'a,
-    V: 'a,
-{
+impl<'a, K, V> DoubleEndedIterator for SubsetValuesMut<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.inner.next_back() {
             Some((_, _, v)) => Some(v),
@@ -1480,22 +1462,13 @@ where
     }
 }
 
-impl<'a, K, V> ExactSizeIterator for SubsetValuesMut<'a, K, V>
-where
-    K: 'a,
-    V: 'a,
-{
+impl<'a, K, V> ExactSizeIterator for SubsetValuesMut<'a, K, V> {
     fn len(&self) -> usize {
         self.inner.len()
     }
 }
 
-impl<'a, K, V> FusedIterator for SubsetValuesMut<'a, K, V>
-where
-    K: 'a,
-    V: 'a,
-{
-}
+impl<'a, K, V> FusedIterator for SubsetValuesMut<'a, K, V> {}
 
 impl<K, V: fmt::Debug> fmt::Debug for SubsetValuesMut<'_, K, V>
 where
@@ -1522,8 +1495,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-    use alloc::vec::Vec;
+    use ::alloc::vec;
+    use ::alloc::vec::Vec;
 
     use super::super::indices::UniqueSlice;
     use super::*;

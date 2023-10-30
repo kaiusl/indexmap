@@ -1705,6 +1705,11 @@ fn slice_index_mut() {
 
 #[cfg(feature = "rayon")]
 mod rayon {
+    use ::core::panic::AssertUnwindSafe;
+    use ::core::sync::atomic::AtomicU32;
+    use ::std::panic::catch_unwind;
+    use ::std::string::String;
+
     use ::rayon::prelude::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
         IntoParallelRefMutIterator, ParallelDrainRange, ParallelExtend, ParallelIterator,
@@ -1713,11 +1718,6 @@ mod rayon {
     use super::*;
     use crate::multimap::tests::assert_map_eq;
     use crate::IndexMultimap;
-
-    use ::core::panic::AssertUnwindSafe;
-    use ::core::sync::atomic::AtomicU32;
-    use std::panic::catch_unwind;
-    use std::string::String;
 
     #[allow(dead_code)]
     fn impls_into_parallel_ref_iterator() {

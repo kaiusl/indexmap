@@ -1,12 +1,12 @@
 #[cfg(feature = "rayon")]
 pub(crate) mod rayon {
-    use crate::util::debug_iter_as_list;
-    use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
-    use rayon::prelude::*;
-
-    use crate::vec::Vec;
     use ::core::fmt;
 
+    use ::rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
+    use ::rayon::prelude::*;
+
+    use crate::util::debug_iter_as_list;
+    use crate::vec::Vec;
     use crate::Bucket;
 
     /// A parallel owning iterator over the entries of a [`IndexMultimap`].
@@ -22,20 +22,32 @@ pub(crate) mod rayon {
         pub(crate) entries: Vec<Bucket<K, V>>,
     }
 
-    impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for IntoParIter<K, V> {
+    impl<K, V> fmt::Debug for IntoParIter<K, V>
+    where
+        K: fmt::Debug,
+        V: fmt::Debug,
+    {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let iter = self.entries.iter().map(Bucket::refs);
             debug_iter_as_list(f, Some("IntoParIter"), iter)
         }
     }
 
-    impl<K: Send, V: Send> ParallelIterator for IntoParIter<K, V> {
+    impl<K, V> ParallelIterator for IntoParIter<K, V>
+    where
+        K: Send,
+        V: Send,
+    {
         type Item = (K, V);
 
         parallel_iterator_methods!(Bucket::key_value);
     }
 
-    impl<K: Send, V: Send> IndexedParallelIterator for IntoParIter<K, V> {
+    impl<K, V> IndexedParallelIterator for IntoParIter<K, V>
+    where
+        K: Send,
+        V: Send,
+    {
         indexed_parallel_iterator_methods!(Bucket::key_value);
     }
 
@@ -58,20 +70,32 @@ pub(crate) mod rayon {
         }
     }
 
-    impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for ParIter<'_, K, V> {
+    impl<K, V> fmt::Debug for ParIter<'_, K, V>
+    where
+        K: fmt::Debug,
+        V: fmt::Debug,
+    {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let iter = self.entries.iter().map(Bucket::refs);
             debug_iter_as_list(f, Some("ParIter"), iter)
         }
     }
 
-    impl<'a, K: Sync, V: Sync> ParallelIterator for ParIter<'a, K, V> {
+    impl<'a, K, V> ParallelIterator for ParIter<'a, K, V>
+    where
+        K: Sync,
+        V: Sync,
+    {
         type Item = (&'a K, &'a V);
 
         parallel_iterator_methods!(Bucket::refs);
     }
 
-    impl<K: Sync, V: Sync> IndexedParallelIterator for ParIter<'_, K, V> {
+    impl<K, V> IndexedParallelIterator for ParIter<'_, K, V>
+    where
+        K: Sync,
+        V: Sync,
+    {
         indexed_parallel_iterator_methods!(Bucket::refs);
     }
 
@@ -88,20 +112,32 @@ pub(crate) mod rayon {
         pub(crate) entries: &'a mut [Bucket<K, V>],
     }
 
-    impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for ParIterMut<'_, K, V> {
+    impl<K, V> fmt::Debug for ParIterMut<'_, K, V>
+    where
+        K: fmt::Debug,
+        V: fmt::Debug,
+    {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let iter = self.entries.iter().map(Bucket::refs);
             debug_iter_as_list(f, Some("ParIterMut"), iter)
         }
     }
 
-    impl<'a, K: Sync + Send, V: Send> ParallelIterator for ParIterMut<'a, K, V> {
+    impl<'a, K, V> ParallelIterator for ParIterMut<'a, K, V>
+    where
+        K: Sync + Send,
+        V: Send,
+    {
         type Item = (&'a K, &'a mut V);
 
         parallel_iterator_methods!(Bucket::ref_mut);
     }
 
-    impl<K: Sync + Send, V: Send> IndexedParallelIterator for ParIterMut<'_, K, V> {
+    impl<K, V> IndexedParallelIterator for ParIterMut<'_, K, V>
+    where
+        K: Sync + Send,
+        V: Send,
+    {
         indexed_parallel_iterator_methods!(Bucket::ref_mut);
     }
 
@@ -122,20 +158,31 @@ pub(crate) mod rayon {
         }
     }
 
-    impl<K: fmt::Debug, V> fmt::Debug for ParKeys<'_, K, V> {
+    impl<K, V> fmt::Debug for ParKeys<'_, K, V>
+    where
+        K: fmt::Debug,
+    {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let iter = self.entries.iter().map(Bucket::key_ref);
             debug_iter_as_list(f, Some("ParKeys"), iter)
         }
     }
 
-    impl<'a, K: Sync, V: Sync> ParallelIterator for ParKeys<'a, K, V> {
+    impl<'a, K, V> ParallelIterator for ParKeys<'a, K, V>
+    where
+        K: Sync,
+        V: Sync,
+    {
         type Item = &'a K;
 
         parallel_iterator_methods!(Bucket::key_ref);
     }
 
-    impl<K: Sync, V: Sync> IndexedParallelIterator for ParKeys<'_, K, V> {
+    impl<K, V> IndexedParallelIterator for ParKeys<'_, K, V>
+    where
+        K: Sync,
+        V: Sync,
+    {
         indexed_parallel_iterator_methods!(Bucket::key_ref);
     }
 
@@ -156,20 +203,31 @@ pub(crate) mod rayon {
         }
     }
 
-    impl<K, V: fmt::Debug> fmt::Debug for ParValues<'_, K, V> {
+    impl<K, V> fmt::Debug for ParValues<'_, K, V>
+    where
+        V: fmt::Debug,
+    {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let iter = self.entries.iter().map(Bucket::value_ref);
             debug_iter_as_list(f, Some("ParValues"), iter)
         }
     }
 
-    impl<'a, K: Sync, V: Sync> ParallelIterator for ParValues<'a, K, V> {
+    impl<'a, K, V> ParallelIterator for ParValues<'a, K, V>
+    where
+        K: Sync,
+        V: Sync,
+    {
         type Item = &'a V;
 
         parallel_iterator_methods!(Bucket::value_ref);
     }
 
-    impl<K: Sync, V: Sync> IndexedParallelIterator for ParValues<'_, K, V> {
+    impl<K, V> IndexedParallelIterator for ParValues<'_, K, V>
+    where
+        K: Sync,
+        V: Sync,
+    {
         indexed_parallel_iterator_methods!(Bucket::value_ref);
     }
 
@@ -184,20 +242,31 @@ pub(crate) mod rayon {
         pub(crate) entries: &'a mut [Bucket<K, V>],
     }
 
-    impl<K, V: fmt::Debug> fmt::Debug for ParValuesMut<'_, K, V> {
+    impl<K, V> fmt::Debug for ParValuesMut<'_, K, V>
+    where
+        V: fmt::Debug,
+    {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let iter = self.entries.iter().map(Bucket::value_ref);
             debug_iter_as_list(f, Some("ParValuesMut"), iter)
         }
     }
 
-    impl<'a, K: Send, V: Send> ParallelIterator for ParValuesMut<'a, K, V> {
+    impl<'a, K, V> ParallelIterator for ParValuesMut<'a, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
         type Item = &'a mut V;
 
         parallel_iterator_methods!(Bucket::value_mut);
     }
 
-    impl<K: Send, V: Send> IndexedParallelIterator for ParValuesMut<'_, K, V> {
+    impl<K, V> IndexedParallelIterator for ParValuesMut<'_, K, V>
+    where
+        K: Send,
+        V: Send,
+    {
         indexed_parallel_iterator_methods!(Bucket::value_mut);
     }
 }
