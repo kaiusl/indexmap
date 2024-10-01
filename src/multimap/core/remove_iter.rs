@@ -67,6 +67,7 @@ where
     orig_len: usize,
     /// The indices that will be removed.
     indices_to_remove: UniqueSortedIter<alloc::vec::IntoIter<usize>>,
+    rebuild_table: bool,
 }
 
 impl<'a, K, V> ShiftRemove<'a, K, V>
@@ -107,8 +108,12 @@ where
     /// See the comment in the type definition for safety.
     unsafe fn new_unchecked(map: &'a mut IndexMultimapCore<K, V>, indices: Indices) -> Self {
         debug_assert!(indices.is_empty() || *indices.last().unwrap() < map.pairs.len());
-
-        unsafe { map.decrement_indices_batched(&indices) };
+        // If we are removing a lot if items, then at some point it becomes more
+        // efficient to rebuild the table, rather than update all the indices
+        let rebuild_table = map.len_pairs() / indices.len() < 25;
+        if !rebuild_table && !map.indices.is_empty() {
+            unsafe { map.decrement_indices_batched(&indices) };
+        }
         let old_len = map.pairs.len();
         unsafe { map.pairs.set_len(0) };
         let indices_table = mem::take(&mut map.indices);
@@ -119,6 +124,7 @@ where
             del: 0,
             orig_len: old_len,
             indices_to_remove: indices.into_iter(),
+            rebuild_table,
         }
     }
 
@@ -281,6 +287,10 @@ where
                 unsafe { map.pairs.set_len(orig_len - del) }
                 mem::swap(&mut inner.indices_table, &mut map.indices);
                 map.debug_assert_invariants();
+
+                if inner.rebuild_table && !map.indices.is_empty() {
+                    map.rebuild_hash_table();
+                }
             }
         }
 

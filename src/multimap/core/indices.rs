@@ -191,6 +191,10 @@ impl Indices {
         self.inner.extend(iter);
     }
 
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+
     pub(crate) fn from_range(range: Range<usize>) -> Self {
         Self {
             inner: range.collect(),

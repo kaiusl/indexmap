@@ -1010,15 +1010,48 @@ impl<K, V> IndexMultimapCore<K, V> {
     ///     indices [5, 6], get decremented by 2
     ///     indices [8, ...] get decremented by 3
     unsafe fn decrement_indices_batched(&mut self, indices: &Indices) {
-        for (offset, w) in (1..).zip(indices.windows(2)) {
-            let (start, end) = (w[0], w[1]);
-            unsafe { self.decrement_indices(start + 1, end, offset) };
-        }
+        match self.len_keys() {
+            0 => {}
+            1 => {
+                // if there is only 1 key left in the map,
+                // then the indices must be sequential 0..len
+                for indices in self.indices_mut() {
+                    // don't use self.pairs.len() because values
+                    // to be removed may not be removed yet
+                    let len = indices.len();
+                    indices.clear();
+                    unsafe {
+                        indices.extend(0..len);
+                    }
+                }
+            }
+            _ if indices.len() == 1 => {
+                // fastest if removing only one index
+                // Shift the tail after the last item
+                let i = *indices.last().unwrap();
+                if i < self.pairs.len() {
+                    unsafe { self.decrement_indices(i + 1, self.pairs.len(), 1) };
+                }
+            }
+            _ => {
+                // if removing more than 1 index it's faster to iterate over indices in the map once
+                // and loop over removed indices multiple times, rather then other way around.
+                let first = *indices.first().unwrap();
+                let last = *indices.last().unwrap();
 
-        // Shift the tail after the last item
-        let last = *indices.last().unwrap();
-        if last < self.pairs.len() {
-            unsafe { self.decrement_indices(last + 1, self.pairs.len(), indices.len()) };
+                for indices_in_map in self.indices_mut() {
+                    for i in unsafe { indices_in_map.as_mut_slice() } {
+                        if *i < first {
+                            continue;
+                        } else if *i > last {
+                            *i -= indices.len();
+                        } else {
+                            let offset = indices.partition_point(|a| *a < *i);
+                            *i -= offset;
+                        }
+                    }
+                }
+            }
         }
     }
 
