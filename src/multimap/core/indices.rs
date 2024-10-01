@@ -233,12 +233,16 @@ impl<'a, T> Default for &'a UniqueSlice<T> {
 }
 
 impl<T> UniqueSlice<T> {
+    /// # Safety
+    ///
+    /// * provided `slice` must contain unique items
     pub(crate) unsafe fn from_slice_unchecked(slice: &[T]) -> &Self {
         // SAFETY:
         //  * `Self` is `repr(transparent)` wrapper around `[T]`.
         //  * Reference lifetimes are bound in function signature.
         unsafe { &*(slice as *const [T] as *const Self) }
     }
+
     pub fn as_slice(&self) -> &[T] {
         &self.inner
     }
@@ -311,6 +315,336 @@ impl<'a, T> IntoIterator for &'a UniqueSlice<T> {
 mod iterators {
     use ::core::iter::FusedIterator;
 
+    /// Implements all methods of [`Iterator`] trait by forwarding to an inner iterator.
+    ///
+    /// The inner iterator must be accessible through `self.inner`.
+    macro_rules! impl_wrapped_iterator_methods {
+        () => {
+            type Item = Inner::Item;
+
+            #[inline]
+            fn next(&mut self) -> Option<Self::Item> {
+                self.inner.next()
+            }
+
+            #[inline]
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                self.inner.size_hint()
+            }
+
+            #[inline]
+            fn count(self) -> usize
+            where
+                Self: Sized,
+            {
+                self.inner.count()
+            }
+
+            #[inline]
+            fn nth(&mut self, n: usize) -> Option<Self::Item> {
+                self.inner.nth(n)
+            }
+
+            #[inline]
+            fn collect<B: FromIterator<Self::Item>>(self) -> B
+            where
+                Self: Sized,
+            {
+                self.inner.collect()
+            }
+
+            fn last(self) -> Option<Self::Item>
+            where
+                Self: Sized,
+            {
+                self.inner.last()
+            }
+
+            fn for_each<F>(self, f: F)
+            where
+                Self: Sized,
+                F: FnMut(Self::Item),
+            {
+                self.inner.for_each(f)
+            }
+
+            fn partition<B, F>(self, f: F) -> (B, B)
+            where
+                Self: Sized,
+                B: Default + Extend<Self::Item>,
+                F: FnMut(&Self::Item) -> bool,
+            {
+                self.inner.partition(f)
+            }
+
+            fn fold<B, F>(self, init: B, mut f: F) -> B
+            where
+                Self: Sized,
+                F: FnMut(B, Self::Item) -> B,
+            {
+                self.inner.fold(init, &mut f)
+            }
+
+            fn reduce<F>(self, f: F) -> Option<Self::Item>
+            where
+                Self: Sized,
+                F: FnMut(Self::Item, Self::Item) -> Self::Item,
+            {
+                self.inner.reduce(f)
+            }
+
+            fn all<F>(&mut self, f: F) -> bool
+            where
+                Self: Sized,
+                F: FnMut(Self::Item) -> bool,
+            {
+                self.inner.all(f)
+            }
+
+            fn any<F>(&mut self, f: F) -> bool
+            where
+                Self: Sized,
+                F: FnMut(Self::Item) -> bool,
+            {
+                self.inner.any(f)
+            }
+
+            fn find<P>(&mut self, predicate: P) -> Option<Self::Item>
+            where
+                Self: Sized,
+                P: FnMut(&Self::Item) -> bool,
+            {
+                self.inner.find(predicate)
+            }
+
+            fn find_map<B, F>(&mut self, f: F) -> Option<B>
+            where
+                Self: Sized,
+                F: FnMut(Self::Item) -> Option<B>,
+            {
+                self.inner.find_map(f)
+            }
+
+            fn position<P>(&mut self, predicate: P) -> Option<usize>
+            where
+                Self: Sized,
+                P: FnMut(Self::Item) -> bool,
+            {
+                self.inner.position(predicate)
+            }
+
+            fn max(self) -> Option<Self::Item>
+            where
+                Self: Sized,
+                Self::Item: Ord,
+            {
+                self.inner.max()
+            }
+
+            fn min(self) -> Option<Self::Item>
+            where
+                Self: Sized,
+                Self::Item: Ord,
+            {
+                self.inner.min()
+            }
+
+            fn max_by_key<B: Ord, F>(self, f: F) -> Option<Self::Item>
+            where
+                Self: Sized,
+                F: FnMut(&Self::Item) -> B,
+            {
+                self.inner.max_by_key(f)
+            }
+
+            fn max_by<F>(self, compare: F) -> Option<Self::Item>
+            where
+                Self: Sized,
+                F: FnMut(&Self::Item, &Self::Item) -> core::cmp::Ordering,
+            {
+                self.inner.max_by(compare)
+            }
+
+            fn min_by_key<B: Ord, F>(self, f: F) -> Option<Self::Item>
+            where
+                Self: Sized,
+                F: FnMut(&Self::Item) -> B,
+            {
+                self.inner.min_by_key(f)
+            }
+
+            fn min_by<F>(self, compare: F) -> Option<Self::Item>
+            where
+                Self: Sized,
+                F: FnMut(&Self::Item, &Self::Item) -> core::cmp::Ordering,
+            {
+                self.inner.min_by(compare)
+            }
+
+            fn sum<S>(self) -> S
+            where
+                Self: Sized,
+                S: core::iter::Sum<Self::Item>,
+            {
+                self.inner.sum()
+            }
+
+            fn product<P>(self) -> P
+            where
+                Self: Sized,
+                P: core::iter::Product<Self::Item>,
+            {
+                self.inner.product()
+            }
+
+            fn cmp<I>(self, other: I) -> core::cmp::Ordering
+            where
+                I: IntoIterator<Item = Self::Item>,
+                Self::Item: Ord,
+                Self: Sized,
+            {
+                self.inner.cmp(other)
+            }
+
+            fn partial_cmp<I>(self, other: I) -> Option<core::cmp::Ordering>
+            where
+                I: IntoIterator,
+                Self::Item: PartialOrd<I::Item>,
+                Self: Sized,
+            {
+                self.inner.partial_cmp(other)
+            }
+
+            fn eq<I>(self, other: I) -> bool
+            where
+                I: IntoIterator,
+                Self::Item: PartialEq<I::Item>,
+                Self: Sized,
+            {
+                self.inner.eq(other)
+            }
+
+            fn ne<I>(self, other: I) -> bool
+            where
+                I: IntoIterator,
+                Self::Item: PartialEq<I::Item>,
+                Self: Sized,
+            {
+                self.inner.ne(other)
+            }
+
+            fn lt<I>(self, other: I) -> bool
+            where
+                I: IntoIterator,
+                Self::Item: PartialOrd<I::Item>,
+                Self: Sized,
+            {
+                self.inner.lt(other)
+            }
+
+            fn le<I>(self, other: I) -> bool
+            where
+                I: IntoIterator,
+                Self::Item: PartialOrd<I::Item>,
+                Self: Sized,
+            {
+                self.inner.le(other)
+            }
+
+            fn gt<I>(self, other: I) -> bool
+            where
+                I: IntoIterator,
+                Self::Item: PartialOrd<I::Item>,
+                Self: Sized,
+            {
+                self.inner.gt(other)
+            }
+
+            fn ge<I>(self, other: I) -> bool
+            where
+                I: IntoIterator,
+                Self::Item: PartialOrd<I::Item>,
+                Self: Sized,
+            {
+                self.inner.ge(other)
+            }
+        };
+    }
+
+    /// Implements all methods of [`ExactSizeIterator`] trait by forwarding to an inner iterator.
+    ///
+    /// The inner iterator must be accessible through `self.inner`.
+    macro_rules! impl_wrapped_exact_size_iterator_methods {
+        () => {
+            #[inline]
+            fn len(&self) -> usize {
+                self.inner.len()
+            }
+        };
+    }
+
+    /// Implements all methods of [`DoubleEndedIterator`] trait by forwarding to an inner iterator.
+    ///
+    /// The inner iterator must be accessible through `self.inner`.
+    macro_rules! impl_wrapped_double_ended_iterator_methods {
+        () => {
+            fn next_back(&mut self) -> Option<Self::Item> {
+                self.inner.next_back()
+            }
+
+            fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
+                self.inner.nth_back(n)
+            }
+
+            fn rfold<B, F>(self, init: B, mut f: F) -> B
+            where
+                Self: Sized,
+                F: FnMut(B, Self::Item) -> B,
+            {
+                self.inner.rfold(init, &mut f)
+            }
+
+            fn rfind<P>(&mut self, predicate: P) -> Option<Self::Item>
+            where
+                Self: Sized,
+                P: FnMut(&Self::Item) -> bool,
+            {
+                self.inner.rfind(predicate)
+            }
+        };
+    }
+
+    /// Implements [`Iterator`], [`ExactSizeIterator`], [`DoubleEndedIterator`], and [`FusedIterator`]
+    /// by forwarding to an inner iterator.
+    ///
+    /// The inner iterator must be accessible through `self.inner`.
+    macro_rules! impl_wrapped_iter {
+        ($ident:ident<$inner:ident>) => {
+            impl<$inner> ::core::iter::Iterator for $ident<$inner>
+            where
+                $inner: Iterator,
+            {
+                impl_wrapped_iterator_methods!();
+            }
+
+            impl<$inner> ExactSizeIterator for $ident<$inner>
+            where
+                $inner: Iterator + ExactSizeIterator,
+            {
+                impl_wrapped_exact_size_iterator_methods!();
+            }
+
+            impl<$inner> DoubleEndedIterator for $ident<$inner>
+            where
+                $inner: Iterator + DoubleEndedIterator,
+            {
+                impl_wrapped_double_ended_iterator_methods!();
+            }
+
+            impl<$inner> FusedIterator for $ident<$inner> where $inner: Iterator + FusedIterator {}
+        };
+    }
+
     #[derive(Debug, Clone)]
     pub(crate) struct UniqueSortedIter<Inner> {
         inner: Inner,
@@ -320,70 +654,12 @@ mod iterators {
         /// # Safety
         ///
         /// * items yielded by `ìter` must be unique and sorted
-        pub(crate) unsafe fn new_unchecked(iter: Inner) -> Self {
+        pub(super) unsafe fn new_unchecked(iter: Inner) -> Self {
             UniqueSortedIter { inner: iter }
         }
     }
 
-    impl<Inner> Iterator for UniqueSortedIter<Inner>
-    where
-        Inner: Iterator,
-    {
-        type Item = Inner::Item;
-
-        #[inline]
-        fn next(&mut self) -> Option<Self::Item> {
-            self.inner.next()
-        }
-
-        #[inline]
-        fn size_hint(&self) -> (usize, Option<usize>) {
-            self.inner.size_hint()
-        }
-
-        #[inline]
-        fn count(self) -> usize
-        where
-            Self: Sized,
-        {
-            self.inner.count()
-        }
-
-        #[inline]
-        fn nth(&mut self, n: usize) -> Option<Self::Item> {
-            self.inner.nth(n)
-        }
-
-        #[inline]
-        fn collect<B>(self) -> B
-        where
-            Self: Sized,
-            B: FromIterator<Self::Item>,
-        {
-            self.inner.collect()
-        }
-    }
-
-    impl<I> ExactSizeIterator for UniqueSortedIter<I>
-    where
-        I: Iterator + ExactSizeIterator,
-    {
-        #[inline]
-        fn len(&self) -> usize {
-            self.inner.len()
-        }
-    }
-
-    impl<I> DoubleEndedIterator for UniqueSortedIter<I>
-    where
-        I: Iterator + DoubleEndedIterator,
-    {
-        fn next_back(&mut self) -> Option<Self::Item> {
-            self.inner.next_back()
-        }
-    }
-
-    impl<I> FusedIterator for UniqueSortedIter<I> where I: Iterator + FusedIterator {}
+    impl_wrapped_iter!(UniqueSortedIter<Inner>);
 
     #[derive(Debug, Clone)]
     pub(crate) struct UniqueIter<Inner> {
@@ -394,69 +670,12 @@ mod iterators {
         /// # Safety
         ///
         /// * items yielded by `ìter` must be unique
-        pub(in super::super) unsafe fn new_unchecked(iter: Inner) -> Self {
+        pub(super) unsafe fn new_unchecked(iter: Inner) -> Self {
             UniqueIter { inner: iter }
         }
     }
 
-    impl<Inner> Iterator for UniqueIter<Inner>
-    where
-        Inner: Iterator,
-    {
-        type Item = Inner::Item;
-
-        #[inline]
-        fn next(&mut self) -> Option<Self::Item> {
-            self.inner.next()
-        }
-
-        #[inline]
-        fn size_hint(&self) -> (usize, Option<usize>) {
-            self.inner.size_hint()
-        }
-
-        #[inline]
-        fn count(self) -> usize
-        where
-            Self: Sized,
-        {
-            self.inner.count()
-        }
-
-        #[inline]
-        fn nth(&mut self, n: usize) -> Option<Self::Item> {
-            self.inner.nth(n)
-        }
-
-        #[inline]
-        fn collect<B: FromIterator<Self::Item>>(self) -> B
-        where
-            Self: Sized,
-        {
-            self.inner.collect()
-        }
-    }
-
-    impl<I> ExactSizeIterator for UniqueIter<I>
-    where
-        I: Iterator + ExactSizeIterator,
-    {
-        #[inline]
-        fn len(&self) -> usize {
-            self.inner.len()
-        }
-    }
-
-    impl<I> DoubleEndedIterator for UniqueIter<I>
-    where
-        I: Iterator + DoubleEndedIterator,
-    {
-        fn next_back(&mut self) -> Option<Self::Item> {
-            self.inner.next_back()
-        }
-    }
-
-    impl<I> FusedIterator for UniqueIter<I> where I: Iterator + FusedIterator {}
+    impl_wrapped_iter!(UniqueIter<Inner>);
 }
 
 #[cfg(test)]
