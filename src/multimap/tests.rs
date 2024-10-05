@@ -12,6 +12,37 @@ use super::*;
 
 type IndexMultimapVec<K, V> = IndexMultimap<K, V, RandomState>;
 
+fn assert_panics<T>(f: impl FnOnce() -> T) {
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = catch_unwind(AssertUnwindSafe(f));
+    std::panic::set_hook(prev_hook);
+    assert!(result.is_err());
+}
+
+fn assert_panics_w_msg<T>(f: impl FnOnce() -> T, expected_msg: &str) {
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = catch_unwind(AssertUnwindSafe(f));
+    std::panic::set_hook(prev_hook);
+    match result {
+        Ok(_) => panic!("expected panic"),
+        Err(e) => {
+            let mut got_msg = "";
+            if let Some(s) = e.downcast_ref::<&str>() {
+                got_msg = *s;
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                got_msg = s;
+            }
+
+            assert!(
+                got_msg.contains(expected_msg),
+                "expected panic with message containing \"{expected_msg}\", got \"{got_msg}\""
+            )
+        }
+    }
+}
+
 #[test]
 fn it_works() {
     let mut map = IndexMultimapVec::new();
@@ -73,7 +104,7 @@ fn insert_append() {
         assert!(map.get(&elt).first().is_none());
     }
 
-    let present = vec![0, 12, 2];
+    let present = [0, 12, 2];
     let keys_len = map.len_keys();
     for (i, &it) in (insert.len()..).zip(present.iter()) {
         assert_eq!(map.len_pairs(), i);
@@ -99,7 +130,7 @@ fn extend() {
 }
 
 #[track_caller]
-fn check_subentries<K, V>(subentries: &Subset<'_, K, V>, expected: &[(usize, &K, &V)])
+fn check_subentries_full<K, V>(subentries: &Subset<'_, K, V>, expected: &[(usize, &K, &V)])
 where
     K: Eq + Debug,
     V: Eq + Debug,
@@ -111,14 +142,93 @@ where
     itertools::assert_equal(subentries.indices(), expected.iter().map(|(i, _, _)| i));
     itertools::assert_equal(subentries.keys(), expected.iter().map(|(_, k, _)| *k));
     itertools::assert_equal(subentries.values(), expected.iter().map(|(_, _, v)| *v));
-    for i in 0..subentries.len() {
+    for i in 0..subentries.len() + 2 {
         assert_eq!(subentries.nth(i).as_ref(), expected.get(i));
-        assert_eq!(subentries[i], *expected[i].2)
+
+        if i < subentries.len() {
+            assert_eq!(subentries[i], *expected[i].2);
+        } else {
+            assert_panics_w_msg(|| &subentries[i], "index out of bounds");
+        }
+
+        if i <= subentries.len() {
+            let (l, r) = subentries.split_at(i);
+            let (l_expected, r_expected) = expected.split_at(i);
+            check_subentries(&l, &l_expected);
+            check_subentries(&r, &r_expected);
+        } else {
+            assert_panics_w_msg(|| subentries.split_at(i), "mid > len");
+        }
+    }
+
+    let split_first = subentries.split_first();
+    let split_first_expected = expected.split_first();
+    assert_eq!(split_first.is_some(), split_first_expected.is_some());
+    if let (Some((f, rest)), Some((f_expected, rest_expected))) =
+        (split_first, split_first_expected)
+    {
+        assert_eq!(f, *f_expected);
+        check_subentries(&rest, &rest_expected);
+    }
+
+    let split_last = subentries.split_last();
+    let split_last_expected = expected.split_last();
+    assert_eq!(split_last.is_some(), split_last_expected.is_some());
+    if let (Some((last, rest)), Some((last_expected, rest_expected))) =
+        (split_last, split_last_expected)
+    {
+        assert_eq!(last, *last_expected);
+        check_subentries(&rest, &rest_expected);
+    }
+
+    let ranges = [
+        (Bound::Excluded(0), Bound::Excluded(0)),
+        (Bound::Included(0), Bound::Included(0)),
+        (Bound::Excluded(1), Bound::Excluded(1)),
+        (Bound::Included(1), Bound::Included(1)),
+        (Bound::Included(0), Bound::Unbounded),
+        (Bound::Included(0), Bound::Excluded(subentries.len())),
+        (Bound::Included(0), Bound::Included(subentries.len())),
+        (Bound::Included(0), Bound::Excluded(2)),
+        (Bound::Included(0), Bound::Included(2)),
+        (Bound::Unbounded, Bound::Unbounded),
+        (Bound::Unbounded, Bound::Excluded(subentries.len())),
+        (Bound::Unbounded, Bound::Included(subentries.len())),
+        (Bound::Unbounded, Bound::Excluded(2)),
+        (Bound::Unbounded, Bound::Included(2)),
+        (Bound::Excluded(subentries.len()), Bound::Unbounded),
+        (Bound::Included(subentries.len()), Bound::Unbounded),
+        (Bound::Included(1), Bound::Included(3)),
+        (Bound::Excluded(1), Bound::Included(3)),
+        (Bound::Included(3), Bound::Included(1)),
+        (Bound::Excluded(3), Bound::Included(1)),
+        (Bound::Included(1), Bound::Excluded(3)),
+        (Bound::Excluded(1), Bound::Excluded(3)),
+        (Bound::Included(3), Bound::Excluded(1)),
+    ];
+    for r in ranges {
+        let sub = subentries.get_range(r);
+        let expected = expected.get(r);
+
+        assert_eq!(sub.is_some(), expected.is_some());
+        if let (Some(sub), Some(expected)) = (sub, expected) {
+            check_subentries(&sub, expected);
+        }
     }
 }
 
 #[track_caller]
-fn check_subentries_mut(
+fn check_subentries<K, V>(subentries: &Subset<'_, K, V>, expected: &[(usize, &K, &V)])
+where
+    K: Eq + Debug,
+    V: Eq + Debug,
+{
+    assert_eq!(subentries.len(), expected.len());
+    itertools::assert_equal(subentries.iter(), expected.iter().copied());
+}
+
+#[track_caller]
+fn check_subentries_mut_full(
     subentries: &mut SubsetMut<'_, i32, i32>,
     expected: &[(usize, &i32, &mut i32)],
 ) {
@@ -152,14 +262,96 @@ fn check_subentries_mut(
         subentries.values_mut().map(|v| *v),
         expected.iter().map(|(_, _, v)| **v),
     );
+
     for i in 0..subentries.len() {
         assert_eq!(
             subentries.nth(i).map(|(i, k, v)| (i, *k, *v)),
             expected.get(i).map(|(i, k, v)| (*i, **k, **v))
         );
         assert_eq!(subentries.nth_mut(i).as_ref(), expected.get(i));
-        assert_eq!(subentries[i], *expected[i].2)
+
+        if i < subentries.len() {
+            assert_eq!(subentries[i], *expected[i].2);
+        } else {
+            assert_panics_w_msg(|| &subentries[i], "index out of bounds");
+        }
+
+        if i <= subentries.len() {
+            let (mut l, mut r) = subentries.split_at_mut(i);
+            let (l_expected, r_expected) = expected.split_at(i);
+            check_subentries_mut(&mut l, l_expected);
+            check_subentries_mut(&mut r, r_expected);
+        } else {
+            assert_panics_w_msg(|| subentries.split_at(i), "mid > len");
+        }
     }
+
+    let split_first = subentries.split_first_mut();
+    let split_first_expected = expected.split_first();
+    assert_eq!(split_first.is_some(), split_first_expected.is_some());
+    if let (Some((f, mut rest)), Some((f_expected, rest_expected))) =
+        (split_first, split_first_expected)
+    {
+        assert_eq!(f, *f_expected);
+        check_subentries_mut(&mut rest, &rest_expected);
+    }
+
+    let split_last = subentries.split_last_mut();
+    let split_last_expected = expected.split_last();
+    assert_eq!(split_last.is_some(), split_last_expected.is_some());
+    if let (Some((last, mut rest)), Some((last_expected, rest_expected))) =
+        (split_last, split_last_expected)
+    {
+        assert_eq!(last, *last_expected);
+        check_subentries_mut(&mut rest, &rest_expected);
+    }
+
+    let ranges = [
+        (Bound::Excluded(0), Bound::Excluded(0)),
+        (Bound::Included(0), Bound::Included(0)),
+        (Bound::Excluded(1), Bound::Excluded(1)),
+        (Bound::Included(1), Bound::Included(1)),
+        (Bound::Included(0), Bound::Unbounded),
+        (Bound::Included(0), Bound::Excluded(subentries.len())),
+        (Bound::Included(0), Bound::Included(subentries.len())),
+        (Bound::Included(0), Bound::Excluded(2)),
+        (Bound::Included(0), Bound::Included(2)),
+        (Bound::Unbounded, Bound::Unbounded),
+        (Bound::Unbounded, Bound::Excluded(subentries.len())),
+        (Bound::Unbounded, Bound::Included(subentries.len())),
+        (Bound::Unbounded, Bound::Excluded(2)),
+        (Bound::Unbounded, Bound::Included(2)),
+        (Bound::Excluded(subentries.len()), Bound::Unbounded),
+        (Bound::Included(subentries.len()), Bound::Unbounded),
+        (Bound::Included(1), Bound::Included(3)),
+        (Bound::Excluded(1), Bound::Included(3)),
+        (Bound::Included(3), Bound::Included(1)),
+        (Bound::Excluded(3), Bound::Included(1)),
+        (Bound::Included(1), Bound::Excluded(3)),
+        (Bound::Excluded(1), Bound::Excluded(3)),
+        (Bound::Included(3), Bound::Excluded(1)),
+    ];
+    for r in ranges {
+        let sub = subentries.get_range_mut(r);
+        let expected = expected.get(r);
+
+        assert_eq!(sub.is_some(), expected.is_some());
+        if let (Some(mut sub), Some(expected)) = (sub, expected) {
+            check_subentries_mut(&mut sub, expected);
+        }
+    }
+}
+
+#[track_caller]
+fn check_subentries_mut(
+    subentries: &mut SubsetMut<'_, i32, i32>,
+    expected: &[(usize, &i32, &mut i32)],
+) {
+    assert_eq!(subentries.len(), expected.len());
+    itertools::assert_equal(
+        subentries.iter_mut().map(|(i, k, v)| (i, *k, *v)),
+        expected.iter().map(|a| (a.0, *a.1, *a.2)),
+    );
 }
 
 #[test]
@@ -169,10 +361,10 @@ fn get() {
     let mut map = IndexMultimapVec::with_capacity(insert.len(), insert.len());
 
     let get = map.get(&5);
-    check_subentries(&get, &[]);
+    check_subentries_full(&get, &[]);
 
     let mut get_mut = map.get_mut(&8);
-    check_subentries_mut(&mut get_mut, &[]);
+    check_subentries_mut_full(&mut get_mut, &[]);
 
     assert!(map.get_index(5).is_none());
     assert!(map.get_index_mut(6).is_none());
@@ -183,10 +375,10 @@ fn get() {
 
     for key in not_present {
         let get = map.get(&key);
-        check_subentries(&get, &[]);
+        check_subentries_full(&get, &[]);
 
         let mut get_mut = map.get_mut(&key);
-        check_subentries_mut(&mut get_mut, &[]);
+        check_subentries_mut_full(&mut get_mut, &[]);
     }
 
     for (index, &key) in insert.iter().enumerate() {
@@ -201,10 +393,10 @@ fn get() {
         assert_eq!(map.get_index_mut(index), Some((&key, &mut val)));
 
         let get = map.get(&key);
-        check_subentries(&get, &[(index, &key, &val)]);
+        check_subentries_full(&get, &[(index, &key, &val)]);
 
         let mut get_mut = map.get_mut(&key);
-        check_subentries_mut(&mut get_mut, &[(index, &key, &mut val)]);
+        check_subentries_mut_full(&mut get_mut, &[(index, &key, &mut val)]);
 
         assert!(map.get_indices_of(&key).contains(&index));
     }
@@ -213,7 +405,7 @@ fn get() {
         assert!(map.get(&elt).first().is_none());
     }
 
-    let present = vec![0, 12, 2];
+    let present = [0, 12, 2];
     for &it in present.iter() {
         map.insert_append(it, it * 1000 + 2);
     }
@@ -231,13 +423,13 @@ fn get() {
         let get = map.get(&key);
         match key {
             0 => {
-                check_subentries(&get, &[(0, &0, &1), (index, &key, &val)]);
+                check_subentries_full(&get, &[(0, &0, &1), (index, &key, &val)]);
             }
             12 => {
-                check_subentries(&get, &[(3, &12, &12001), (index, &key, &val)]);
+                check_subentries_full(&get, &[(3, &12, &12001), (index, &key, &val)]);
             }
             2 => {
-                check_subentries(&get, &[(2, &2, &2001), (index, &key, &val)]);
+                check_subentries_full(&get, &[(2, &2, &2001), (index, &key, &val)]);
             }
             _ => {}
         }
@@ -245,16 +437,22 @@ fn get() {
         let mut get_mut = map.get_mut(&key);
         match key {
             0 => {
-                check_subentries_mut(&mut get_mut, &[(0, &0, &mut 1), (index, &key, &mut val)]);
+                check_subentries_mut_full(
+                    &mut get_mut,
+                    &[(0, &0, &mut 1), (index, &key, &mut val)],
+                );
             }
             12 => {
-                check_subentries_mut(
+                check_subentries_mut_full(
                     &mut get_mut,
                     &[(3, &12, &mut 12001), (index, &key, &mut val)],
                 );
             }
             2 => {
-                check_subentries_mut(&mut get_mut, &[(2, &2, &mut 2001), (index, &key, &mut val)]);
+                check_subentries_mut_full(
+                    &mut get_mut,
+                    &[(2, &2, &mut 2001), (index, &key, &mut val)],
+                );
             }
             _ => {}
         }
@@ -284,6 +482,669 @@ where
 
         itertools::assert_equal(map.get(key).iter(), expected_items);
     }
+}
+
+#[test]
+fn subset_split_at() {
+    let insert = [
+        (0, 0),
+        (4, 41),
+        (4, 42),
+        (3, 3),
+        (5, 51),
+        (4, 43),
+        (5, 52),
+        (5, 53),
+    ];
+    let mut map = IndexMultimapVec::from_iter(insert);
+
+    let l_expected = &[];
+    let r_expected = &[(1, &4, &41), (2, &4, &42), (5, &4, &43)];
+    let set = map.get_mut(&4);
+    let (l, r) = set.split_at(0);
+    check_subentries(&l, l_expected);
+    check_subentries(&r, r_expected);
+    let set = map.get(&4);
+    let (l, r) = set.split_at(0);
+    check_subentries(&l, l_expected);
+    check_subentries(&r, r_expected);
+
+    let l_expected = &[(1, &4, &41), (2, &4, &42)];
+    let r_expected = &[(5, &4, &43)];
+    let set = map.get_mut(&4);
+    let (l, r) = set.split_at(2);
+    check_subentries(&l, l_expected);
+    check_subentries(&r, r_expected);
+    let set = map.get(&4);
+    let (l, r) = set.split_at(2);
+    check_subentries(&l, l_expected);
+    check_subentries(&r, r_expected);
+
+    let l_expected = &[(1, &4, &41), (2, &4, &42), (5, &4, &43)];
+    let r_expected = &[];
+    let set = map.get_mut(&4);
+    let (l, r) = set.split_at(3);
+    check_subentries(&l, l_expected);
+    assert!(r.is_empty());
+    check_subentries(&r, r_expected);
+    let set = map.get(&4);
+    let (l, r) = set.split_at(3);
+    check_subentries(&l, l_expected);
+    assert!(r.is_empty());
+    check_subentries(&r, r_expected);
+
+    let set = map.get_mut(&4);
+    assert_panics_w_msg(|| set.split_at(4), "mid > len");
+    let set = map.get(&4);
+    assert_panics_w_msg(|| set.split_at(4), "mid > len");
+}
+
+#[test]
+fn subset_mut_split_at_mut() {
+    let insert = [
+        (0, 0),
+        (4, 41),
+        (4, 42),
+        (3, 3),
+        (5, 51),
+        (4, 43),
+        (5, 52),
+        (5, 53),
+    ];
+    let mut map = IndexMultimapVec::from_iter(insert);
+
+    let mut set = map.get_mut(&4);
+
+    let (mut l, mut r) = set.split_at_mut(0);
+    let l_expected = &[];
+    let r_expected = &[(1, &4, &mut 41), (2, &4, &mut 42), (5, &4, &mut 43)];
+
+    check_subentries_mut(&mut l, l_expected);
+    check_subentries_mut(&mut r, r_expected);
+    let (mut l, mut r) = set.split_into(0);
+    check_subentries_mut(&mut l, l_expected);
+    check_subentries_mut(&mut r, r_expected);
+
+    let mut set = map.get_mut(&4);
+    let (mut l, mut r) = set.split_at_mut(2);
+    let l_expected = &[(1, &4, &mut 41), (2, &4, &mut 42)];
+    let r_expected = &[(5, &4, &mut 43)];
+    check_subentries_mut(&mut l, l_expected);
+    check_subentries_mut(&mut r, r_expected);
+    let (mut l, mut r) = set.split_into(2);
+    check_subentries_mut(&mut l, l_expected);
+    check_subentries_mut(&mut r, r_expected);
+
+    let mut set = map.get_mut(&4);
+    let (mut l, mut r) = set.split_at_mut(3);
+    let l_expected = &[(1, &4, &mut 41), (2, &4, &mut 42), (5, &4, &mut 43)];
+    let r_expected = &[];
+    check_subentries_mut(&mut l, l_expected);
+    assert!(r.is_empty());
+    check_subentries_mut(&mut r, r_expected);
+    let (mut l, mut r) = set.split_into(3);
+    check_subentries_mut(&mut l, l_expected);
+    assert!(r.is_empty());
+    check_subentries_mut(&mut r, r_expected);
+
+    let mut set = map.get_mut(&4);
+    assert_panics_w_msg(|| set.split_at_mut(4), "mid > len");
+    assert_panics_w_msg(|| set.split_into(4), "mid > len");
+}
+
+#[test]
+fn subset_split_first() {
+    let insert = [
+        (0, 0),
+        (4, 41),
+        (4, 42),
+        (3, 3),
+        (5, 51),
+        (4, 43),
+        (5, 52),
+        (5, 53),
+    ];
+    let mut map = IndexMultimapVec::from_iter(insert);
+
+    let l_expected = (1, &4, &41);
+    let r_expected = &[(2, &4, &42), (5, &4, &43)];
+
+    let set = map.get(&4);
+    let (l, r) = set.split_first().unwrap();
+    assert_eq!(l, l_expected);
+    check_subentries(&r, r_expected);
+
+    let mut set = map.get_mut(&4);
+
+    let (l, r) = set.split_first().unwrap();
+    assert_eq!(l, l_expected);
+    check_subentries(&r, r_expected);
+
+    let l_expected = (1, &4, &mut 41);
+    let r_expected = &[(2, &4, &mut 42), (5, &4, &mut 43)];
+    let (l, mut r) = set.split_first_mut().unwrap();
+    assert_eq!(l, l_expected);
+    check_subentries_mut(&mut r, r_expected);
+
+    let mut set = map.get_mut(&7);
+    assert!(set.split_first().is_none());
+    assert!(set.split_first_mut().is_none());
+}
+
+#[test]
+fn subset_split_last() {
+    let insert = [
+        (0, 0),
+        (4, 41),
+        (4, 42),
+        (3, 3),
+        (5, 51),
+        (4, 43),
+        (5, 52),
+        (5, 53),
+    ];
+    let mut map = IndexMultimapVec::from_iter(insert);
+
+    let l_expected = (5, &4, &43);
+    let r_expected = &[(1, &4, &41), (2, &4, &42)];
+
+    let set = map.get(&4);
+    let (l, r) = set.split_last().unwrap();
+    assert_eq!(l, l_expected);
+    check_subentries(&r, r_expected);
+
+    let mut set = map.get_mut(&4);
+
+    let (l, r) = set.split_last().unwrap();
+    assert_eq!(l, l_expected);
+    check_subentries(&r, r_expected);
+
+    let l_expected = (5, &4, &mut 43);
+    let r_expected = &[(1, &4, &mut 41), (2, &4, &mut 42)];
+    let (l, mut r) = set.split_last_mut().unwrap();
+    assert_eq!(l, l_expected);
+    check_subentries_mut(&mut r, r_expected);
+
+    let mut set = map.get_mut(&7);
+    assert!(set.split_last().is_none());
+    assert!(set.split_last_mut().is_none());
+}
+
+#[test]
+fn subset_split_mut_aftermath() {
+    /*
+    Tests whether any operation on a subset could create aliasing references
+    after a split_at_mut or split_into.
+    Those methods internally clone a RawSliceMut which could lead to aliasing references
+    if not properly handled.
+
+    Previously there were some issues with mixing pointers and references.
+    This test under MIRI would have discovered those.
+    */
+
+    let insert = [
+        0, 4, 2, 4, 12, 8, 7, 4, 4, 11, 8, 4, 4, 8, 5, 3, 17, 4, 19, 22, 23, 0,
+    ];
+    let mut map = IndexMultimapVec::new();
+
+    for &elt in &insert {
+        map.insert_append(elt, elt * 1000 + 1);
+    }
+
+    let mut subset_mut = map.get_mut(&4);
+
+    let subset_mut_ops = vec![
+        SubsetMutOp::Len,
+        SubsetMutOp::IsEmpty,
+        SubsetMutOp::Indices,
+        SubsetMutOp::GetRange(0..3),
+        SubsetMutOp::GetRangeMut(0..3),
+        SubsetMutOp::Iter,
+        SubsetMutOp::IterMut,
+        SubsetMutOp::Keys,
+        SubsetMutOp::Values,
+        SubsetMutOp::ValuesMut,
+        SubsetMutOp::AsSubset,
+        SubsetMutOp::SplitAt(2),
+        SubsetMutOp::SplitAtMut(2),
+        SubsetMutOp::Nth(2),
+        SubsetMutOp::NthMut(2),
+        SubsetMutOp::First,
+        SubsetMutOp::FirstMut,
+        SubsetMutOp::Last,
+        SubsetMutOp::LastMut,
+        SubsetMutOp::SplitFirst,
+        SubsetMutOp::SplitFirstMut,
+        SubsetMutOp::SplitLast,
+        SubsetMutOp::SplitLastMut,
+        SubsetMutOp::TakeFirst,
+        SubsetMutOp::TakeLast,
+        SubsetMutOp::GetManyMut([1, 2, 0]),
+    ];
+
+    for op1 in subset_mut_ops.clone() {
+        for op2 in subset_mut_ops.clone() {
+            let (mut l, mut r) = subset_mut.split_at_mut(3);
+
+            let mut l = do_subsetmut_op(&mut l, &op1);
+            let mut r = do_subsetmut_op(&mut r, &op2);
+
+            do_subset_mut_followup(&mut l);
+            do_subset_mut_followup(&mut r);
+
+            // Doing the follow up ops in different order can discover issues
+            let (mut l, mut r) = subset_mut.split_at_mut(3);
+
+            let mut l = do_subsetmut_op(&mut l, &op1);
+            let mut r = do_subsetmut_op(&mut r, &op2);
+
+            do_subset_mut_followup(&mut r);
+            do_subset_mut_followup(&mut l);
+        }
+    }
+
+    for op1 in subset_mut_ops.clone() {
+        for op2 in subset_mut_ops.clone() {
+            let subset_mut = map.get_mut(&4);
+            let (mut l, mut r) = subset_mut.split_into(3);
+
+            let mut l = do_subsetmut_op(&mut l, &op1);
+            let mut r = do_subsetmut_op(&mut r, &op2);
+
+            do_subset_mut_followup(&mut l);
+            do_subset_mut_followup(&mut r);
+
+            // Doing the follow up ops in different order can discover issues
+            let subset_mut = map.get_mut(&4);
+            let (mut l, mut r) = subset_mut.split_into(3);
+
+            let mut l = do_subsetmut_op(&mut l, &op1);
+            let mut r = do_subsetmut_op(&mut r, &op2);
+
+            do_subset_mut_followup(&mut r);
+            do_subset_mut_followup(&mut l);
+        }
+    }
+}
+
+#[test]
+fn subset_split_mut_aftermath_into_ops() {
+    let insert = [
+        0, 4, 2, 4, 12, 8, 7, 4, 4, 11, 8, 4, 4, 8, 5, 3, 17, 4, 19, 22, 23, 0,
+    ];
+    let mut map = IndexMultimapVec::new();
+
+    for &elt in &insert {
+        map.insert_append(elt, elt * 1000 + 1);
+    }
+
+    let mut subset_mut = map.get_mut(&4);
+
+    let subset_mut_ops = vec![
+        SubsetMutOpInto::IntoRange(0..3),
+        SubsetMutOpInto::IntoIter,
+        SubsetMutOpInto::IntoKeys,
+        SubsetMutOpInto::IntoValues,
+        SubsetMutOpInto::IntoSubset,
+        SubsetMutOpInto::SplitInto(2),
+        SubsetMutOpInto::IntoNthMut(2),
+        SubsetMutOpInto::IntoFirst,
+        SubsetMutOpInto::IntoLast,
+        SubsetMutOpInto::IntoManyMut([1, 2, 0]),
+    ];
+
+    for op1 in subset_mut_ops.clone() {
+        for op2 in subset_mut_ops.clone() {
+            let (l, r) = subset_mut.split_at_mut(3);
+
+            let mut l = do_subsetmut_op_into(l, &op1);
+            let mut r = do_subsetmut_op_into(r, &op2);
+
+            do_subset_mut_followup(&mut l);
+            do_subset_mut_followup(&mut r);
+
+            // Doing the follow up ops in different order can discover issues
+            let (l, r) = subset_mut.split_at_mut(3);
+
+            let mut l = do_subsetmut_op_into(l, &op1);
+            let mut r = do_subsetmut_op_into(r, &op2);
+
+            do_subset_mut_followup(&mut r);
+            do_subset_mut_followup(&mut l);
+        }
+    }
+
+    for op1 in subset_mut_ops.clone() {
+        for op2 in subset_mut_ops.clone() {
+            let subset_mut = map.get_mut(&4);
+            let (l, r) = subset_mut.split_into(3);
+
+            let mut l = do_subsetmut_op_into(l, &op1);
+            let mut r = do_subsetmut_op_into(r, &op2);
+
+            do_subset_mut_followup(&mut l);
+            do_subset_mut_followup(&mut r);
+
+            // Doing the follow up ops in different order can discover issues
+            let subset_mut = map.get_mut(&4);
+            let (l, r) = subset_mut.split_into(3);
+
+            let mut l = do_subsetmut_op_into(l, &op1);
+            let mut r = do_subsetmut_op_into(r, &op2);
+
+            do_subset_mut_followup(&mut r);
+            do_subset_mut_followup(&mut l);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum SubsetMutOp {
+    Len,
+    IsEmpty,
+    Indices,
+    Nth(usize),
+    NthMut(usize),
+    First,
+    FirstMut,
+    Last,
+    LastMut,
+    GetRange(ops::Range<usize>),
+    GetRangeMut(ops::Range<usize>),
+    SplitAt(usize),
+    SplitAtMut(usize),
+    AsSubset,
+    Iter,
+    IterMut,
+    Keys,
+    Values,
+    ValuesMut,
+    SplitFirst,
+    SplitFirstMut,
+    SplitLast,
+    SplitLastMut,
+    TakeFirst,
+    TakeLast,
+    GetManyMut([usize; 3]),
+}
+
+#[derive(Clone, Debug)]
+enum SubsetMutOpInto {
+    IntoNthMut(usize),
+    IntoFirst,
+    IntoLast,
+    IntoRange(ops::Range<usize>),
+    SplitInto(usize),
+    IntoSubset,
+    IntoIter,
+    IntoKeys,
+    IntoValues,
+    IntoManyMut([usize; 3]),
+}
+
+fn do_subsetmut_op<'b, 'a, K, V>(
+    subset: &'b mut SubsetMut<'a, K, V>,
+    op: &SubsetMutOp,
+) -> SubsetMutOpResult<'b, 'a, K, V> {
+    use SubsetMutOp::*;
+    match op {
+        GetRange(range) => return SubsetMutOpResult::Subset(subset.get_range(range.clone())),
+        GetRangeMut(range) => {
+            return SubsetMutOpResult::SubsetMut(subset.get_range_mut(range.clone()))
+        }
+        Iter => return SubsetMutOpResult::Iter(subset.iter()),
+        IterMut => return SubsetMutOpResult::IterMut(subset.iter_mut()),
+        Keys => return SubsetMutOpResult::Keys(subset.keys()),
+        Values => return SubsetMutOpResult::Values(subset.values()),
+        ValuesMut => return SubsetMutOpResult::ValuesMut(subset.values_mut()),
+        AsSubset => return SubsetMutOpResult::AsSubset(subset.as_subset()),
+        SplitAt(range) => return SubsetMutOpResult::SplitAt(subset.split_at(*range)),
+        SplitAtMut(range) => return SubsetMutOpResult::SplitAtMut(subset.split_at_mut(*range)),
+        SplitFirst => {
+            let res = subset.split_first().map(|a| a.1);
+            return SubsetMutOpResult::Subset(res);
+        }
+        SplitFirstMut => {
+            let res = subset.split_first_mut().map(|a| a.1);
+            return SubsetMutOpResult::SubsetMut(res);
+        }
+        SplitLast => {
+            let res = subset.split_last().map(|a| a.1);
+            return SubsetMutOpResult::Subset(res);
+        }
+        SplitLastMut => {
+            let res = subset.split_last_mut().map(|a| a.1);
+            return SubsetMutOpResult::SubsetMut(res);
+        }
+        TakeFirst => {
+            subset.take_first();
+        }
+        TakeLast => {
+            subset.take_last();
+        }
+        Nth(n) => {
+            subset.nth(*n);
+        }
+        NthMut(n) => {
+            subset.nth_mut(*n);
+        }
+        First => {
+            subset.first();
+        }
+        FirstMut => {
+            subset.first_mut();
+        }
+        Last => {
+            subset.last();
+        }
+        LastMut => {
+            subset.last_mut();
+        }
+        Len => {
+            subset.len();
+        }
+        IsEmpty => {
+            subset.is_empty();
+        }
+        Indices => {
+            subset.indices();
+        }
+        GetManyMut(i) => {
+            subset.get_many_mut(*i);
+        }
+    }
+
+    SubsetMutOpResult::SubsetMutRef(subset)
+}
+
+fn do_subsetmut_op_into<'b, 'a, K, V>(
+    subset: SubsetMut<'a, K, V>,
+    op: &SubsetMutOpInto,
+) -> SubsetMutOpResult<'b, 'a, K, V> {
+    use SubsetMutOpInto::*;
+    match op {
+        IntoFirst => {
+            subset.into_first_mut();
+        }
+        IntoLast => {
+            subset.into_last_mut();
+        }
+        IntoNthMut(n) => {
+            subset.into_nth_mut(*n);
+        }
+        IntoRange(range) => return SubsetMutOpResult::SubsetMut(subset.into_range(range.clone())),
+        IntoSubset => return SubsetMutOpResult::Subset(Some(subset.into_subset())),
+        IntoIter => return SubsetMutOpResult::IterMut(subset.into_iter()),
+        IntoKeys => return SubsetMutOpResult::Keys(subset.into_keys()),
+        IntoValues => return SubsetMutOpResult::ValuesMut(subset.into_values()),
+        SplitInto(at) => return SubsetMutOpResult::SplitAtMut(subset.split_into(*at)),
+        IntoManyMut(i) => {
+            subset.into_many_mut(*i);
+        }
+    }
+
+    SubsetMutOpResult::None
+}
+
+enum SubsetMutOpResult<'a, 'b, K, V> {
+    Subset(Option<Subset<'a, K, V>>),
+    SubsetMut(Option<SubsetMut<'a, K, V>>),
+    SubsetMutRef(&'a mut SubsetMut<'b, K, V>),
+    Iter(SubsetIter<'a, K, V>),
+    IterMut(SubsetIterMut<'a, K, V>),
+    Keys(SubsetKeys<'a, K, V>),
+    Values(SubsetValues<'a, K, V>),
+    ValuesMut(SubsetValuesMut<'a, K, V>),
+    AsSubset(Subset<'a, K, V>),
+    SplitAt((Subset<'a, K, V>, Subset<'a, K, V>)),
+    SplitAtMut((SubsetMut<'a, K, V>, SubsetMut<'a, K, V>)),
+    None,
+}
+
+fn do_subset_mut_followup<K, V>(result: &mut SubsetMutOpResult<'_, '_, K, V>) {
+    use SubsetMutOpResult as R;
+    match result {
+        R::Subset(Option::Some(subset)) => {
+            let _ = subset.iter().collect::<Vec<_>>();
+        }
+        R::SubsetMut(Option::Some(subset_mut)) => {
+            let _ = subset_mut.iter_mut().collect::<Vec<_>>();
+        }
+        R::SubsetMutRef(subset_mut_ref) => {
+            let _ = subset_mut_ref.iter_mut().collect::<Vec<_>>();
+        }
+        R::Iter(subset_iter) => {
+            let _ = subset_iter.collect::<Vec<_>>();
+        }
+        R::IterMut(subset_iter_mut) => {
+            let _ = subset_iter_mut.collect::<Vec<_>>();
+        }
+        R::Keys(subset_keys) => {
+            let _ = subset_keys.collect::<Vec<_>>();
+        }
+        R::Values(subset_values) => {
+            let _ = subset_values.collect::<Vec<_>>();
+        }
+        R::ValuesMut(subset_values_mut) => {
+            let _ = subset_values_mut.collect::<Vec<_>>();
+        }
+        R::AsSubset(subset) => {
+            let _ = subset.iter().collect::<Vec<_>>();
+        }
+        R::SplitAt((l, r)) => {
+            let _ = l.iter().collect::<Vec<_>>();
+            let _ = r.iter().collect::<Vec<_>>();
+        }
+        R::SplitAtMut((l, r)) => {
+            let _ = l.iter_mut().collect::<Vec<_>>();
+            let _ = r.iter_mut().collect::<Vec<_>>();
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn subset_mut_take_first() {
+    let insert = [
+        (0, 0),
+        (4, 41),
+        (4, 42),
+        (3, 3),
+        (5, 51),
+        (4, 43),
+        (5, 52),
+        (5, 53),
+    ];
+    let mut map = IndexMultimapVec::from_iter(insert);
+
+    let mut set = map.get_mut(&4);
+
+    let l = set.take_first().unwrap();
+    assert_eq!(l, (1, &4, &mut 41));
+    check_subentries_mut(&mut set, &[(2, &4, &mut 42), (5, &4, &mut 43)]);
+
+    let mut set = map.get_mut(&7);
+    assert!(set.take_first().is_none());
+}
+
+#[test]
+fn subset_mut_take_last() {
+    let insert = [
+        (0, 0),
+        (4, 41),
+        (4, 42),
+        (3, 3),
+        (5, 51),
+        (4, 43),
+        (5, 52),
+        (5, 53),
+    ];
+    let mut map = IndexMultimapVec::from_iter(insert);
+
+    let mut set = map.get_mut(&4);
+
+    let l = set.take_last().unwrap();
+    assert_eq!(l, (5, &4, &mut 43));
+    check_subentries_mut(&mut set, &[(1, &4, &mut 41), (2, &4, &mut 42)]);
+
+    let mut set = map.get_mut(&7);
+    assert!(set.take_last().is_none());
+}
+
+#[test]
+fn subset_get_many_mut() {
+    let insert = [
+        0, 4, 2, 4, 12, 8, 7, 4, 4, 11, 8, 4, 4, 8, 5, 3, 17, 4, 19, 22, 23, 0,
+    ];
+    let mut map = IndexMultimapVec::new();
+
+    for &elt in &insert {
+        map.insert_append(elt, elt * 1000 + 1);
+    }
+
+    let mut subset_mut = map.get_mut(&4);
+    let many = subset_mut.get_many_mut([1, 4, 3]).unwrap();
+    let expected = [(3, &4, &mut 4001), (11, &4, &mut 4001), (8, &4, &mut 4001)];
+    assert_eq!(many, expected);
+    let many = subset_mut.into_many_mut([1, 4, 3]).unwrap();
+    assert_eq!(many, expected);
+
+    let mut subset_mut = map.get_mut(&4);
+    let duplicate = subset_mut.get_many_mut([1, 2, 3, 2]);
+    assert!(duplicate.is_none());
+    let duplicate = subset_mut.into_many_mut([1, 2, 3, 2]);
+    assert!(duplicate.is_none());
+
+    let mut subset_mut = map.get_mut(&4);
+    let out_of_bound = subset_mut.get_many_mut([1, 100]);
+    assert!(out_of_bound.is_none());
+    let out_of_bound = subset_mut.into_many_mut([1, 100]);
+    assert!(out_of_bound.is_none());
+}
+
+#[test]
+fn subset_into_many_mut() {
+    let insert = [
+        0, 4, 2, 4, 12, 8, 7, 4, 4, 11, 8, 4, 4, 8, 5, 3, 17, 4, 19, 22, 23, 0,
+    ];
+    let mut map = IndexMultimapVec::new();
+
+    for &elt in &insert {
+        map.insert_append(elt, elt * 1000 + 1);
+    }
+
+    let mut subset_mut = map.get_mut(&4);
+    let many = subset_mut.get_many_mut([1, 4, 3]).unwrap();
+    assert_eq!(
+        many,
+        [(3, &4, &mut 4001), (11, &4, &mut 4001), (8, &4, &mut 4001)]
+    );
+
+    let duplicate = subset_mut.get_many_mut([1, 2, 3, 2]);
+    assert!(duplicate.is_none());
+
+    let out_of_bound = subset_mut.get_many_mut([1, 100]);
+    assert!(out_of_bound.is_none());
 }
 
 #[test]
@@ -909,7 +1770,7 @@ fn test_entry_retain(insert: &[(i32, (i32, bool))]) {
             .filter(|(_, (k, _))| k == &4i32)
             .map(|(i, (k, v))| (i, k, v))
             .collect();
-        check_subentries(&subset, &expected);
+        check_subentries_full(&subset, &expected);
     }
 
     let expected: Vec<_> = insert
@@ -1183,15 +2044,15 @@ fn entry_insert_append() {
     let mut map = IndexMultimapVec::new();
     map.insert_append(1, "1");
     let mut entry = map.entry(1).insert_append("11");
-    check_subentries(&entry.as_subset(), &[(0, &1, &"1"), (1, &1, &"11")]);
+    check_subentries_full(&entry.as_subset(), &[(0, &1, &"1"), (1, &1, &"11")]);
     entry.insert_append("12");
-    check_subentries(
+    check_subentries_full(
         &entry.as_subset(),
         &[(0, &1, &"1"), (1, &1, &"11"), (2, &1, &"12")],
     );
 
     let entry = map.entry(2).insert_append("21");
-    check_subentries(&entry.as_subset(), &[(3, &2, &"21")]);
+    check_subentries_full(&entry.as_subset(), &[(3, &2, &"21")]);
 
     match map.entry(3) {
         Entry::Occupied(_) => unreachable!(),

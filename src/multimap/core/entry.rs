@@ -657,7 +657,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         let indices = self.indices();
         let range = try_simplify_range(range, indices.len())?;
         match indices.get(range) {
-            Some(indices) => Some(unsafe { Subset::from_slice_unchecked(self.pairs, indices) }),
+            Some(indices) => Some(Subset::new(self.pairs, indices)),
             None => None,
         }
     }
@@ -673,7 +673,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     {
         let indices = self.indices_entry.get().as_unique_slice();
         match indices.get_range(range) {
-            Some(indices) => Some(unsafe { SubsetMut::from_slice_unchecked(self.pairs, indices) }),
+            Some(indices) => Some(SubsetMut::new(self.pairs, indices)),
             None => None,
         }
     }
@@ -689,7 +689,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     {
         let indices = self.indices_entry.into_mut().as_unique_slice();
         match indices.get_range(range) {
-            Some(indices) => Some(unsafe { SubsetMut::from_slice_unchecked(self.pairs, indices) }),
+            Some(indices) => Some(SubsetMut::new(self.pairs, indices)),
             None => None,
         }
     }
@@ -957,13 +957,13 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Returns an iterator over all the pairs in this entry.
     pub fn iter(&self) -> SubsetIter<'_, K, V> {
-        unsafe { SubsetIter::from_slice_unchecked(self.pairs, self.indices_entry.get().iter()) }
+        SubsetIter::new(self.pairs, self.indices_entry.get().iter())
     }
 
     /// Returns a mutable iterator over all the pairs in this entry.
     pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V> {
         let indices = self.indices_entry.get();
-        unsafe { SubsetIterMut::from_slice_unchecked(self.pairs, indices.as_unique_slice().iter()) }
+        SubsetIterMut::new(self.pairs, indices.as_unique_slice().iter())
     }
 
     /// Returns an iterator over all the keys in this entry.
@@ -976,45 +976,39 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// [`Hash`]: ::core::hash::Hash
     /// [`Eq`]: ::core::cmp::Eq
     pub fn keys(&self) -> SubsetKeys<'_, K, V> {
-        unsafe { SubsetKeys::from_slice_unchecked(self.pairs, self.indices_entry.get().iter()) }
+        SubsetKeys::new(self.pairs, self.indices_entry.get().iter())
     }
 
     /// Converts into a mutable iterator over all the keys in this subset.
     pub fn into_keys(self) -> SubsetKeys<'a, K, V> {
-        unsafe {
-            SubsetKeys::from_slice_unchecked(self.pairs, self.indices_entry.into_mut().iter())
-        }
+        SubsetKeys::new(self.pairs, self.indices_entry.into_mut().iter())
     }
 
     /// Returns an iterator over all the values in this entry.
     pub fn values(&self) -> SubsetValues<'_, K, V> {
-        unsafe { SubsetValues::from_slice_unchecked(self.pairs, self.indices_entry.get().iter()) }
+        SubsetValues::new(self.pairs, self.indices_entry.get().iter())
     }
 
     /// Returns a mutable iterator over all the values in this entry.
     pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V> {
         let indices = self.indices_entry.get();
-        unsafe {
-            SubsetValuesMut::from_slice_unchecked(self.pairs, indices.as_unique_slice().iter())
-        }
+        SubsetValuesMut::new(self.pairs, indices.as_unique_slice().iter())
     }
 
     /// Converts into an iterator over all the values in this entry.
     pub fn into_values(self) -> SubsetValuesMut<'a, K, V> {
         let indices = self.indices_entry.into_mut();
-        unsafe {
-            SubsetValuesMut::from_slice_unchecked(self.pairs, indices.as_unique_slice().iter())
-        }
+        SubsetValuesMut::new(self.pairs, indices.as_unique_slice().iter())
     }
 
     /// Returns a slice like construct with all the values associated with this entry in the map.
     pub fn as_subset(&self) -> Subset<'_, K, V> {
-        unsafe { Subset::from_slice_unchecked(self.pairs, self.indices()) }
+        Subset::new(self.pairs, self.indices())
     }
 
     pub fn into_subset(self) -> Subset<'a, K, V> {
         let indices = self.indices_entry.into_mut();
-        unsafe { Subset::from_slice_unchecked(self.pairs, indices.as_slice()) }
+        Subset::new(self.pairs, indices.as_slice())
     }
 
     /// Returns a slice like construct with all values associated with this entry in the map.
@@ -1023,14 +1017,14 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// see [`into_subset_mut`](Self::into_subset_mut).
     pub fn as_subset_mut(&mut self) -> SubsetMut<'_, K, V> {
         let indices = self.indices_entry.get();
-        unsafe { SubsetMut::from_slice_unchecked(self.pairs, indices.as_unique_slice()) }
+        SubsetMut::new(self.pairs, indices.as_unique_slice())
     }
 
     /// Converts into a slice like construct with all the values associated with
     /// this entry in the map, with a lifetime bound to the map itself.
     pub fn into_subset_mut(self) -> SubsetMut<'a, K, V> {
         let indices = self.indices_entry.into_mut();
-        unsafe { SubsetMut::from_slice_unchecked(self.pairs, indices.as_unique_slice()) }
+        SubsetMut::new(self.pairs, indices.as_unique_slice())
     }
 }
 
@@ -1058,7 +1052,7 @@ impl<'a, K, V> IntoIterator for OccupiedEntry<'a, K, V> {
 
     fn into_iter(self) -> Self::IntoIter {
         let indices = self.indices_entry.into_mut();
-        unsafe { SubsetIterMut::from_slice_unchecked(self.pairs, indices.as_unique_slice().iter()) }
+        SubsetIterMut::new(self.pairs, indices.as_unique_slice().iter())
     }
 }
 
