@@ -1,12 +1,16 @@
 #![allow(unsafe_code)]
 
+use ::alloc::vec::Vec;
 use ::core::{fmt, ops, ptr};
+
+use hashbrown::hash_table;
 
 use super::indices::Indices;
 use super::{
-    equivalent, get_hash, IndexMultimapCore, IndicesBucket, ShiftRemove, Subset, SubsetIter,
-    SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
+    equivalent, get_hash, IndexMultimapCore, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
+    SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
 };
+use crate::multimap::core::IndicesTable;
 use crate::util::{
     check_unique_and_in_bounds, try_simplify_range, DebugIterAsList, DebugIterAsNumberedCompactList,
 };
@@ -27,19 +31,20 @@ impl<'a, K, V> Entry<'a, K, V> {
     where
         K: Eq,
     {
-        let eq = equivalent(&key, &map.pairs);
-        match map.indices.find(hash.get(), eq) {
-            // SAFETY: The entry is created with a live raw bucket, at the same time
-            // we have a &mut reference to the map, so it can not be modified further.
-            Some(raw_bucket) => Entry::Occupied(unsafe {
-                OccupiedEntry::new_unchecked(map, raw_bucket, hash, Some(key))
-            }),
-            // SAFETY: There is no entry for given key
-            None => Entry::Vacant(unsafe { VacantEntry::new_unchecked(map, hash, key) }),
+        let pairs = &mut map.pairs;
+        let eq = equivalent(&key, pairs);
+        let entry = map.indices.entry(hash.get(), eq, get_hash(pairs));
+        match entry {
+            hash_table::Entry::Occupied(entry) => {
+                Entry::Occupied(unsafe { OccupiedEntry::new(pairs, entry, hash, Some(key)) })
+            }
+            hash_table::Entry::Vacant(entry) => {
+                Entry::Vacant(unsafe { VacantEntry::new(pairs, entry, hash, key) })
+            }
         }
     }
 
-    /// Gets a reference to the entry's key, either within the map if occupied,
+    /// Gets a reference to the entry's key, either within the map if occupied,4
     /// or else the new key that was used to find the entry.
     pub fn key(&self) -> &K {
         match self {
@@ -234,17 +239,26 @@ enum SingleOrSlice<'a, T> {
 ///
 /// [`IndexMultimap`]: crate::IndexMultimap
 pub struct VacantEntry<'a, K, V> {
-    map: &'a mut IndexMultimapCore<K, V>,
+    pairs: &'a mut Vec<Bucket<K, V>>,
+    indices_entry: hash_table::VacantEntry<'a, Indices>,
     hash: HashValue,
     key: K,
 }
 
 impl<'a, K, V> VacantEntry<'a, K, V> {
-    /// SAFETY:
-    ///   * key must not exist in the map
     #[inline]
-    unsafe fn new_unchecked(map: &'a mut IndexMultimapCore<K, V>, hash: HashValue, key: K) -> Self {
-        Self { map, hash, key }
+    unsafe fn new(
+        pairs: &'a mut Vec<Bucket<K, V>>,
+        indices_entry: hash_table::VacantEntry<'a, Indices>,
+        hash: HashValue,
+        key: K,
+    ) -> Self {
+        Self {
+            pairs,
+            indices_entry,
+            hash,
+            key,
+        }
     }
 
     /// Gets a reference to the key that was used to find the entry.
@@ -259,26 +273,39 @@ impl<'a, K, V> VacantEntry<'a, K, V> {
 
     /// Returns the index where the key-value pair will be inserted.
     pub fn index(&self) -> usize {
-        self.map.len_pairs()
+        self.pairs.len()
     }
 
     /// Inserts the entry's key and the given value into the map,
     /// and returns a mutable reference to the value.
     pub fn insert(self, value: V) -> (usize, &'a K, &'a mut V) {
-        let (i, _) = self.map.push(self.hash, self.key, value);
-        let entry = &mut self.map.pairs[i];
+        let i = self.pairs.len();
+        let _ = self.indices_entry.insert(Indices::one(i));
+
+        self.pairs.push(Bucket {
+            hash: self.hash,
+            key: self.key,
+            value,
+        });
+        let entry = self.pairs.last_mut().unwrap();
         (i, &entry.key, &mut entry.value)
     }
 
     fn insert_entry(self, value: V) -> OccupiedEntry<'a, K, V> {
-        let (_, bucket) = self.map.push(self.hash, self.key, value);
-        if cfg!(debug_assertions) {
-            let indices = unsafe { bucket.as_ref() };
-            self.map.debug_assert_indices(indices.as_slice());
-        }
+        let i = self.pairs.len();
+        let entry = self.indices_entry.insert(Indices::one(i));
+        self.pairs.push(Bucket {
+            hash: self.hash,
+            key: self.key,
+            value,
+        });
 
-        // SAFETY: push returns a live, valid bucket from the self.map
-        unsafe { OccupiedEntry::new_unchecked(self.map, bucket, self.hash, None) }
+        // if cfg!(debug_assertions) {
+        //     let indices = bucket.get();
+        //     self.map.debug_assert_indices(indices.as_slice());
+        // }
+
+        unsafe { OccupiedEntry::new(self.pairs, entry, self.hash, None) }
     }
 
     /// Inserts the values from `iter` using the entry's key into the map.
@@ -290,22 +317,19 @@ impl<'a, K, V> VacantEntry<'a, K, V> {
         K: Clone + Eq,
     {
         let iter = iter.into_iter();
-        let start_len_pairs = self.map.len_pairs();
-        self.map.pairs.extend(iter.map(|v| Bucket {
+        let start_len_pairs = self.pairs.len();
+        self.pairs.extend(iter.map(|v| Bucket {
             hash: self.hash,
             key: self.key.clone(),
             value: v,
         }));
 
-        if start_len_pairs != self.map.pairs.len() {
-            let indices = Indices::from_range(start_len_pairs..self.map.pairs.len());
-            let bucket =
-                self.map
-                    .indices
-                    .insert(self.hash.get(), indices, get_hash(&self.map.pairs));
+        if start_len_pairs != self.pairs.len() {
+            let indices = Indices::from_range(start_len_pairs..self.pairs.len());
+            let bucket = self.indices_entry.insert(indices);
 
             Entry::Occupied(unsafe {
-                OccupiedEntry::new_unchecked(self.map, bucket, self.hash, Some(self.key))
+                OccupiedEntry::new(self.pairs, bucket, self.hash, Some(self.key))
             })
         } else {
             Entry::Vacant(self)
@@ -334,42 +358,23 @@ where
 /// [`Entry`]: super::Entry
 /// [`IndexMultimap`]: crate::IndexMultimap
 pub struct OccupiedEntry<'a, K, V> {
-    // SAFETY:
-    //   * The lifetime of the map reference also constrains the raw bucket,
-    //     which is essentially a raw pointer into the map indices.
-    //   * `bucket` must point into map.indices
-    //   * `bucket` must be live at the creation moment
-    //   * we must be the only ones with the pointer to `bucket`
-    // Thus by also taking &mut map, no one else can modify the map and we are
-    // sole modifiers of the bucket.
-    // None of our methods directly modify map.indices (except when we consume self),
-    // which means that the internal raw table won't reallocate and the bucket
-    // must be alive for the lifetime of self.
-    map: &'a mut IndexMultimapCore<K, V>,
-    raw_bucket: IndicesBucket,
+    pairs: &'a mut Vec<Bucket<K, V>>,
+    indices_entry: hash_table::OccupiedEntry<'a, Indices>,
     hash: HashValue,
     key: Option<K>,
 }
 
-// `hashbrown::raw::Bucket` is only `Send`, not `Sync`.
-// SAFETY: `&self` only accesses the bucket to read it.
-unsafe impl<K: Sync, V: Sync> Sync for OccupiedEntry<'_, K, V> {}
-
 impl<'a, K, V> OccupiedEntry<'a, K, V> {
-    /// SAFETY:
-    ///   * `bucket` must point into map.indices
-    ///   * `bucket` must be live at the creation moment
-    ///   * we must be the only ones with the `bucket` pointer
     #[inline]
-    unsafe fn new_unchecked(
-        map: &'a mut IndexMultimapCore<K, V>,
-        bucket: IndicesBucket,
+    unsafe fn new(
+        pairs: &'a mut Vec<Bucket<K, V>>,
+        entry: hash_table::OccupiedEntry<'a, Indices>,
         hash: HashValue,
         key: Option<K>,
     ) -> Self {
         Self {
-            map,
-            raw_bucket: bucket,
+            pairs,
+            indices_entry: entry,
             hash,
             key,
         }
@@ -386,41 +391,39 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     #[inline]
     pub fn capacity(&self) -> usize {
         // We'll need to reallocate either if the indices vec is full or pairs vec is full.
-        let free_space_in_map = self.map.capacity_pairs() - self.map.len_pairs();
+        let free_space_in_map = self.pairs.capacity() - self.pairs.len();
         usize::min(
-            self.indices_inner().capacity(),
+            self.indices_entry.get().capacity(),
             self.len() + free_space_in_map,
         )
     }
 
     /// Reserve capacity for `additional` more key-value pairs for this entry.
     pub fn reserve(&mut self, additional: usize) {
-        self.map.pairs.reserve(additional);
-        self.indices_inner_mut().reserve(additional)
+        self.pairs.reserve(additional);
+        self.indices_entry.get_mut().reserve(additional)
     }
 
     /// Reserve capacity for `additional` more key-value pairs for this entry, without over-allocating.
     pub fn reserve_exact(&mut self, additional: usize) {
-        self.map.pairs.reserve_exact(additional);
-        self.indices_inner_mut().reserve_exact(additional);
+        self.pairs.reserve_exact(additional);
+        self.indices_entry.get_mut().reserve_exact(additional);
     }
 
     /// Try to reserve capacity for `additional` more key-value pairs for this entry.
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
-        self.map
-            .pairs
+        self.pairs
             .try_reserve(additional)
             .map_err(TryReserveError::from_alloc)?;
-        self.indices_inner_mut().try_reserve(additional)
+        self.indices_entry.get_mut().try_reserve(additional)
     }
 
     /// Try to reserve capacity for `additional` more key-value pairs for this entry, without over-allocating.
     pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
-        self.map
-            .pairs
+        self.pairs
             .try_reserve_exact(additional)
             .map_err(TryReserveError::from_alloc)?;
-        self.indices_inner_mut().try_reserve_exact(additional)
+        self.indices_entry.get_mut().try_reserve_exact(additional)
     }
 
     /// Shrink the capacity of this entry with a lower bound.
@@ -429,7 +432,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     ///
     /// If the current capacity is less than the lower limit, this is a no-op.
     pub fn shrink_to(&mut self, min_capacity: usize) {
-        self.indices_inner_mut().shrink_to(min_capacity);
+        self.indices_entry.get_mut().shrink_to(min_capacity);
     }
 
     /// Shrinks the capacity of this entry as much as possible.
@@ -437,7 +440,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// It will drop down as close as possible to the length but the allocator
     /// may still inform the vector that there is space for a few more elements.
     pub fn shrink_to_fit(&mut self) {
-        self.indices_inner_mut().shrink_to_fit()
+        self.indices_entry.get_mut().shrink_to_fit()
     }
 
     /// Appends a new key-value pair to this entry.
@@ -447,17 +450,17 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     where
         K: Clone,
     {
-        let index = self.map.len_pairs();
+        let index = self.pairs.len();
         let key = self.clone_key();
-        self.map.pairs.push(Bucket {
+        self.pairs.push(Bucket {
             hash: self.hash,
             key,
             value,
         });
 
-        unsafe { self.raw_bucket.as_mut() }.push(index);
+        self.indices_entry.get_mut().push(index);
 
-        self.map.debug_assert_indices(self.indices());
+        // self.map.debug_assert_indices(self.indices());
     }
 
     /// Inserts the values from `iter` using the entry's key into the map.
@@ -476,24 +479,24 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         // b) reserve ourselves and iterate once, but we cannot make use of the specializations,
         //    so we may need to resize multiple times
         let iter = iter.into_iter();
-        let start_len_pairs = self.map.len_pairs();
+        let start_len_pairs = self.pairs.len();
         let key = self.clone_key();
-        self.map.pairs.extend(iter.map(|v| Bucket {
+        self.pairs.extend(iter.map(|v| Bucket {
             hash: self.hash,
             key: key.clone(),
             value: v,
         }));
 
-        let indices = unsafe { self.raw_bucket.as_mut() };
+        let indices = self.indices_entry.get_mut();
         debug_assert!(*indices.last().unwrap() < start_len_pairs);
         // SAFETY: indices is from map, if map has `start_len_pairs` then the
         // maximum index that could be in `indices` is `start_len_pairs - 1`,
         // thus the range below is guaranteed to yield larger values than currently
         // in the indices
         // A range will also yield unique items in sorted order.
-        unsafe { indices.extend(start_len_pairs..self.map.pairs.len()) };
+        unsafe { indices.extend(start_len_pairs..self.pairs.len()) };
 
-        self.map.debug_assert_invariants();
+        //self.map.debug_assert_invariants();
     }
 
     /// Appends a new key-value pair to this entry by taking the owned key.
@@ -501,18 +504,18 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// This method should only be called once after creation of pair enum.
     /// Panics otherwise.
     fn insert_append_take_owned_key(&mut self, value: V) {
-        let index = self.map.pairs.len();
+        let index = self.pairs.len();
 
         let key = self.key.take().unwrap();
-        self.map.pairs.push(Bucket {
+        self.pairs.push(Bucket {
             hash: self.hash,
             key,
             value,
         });
 
-        unsafe { self.raw_bucket.as_mut() }.push(index);
+        self.indices_entry.get_mut().push(index);
 
-        self.map.debug_assert_indices(self.indices());
+        //self.map.debug_assert_indices(self.indices());
     }
 
     /// Gets a reference to the entry's first key in the map.
@@ -526,7 +529,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     ///
     /// [`Hash`]: ::core::hash::Hash
     pub fn key(&self) -> &K {
-        &self.map.pairs[self.indices()[0]].key
+        &self.pairs[self.indices()[0]].key
     }
 
     pub fn into_key(self) -> Option<K> {
@@ -540,12 +543,11 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         match self.key.as_ref() {
             Some(k) => k.clone(),
             None => {
-                debug_assert_eq!(self.indices().last(), Some(&(self.map.pairs.len() - 1)));
+                debug_assert_eq!(self.indices().last(), Some(&(self.pairs.len() - 1)));
                 // The only way we don't have owned key is if we already inserted it.
                 // (either by Entry::insert_append or VacantEntry::insert).
                 // The key that was used to get this entry thus must be in the last pair
-                self.map
-                    .pairs
+                self.pairs
                     .last()
                     .expect("expected occupied pair to have at least one key-value pair")
                     .key
@@ -557,22 +559,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Returns the indices of all the pairs associated with this entry in the map.
     #[inline]
     pub fn indices(&self) -> &[usize] {
-        // SAFETY: we have &mut map keep keeping the bucket stable
-        self.indices_inner().as_slice()
-    }
-
-    /// Returns the indices of all the pairs associated with this entry in the map.
-    #[inline]
-    fn indices_inner(&self) -> &Indices {
-        // SAFETY: we have &mut map keep keeping the bucket stable
-        unsafe { self.raw_bucket.as_ref() }
-    }
-
-    /// Returns the indices of all the pairs associated with this entry in the map.
-    #[inline]
-    fn indices_inner_mut(&mut self) -> &mut Indices {
-        // SAFETY: we have &mut map keep keeping the bucket stable
-        unsafe { self.raw_bucket.as_mut() }
+        self.indices_entry.get().as_slice()
     }
 
     /// Returns a reference to the `n`th pair in this subset or [`None`] if <code>n >= self.[len]\()</code>.
@@ -581,7 +568,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     pub fn nth(&self, n: usize) -> Option<(usize, &K, &V)> {
         match self.indices().get(n) {
             Some(&index) => {
-                let Bucket { key, value, .. } = &self.map.as_pairs()[index];
+                let Bucket { key, value, .. } = &self.pairs[index];
                 Some((index, key, value))
             }
             None => None,
@@ -595,7 +582,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
         match self.indices().get(n) {
             Some(&index) => {
-                let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+                let Bucket { key, value, .. } = &mut self.pairs[index];
                 Some((index, key, value))
             }
             None => None,
@@ -609,7 +596,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     pub fn into_nth(self, n: usize) -> Option<(usize, &'a K, &'a mut V)> {
         match self.indices().get(n) {
             Some(&index) => {
-                let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+                let Bucket { key, value, .. } = &mut self.pairs[index];
                 Some((index, key, value))
             }
             None => None,
@@ -619,42 +606,42 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Return a reference to the first pair in this entry.
     pub fn first(&self) -> (usize, &K, &V) {
         let index = self.indices()[0];
-        let Bucket { key, value, .. } = &self.map.as_pairs()[index];
+        let Bucket { key, value, .. } = &self.pairs[index];
         (index, key, value)
     }
 
     /// Return a mutable reference to the first pair in this entry.
     pub fn first_mut(&mut self) -> (usize, &K, &mut V) {
         let index = self.indices()[0];
-        let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+        let Bucket { key, value, .. } = &mut self.pairs[index];
         (index, key, value)
     }
 
     /// Converts `self` into a long lived mutable reference to the first pair in this entry.
     pub fn into_first(self) -> (usize, &'a K, &'a mut V) {
         let index = self.indices()[0];
-        let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+        let Bucket { key, value, .. } = &mut self.pairs[index];
         (index, key, value)
     }
 
     /// Returns a reference to the last pair in this entry.
     pub fn last(&self) -> (usize, &K, &V) {
         let index = *self.indices().last().unwrap();
-        let Bucket { key, value, .. } = &self.map.as_pairs()[index];
+        let Bucket { key, value, .. } = &self.pairs[index];
         (index, key, value)
     }
 
     /// Returns a mutable reference to the last pair in this entry.
     pub fn last_mut(&mut self) -> (usize, &K, &mut V) {
         let index = *self.indices().last().unwrap();
-        let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+        let Bucket { key, value, .. } = &mut self.pairs[index];
         (index, key, value)
     }
 
     /// Converts `self` into a long lived mutable reference to the last pair in this entry.
     pub fn into_last(self) -> (usize, &'a K, &'a mut V) {
         let index = *self.indices().last().unwrap();
-        let Bucket { key, value, .. } = &mut self.map.as_mut_pairs()[index];
+        let Bucket { key, value, .. } = &mut self.pairs[index];
         (index, key, value)
     }
 
@@ -670,9 +657,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         let indices = self.indices();
         let range = try_simplify_range(range, indices.len())?;
         match indices.get(range) {
-            Some(indices) => {
-                Some(unsafe { Subset::from_slice_unchecked(&self.map.pairs, indices) })
-            }
+            Some(indices) => Some(unsafe { Subset::from_slice_unchecked(self.pairs, indices) }),
             None => None,
         }
     }
@@ -686,11 +671,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     where
         R: ops::RangeBounds<usize>,
     {
-        let indices = unsafe { self.raw_bucket.as_ref() }.as_unique_slice();
+        let indices = self.indices_entry.get().as_unique_slice();
         match indices.get_range(range) {
-            Some(indices) => {
-                Some(unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices) })
-            }
+            Some(indices) => Some(unsafe { SubsetMut::from_slice_unchecked(self.pairs, indices) }),
             None => None,
         }
     }
@@ -704,11 +687,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     where
         R: ops::RangeBounds<usize>,
     {
-        let indices = unsafe { self.raw_bucket.as_ref() }.as_unique_slice();
+        let indices = self.indices_entry.into_mut().as_unique_slice();
         match indices.get_range(range) {
-            Some(indices) => {
-                Some(unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices) })
-            }
+            Some(indices) => Some(unsafe { SubsetMut::from_slice_unchecked(self.pairs, indices) }),
             None => None,
         }
     }
@@ -719,7 +700,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         &mut self,
         indices: [usize; N],
     ) -> Option<[(usize, &K, &mut V); N]> {
-        unsafe { Self::get_many_mut_core(&mut self.map.pairs, self.raw_bucket.clone(), indices) }
+        unsafe { Self::get_many_mut_core(self.pairs, self.indices_entry.get(), indices) }
     }
 
     /// Returns mutable references to many items at once or [`None`] if any index
@@ -728,16 +709,15 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         self,
         indices: [usize; N],
     ) -> Option<[(usize, &'a K, &'a mut V); N]> {
-        unsafe { Self::get_many_mut_core(&mut self.map.pairs, self.raw_bucket, indices) }
+        unsafe { Self::get_many_mut_core(self.pairs, self.indices_entry.into_mut(), indices) }
     }
 
     #[inline]
-    unsafe fn get_many_mut_core<const N: usize>(
-        pairs: &mut [Bucket<K, V>],
-        subset_indices: IndicesBucket,
+    unsafe fn get_many_mut_core<'b, const N: usize>(
+        pairs: &'b mut [Bucket<K, V>],
+        subset_indices: &[usize],
         get_indices: [usize; N],
-    ) -> Option<[(usize, &K, &mut V); N]> {
-        let subset_indices = unsafe { subset_indices.as_ref() };
+    ) -> Option<[(usize, &'b K, &'b mut V); N]> {
         let pairs_len = pairs.len();
         if !check_unique_and_in_bounds(&get_indices, subset_indices.len()) {
             return None;
@@ -778,9 +758,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     where
         K: Eq,
     {
-        // SAFETY: This is safe because it can only happen once (self is consumed)
-        // and bucket has not been removed from the map.indices
-        unsafe { SwapRemove::new_raw(self.map, self.raw_bucket) }
+        let (indices, entry) = self.indices_entry.remove();
+        let indices_table = entry.into_table();
+        unsafe { SwapRemove::new_unchecked(indices_table, self.pairs, indices) }
     }
 
     /// Remove all the key-value pairs for this entry and
@@ -809,9 +789,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     where
         K: Eq,
     {
-        // SAFETY: This is safe because it can only happen once (self is consumed)
-        // and bucket has not been removed from the map.indices
-        unsafe { ShiftRemove::new_raw(self.map, self.raw_bucket) }
+        let (indices, entry) = self.indices_entry.remove();
+        let indices_table = entry.into_table();
+        unsafe { ShiftRemove::new_unchecked(indices_table, self.pairs, indices) }
     }
 
     /// Retains only the elements specified by the predicate in this entry.
@@ -824,27 +804,35 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// need to traverse all the pairs in the map.
     ///
     /// [`IndexMultimap::retain`]: crate::IndexMultimap::retain
-    pub fn retain<F>(mut self, mut keep: F) -> Option<Self>
+    pub fn retain<F>(self, mut keep: F) -> Option<Self>
     where
         F: FnMut(usize, &K, &mut V) -> bool,
         K: Eq,
     {
         /// Drop guard in case dropping any K/V panics or the user provided predicate panics
-        struct BackShiftOnDrop<'b, K, V>
+        struct BackShiftOnDrop<'map, 'b, K, V>
         where
             K: Eq,
         {
-            inner: &'b mut IndexMultimapCore<K, V>,
+            pairs: &'b mut Vec<Bucket<K, V>>,
+            indices_entry: Option<hash_table::OccupiedEntry<'map, Indices>>,
             start_pairs_count: usize,
             prev_removed_index: usize,
             delete_count: usize,
+            is_dropped: bool,
         }
 
-        impl<'b, K, V> Drop for BackShiftOnDrop<'b, K, V>
+        impl<'map, 'b, K, V> BackShiftOnDrop<'map, 'b, K, V>
         where
             K: Eq,
         {
-            fn drop(&mut self) {
+            fn finish(&mut self) -> Option<&'map mut IndicesTable> {
+                if self.is_dropped {
+                    return None;
+                }
+
+                let indices_table = self.indices_entry.take().unwrap().into_table();
+
                 // Restore map to valid state
                 if self.delete_count != 0 {
                     // Step 1: Shift back the tail
@@ -852,7 +840,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
                     if move_count > 0 {
                         // Before: [c c hole hole hole prev_removed/hole tail tail ]
                         // Before: [c c tail tail hole     hole          hole hole ]
-                        let pairs_ptr = self.inner.pairs.as_mut_ptr();
+                        let pairs_ptr = self.pairs.as_mut_ptr();
                         let hole_start = unsafe {
                             pairs_ptr.add(self.prev_removed_index - (self.delete_count - 1))
                         };
@@ -862,31 +850,44 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
                     // Step 2: Set correct pairs length
                     unsafe {
-                        self.inner
-                            .pairs
+                        self.pairs
                             .set_len(self.start_pairs_count - self.delete_count)
                     };
 
                     // Step 3: Rebuild the hash table
-                    self.inner.rebuild_hash_table();
+                    IndexMultimapCore::rebuild_hash_table_core(self.pairs, indices_table);
                 }
+
+                self.is_dropped = true;
+
+                Some(indices_table)
             }
         }
 
-        let mut indices = unsafe { self.raw_bucket.as_ref() }.iter();
+        impl<'map, 'b, K, V> Drop for BackShiftOnDrop<'map, 'b, K, V>
+        where
+            K: Eq,
+        {
+            fn drop(&mut self) {
+                self.finish();
+            }
+        }
 
         let start_set_count = self.len();
         let mut guard = {
-            let start_pairs_count = self.map.pairs.len();
+            let start_pairs_count = self.pairs.len();
             BackShiftOnDrop {
-                inner: self.map,
+                pairs: self.pairs,
+                indices_entry: Some(self.indices_entry),
                 start_pairs_count,
                 prev_removed_index: 0,
                 delete_count: 0,
+                is_dropped: false,
             }
         };
 
-        let pairs_ptr = guard.inner.pairs.as_mut_ptr();
+        let mut indices = guard.indices_entry.as_ref().unwrap().get().iter();
+        let pairs_ptr = guard.pairs.as_mut_ptr();
 
         // Step 1: Check until first removed value, there is nothing to backshift until then
         while let Some(&index) = indices.next() {
@@ -931,9 +932,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
         let delete_count = guard.delete_count;
         // Step 3: Backshift the tail, set correct pairs length and rebuild the hash table (indices)
+        let indices_table = guard.finish().unwrap();
         drop(guard);
 
-        self.map.debug_assert_invariants();
+        //self.map.debug_assert_invariants();
 
         // Step 4: Return a new OccupiedEntry if we didn't remove all the items
         //   and we have a key to look up the new indices bucket
@@ -944,10 +946,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         } else {
             match &self.key {
                 Some(key) => {
-                    let eq = equivalent(key, &self.map.pairs);
-                    let indices = self.map.indices.find(self.hash.get(), eq).unwrap();
-                    self.raw_bucket = indices;
-                    Some(self)
+                    let eq = equivalent(key, self.pairs);
+                    let indices = indices_table.find_entry(self.hash.get(), eq).unwrap();
+                    Some(unsafe { OccupiedEntry::new(self.pairs, indices, self.hash, self.key) })
                 }
                 None => None,
             }
@@ -956,24 +957,13 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Returns an iterator over all the pairs in this entry.
     pub fn iter(&self) -> SubsetIter<'_, K, V> {
-        unsafe {
-            SubsetIter::from_slice_unchecked(
-                &self.map.pairs,
-                // SAFETY: we have &mut map keep keeping the bucket stable
-                self.raw_bucket.as_ref().iter(),
-            )
-        }
+        unsafe { SubsetIter::from_slice_unchecked(self.pairs, self.indices_entry.get().iter()) }
     }
 
     /// Returns a mutable iterator over all the pairs in this entry.
     pub fn iter_mut(&mut self) -> SubsetIterMut<'_, K, V> {
-        let indices = unsafe { self.raw_bucket.as_ref() };
-        unsafe {
-            SubsetIterMut::from_slice_unchecked(
-                &mut self.map.pairs,
-                indices.as_unique_slice().iter(),
-            )
-        }
+        let indices = self.indices_entry.get();
+        unsafe { SubsetIterMut::from_slice_unchecked(self.pairs, indices.as_unique_slice().iter()) }
     }
 
     /// Returns an iterator over all the keys in this entry.
@@ -986,67 +976,45 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// [`Hash`]: ::core::hash::Hash
     /// [`Eq`]: ::core::cmp::Eq
     pub fn keys(&self) -> SubsetKeys<'_, K, V> {
-        unsafe {
-            SubsetKeys::from_slice_unchecked(
-                &self.map.pairs,
-                // SAFETY: we have &mut map keep keeping the bucket stable
-                self.raw_bucket.as_ref().iter(),
-            )
-        }
+        unsafe { SubsetKeys::from_slice_unchecked(self.pairs, self.indices_entry.get().iter()) }
     }
 
     /// Converts into a mutable iterator over all the keys in this subset.
     pub fn into_keys(self) -> SubsetKeys<'a, K, V> {
         unsafe {
-            SubsetKeys::from_slice_unchecked(
-                &self.map.pairs,
-                // SAFETY: we have &mut map keep keeping the bucket stable
-                self.raw_bucket.as_ref().iter(),
-            )
+            SubsetKeys::from_slice_unchecked(self.pairs, self.indices_entry.into_mut().iter())
         }
     }
 
     /// Returns an iterator over all the values in this entry.
     pub fn values(&self) -> SubsetValues<'_, K, V> {
-        unsafe {
-            SubsetValues::from_slice_unchecked(
-                &self.map.pairs,
-                // SAFETY: we have &mut map keep keeping the bucket stable
-                self.raw_bucket.as_ref().iter(),
-            )
-        }
+        unsafe { SubsetValues::from_slice_unchecked(self.pairs, self.indices_entry.get().iter()) }
     }
 
     /// Returns a mutable iterator over all the values in this entry.
     pub fn values_mut(&mut self) -> SubsetValuesMut<'_, K, V> {
-        let indices = unsafe { self.raw_bucket.as_ref() };
+        let indices = self.indices_entry.get();
         unsafe {
-            SubsetValuesMut::from_slice_unchecked(
-                &mut self.map.pairs,
-                indices.as_unique_slice().iter(),
-            )
+            SubsetValuesMut::from_slice_unchecked(self.pairs, indices.as_unique_slice().iter())
         }
     }
 
     /// Converts into an iterator over all the values in this entry.
     pub fn into_values(self) -> SubsetValuesMut<'a, K, V> {
-        let indices = unsafe { self.raw_bucket.as_ref() };
+        let indices = self.indices_entry.into_mut();
         unsafe {
-            SubsetValuesMut::from_slice_unchecked(
-                &mut self.map.pairs,
-                indices.as_unique_slice().iter(),
-            )
+            SubsetValuesMut::from_slice_unchecked(self.pairs, indices.as_unique_slice().iter())
         }
     }
 
     /// Returns a slice like construct with all the values associated with this entry in the map.
     pub fn as_subset(&self) -> Subset<'_, K, V> {
-        unsafe { Subset::from_slice_unchecked(&self.map.pairs, self.indices()) }
+        unsafe { Subset::from_slice_unchecked(self.pairs, self.indices()) }
     }
 
     pub fn into_subset(self) -> Subset<'a, K, V> {
-        let indices = unsafe { self.raw_bucket.as_ref() };
-        unsafe { Subset::from_slice_unchecked(&self.map.pairs, indices.as_slice()) }
+        let indices = self.indices_entry.into_mut();
+        unsafe { Subset::from_slice_unchecked(self.pairs, indices.as_slice()) }
     }
 
     /// Returns a slice like construct with all values associated with this entry in the map.
@@ -1054,15 +1022,15 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// If you need a references which may outlive the destruction of this entry,
     /// see [`into_subset_mut`](Self::into_subset_mut).
     pub fn as_subset_mut(&mut self) -> SubsetMut<'_, K, V> {
-        let indices = unsafe { self.raw_bucket.as_ref() };
-        unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices.as_unique_slice()) }
+        let indices = self.indices_entry.get();
+        unsafe { SubsetMut::from_slice_unchecked(self.pairs, indices.as_unique_slice()) }
     }
 
     /// Converts into a slice like construct with all the values associated with
     /// this entry in the map, with a lifetime bound to the map itself.
     pub fn into_subset_mut(self) -> SubsetMut<'a, K, V> {
-        let indices = unsafe { self.raw_bucket.as_ref() };
-        unsafe { SubsetMut::from_slice_unchecked(&mut self.map.pairs, indices.as_unique_slice()) }
+        let indices = self.indices_entry.into_mut();
+        unsafe { SubsetMut::from_slice_unchecked(self.pairs, indices.as_unique_slice()) }
     }
 }
 
@@ -1089,13 +1057,8 @@ impl<'a, K, V> IntoIterator for OccupiedEntry<'a, K, V> {
     type IntoIter = SubsetIterMut<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let indices = unsafe { self.raw_bucket.as_ref() };
-        unsafe {
-            SubsetIterMut::from_slice_unchecked(
-                &mut self.map.pairs,
-                indices.as_unique_slice().iter(),
-            )
-        }
+        let indices = self.indices_entry.into_mut();
+        unsafe { SubsetIterMut::from_slice_unchecked(self.pairs, indices.as_unique_slice().iter()) }
     }
 }
 

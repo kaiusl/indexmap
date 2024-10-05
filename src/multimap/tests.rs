@@ -1202,6 +1202,74 @@ fn entry_insert_append() {
 }
 
 #[test]
+fn entry_swap_remove() {
+    // Test remove twice: a) by using the returned iterator and b) by dropping it.
+    // Both should remove all the needed pairs.
+    let insert = [0, 4, 2, 12, 8, 7, 11, 5, 3, 17, 19, 22, 23];
+    let mut map = IndexMultimapVec::new();
+    let mut map2 = IndexMultimapVec::new();
+
+    for &elt in &insert {
+        map.insert_append(elt, elt);
+        map2.insert_append(elt, elt);
+    }
+
+    assert_eq!(map.keys().count(), map.len_keys());
+    assert_eq!(map.keys().count(), insert.len());
+    for (a, b) in insert.iter().zip(map.keys()) {
+        assert_eq!(a, b);
+    }
+
+    let remove_fail = [99, 77];
+    let remove = [4, 12, 8, 7];
+
+    for &key in &remove_fail {
+        match map.entry(key) {
+            Entry::Occupied(occupied_entry) => panic!(),
+            Entry::Vacant(vacant_entry) => {}
+        }
+    }
+
+    for &key in &remove {
+        let index = map.get(&key).first().unwrap().0;
+
+        match map.entry(key) {
+            Entry::Occupied(occupied_entry) => {
+                assert_eq!(
+                    occupied_entry.swap_remove().collect::<Vec<_>>(),
+                    vec![(index, key, key)]
+                );
+            }
+            Entry::Vacant(vacant_entry) => {
+                panic!()
+            }
+        }
+        assert!(map2.swap_remove(&key).is_some());
+    }
+    let remaining = [
+        (0, 0),
+        (23, 23),
+        (2, 2),
+        (22, 22),
+        (19, 19),
+        (17, 17),
+        (11, 11),
+        (5, 5),
+        (3, 3),
+    ];
+    assert_map_eq(&map, &remaining);
+    assert_map_eq(&map2, &remaining);
+    assert_eq!(map, map2);
+    assert_eq!(map.as_slice(), map2.as_slice());
+
+    for key in &insert {
+        assert_eq!(map.get(key).first().is_some(), !remove.contains(key));
+    }
+    assert_eq!(map.len_keys(), insert.len() - remove.len());
+    assert_eq!(map.keys().count(), insert.len() - remove.len());
+}
+
+#[test]
 fn occupied_entry_key() {
     // These keys match hash and equality, but their addresses are distinct.
     let (k1, k2) = (&mut 1, &mut 1);

@@ -3,11 +3,10 @@
 use ::core::iter::FusedIterator;
 use ::core::ptr::NonNull;
 use ::core::{fmt, mem, ops, ptr, slice};
+use std::vec::Vec;
 
 use super::indices::UniqueSortedIter;
-use super::{
-    equivalent, update_index_last, IndexMultimapCore, Indices, IndicesBucket, IndicesTable,
-};
+use super::{equivalent, update_index_last, IndexMultimapCore, Indices, IndicesTable};
 use crate::map::Slice;
 use crate::util::{debug_iter_as_list, simplify_range, DebugIterAsNumberedCompactList};
 use crate::{Bucket, Equivalent, HashValue};
@@ -56,7 +55,10 @@ where
     * on construction we must take ownership of `map.indices`
       and leave an empty table in it's place
     --- */
-    map: &'a mut IndexMultimapCore<K, V>,
+    // we cannot have &'a mut IndexMultimapCore directly because then
+    // OccupiedEntry couldn't create this struct. It's fine if we deconstruct it.
+    map_pairs: &'a mut Vec<Bucket<K, V>>,
+    map_indices: &'a mut IndicesTable,
     /// map.indices we took ownership of
     indices_table: IndicesTable,
     /// The index of pair that was removed previously.
@@ -84,41 +86,38 @@ where
         K: Eq,
     {
         let eq = equivalent(key, &map.pairs);
-        match map.indices.remove_entry(hash.get(), eq) {
-            Some(indices) => Some(unsafe { Self::new_unchecked(map, indices) }),
-            None => None,
-        }
-    }
-
-    /// # Safety
-    ///
-    /// * `bucket` must be alive and from the `map`
-    pub(super) unsafe fn new_raw(
-        map: &'a mut IndexMultimapCore<K, V>,
-        bucket: IndicesBucket,
-    ) -> Self {
-        unsafe {
-            let (indices, _) = map.indices.remove(bucket);
-            Self::new_unchecked(map, indices)
+        match map.indices.find_entry(hash.get(), eq) {
+            Ok(indices) => {
+                let indices = indices.remove().0;
+                Some(unsafe { Self::new_unchecked(&mut map.indices, &mut map.pairs, indices) })
+            }
+            Err(_) => None,
         }
     }
 
     /// # Safety
     ///
     /// See the comment in the type definition for safety.
-    unsafe fn new_unchecked(map: &'a mut IndexMultimapCore<K, V>, indices: Indices) -> Self {
-        debug_assert!(indices.is_empty() || *indices.last().unwrap() < map.pairs.len());
+    pub(super) unsafe fn new_unchecked(
+        map_indices: &'a mut IndicesTable,
+        map_pairs: &'a mut Vec<Bucket<K, V>>,
+        indices: Indices,
+    ) -> Self {
+        debug_assert!(indices.is_empty() || *indices.last().unwrap() < map_pairs.len());
         // If we are removing a lot if items, then at some point it becomes more
         // efficient to rebuild the table, rather than update all the indices
-        let rebuild_table = map.len_pairs() / indices.len() < 25;
-        if !rebuild_table && !map.indices.is_empty() {
-            unsafe { map.decrement_indices_batched(&indices) };
+        let rebuild_table = map_pairs.len() / indices.len() < 25;
+        if !rebuild_table && !map_indices.is_empty() {
+            unsafe {
+                IndexMultimapCore::decrement_indices_batched_core(map_pairs, map_indices, &indices)
+            };
         }
-        let old_len = map.pairs.len();
-        unsafe { map.pairs.set_len(0) };
-        let indices_table = mem::take(&mut map.indices);
+        let old_len = map_pairs.len();
+        unsafe { map_pairs.set_len(0) };
+        let indices_table = mem::take(map_indices);
         Self {
-            map,
+            map_indices,
+            map_pairs,
             indices_table,
             prev_removed_idx: None,
             del: 0,
@@ -137,13 +136,13 @@ where
     /// `i` must be self.indices_to_remove.next() or equivalent
     #[inline]
     unsafe fn shift_remove_index(
-        map: &mut IndexMultimapCore<K, V>,
+        map_pairs: &mut Vec<Bucket<K, V>>,
         prev_removed_idx: &mut Option<usize>,
         del: &mut usize,
         i: usize,
     ) -> (usize, K, V) {
         unsafe {
-            let pairs_start = map.pairs.as_mut_ptr();
+            let pairs_start = map_pairs.as_mut_ptr();
             // IDEA: We can get rid of this branch. It's not taken only on the first call to next().
             //       If we set prev_idx_to_remove = self.indices.first() - 1 = i - 1 at construction,
             //       then on first call diff = i - (i - 1) - 1 = i - i + 1 - 1 = 0
@@ -201,7 +200,12 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         match self.indices_to_remove.next() {
             Some(i) => Some(unsafe {
-                Self::shift_remove_index(self.map, &mut self.prev_removed_idx, &mut self.del, i)
+                Self::shift_remove_index(
+                    self.map_pairs,
+                    &mut self.prev_removed_idx,
+                    &mut self.del,
+                    i,
+                )
             }),
             None => None,
         }
@@ -217,7 +221,12 @@ where
     {
         (&mut self.indices_to_remove)
             .map(|i| unsafe {
-                Self::shift_remove_index(self.map, &mut self.prev_removed_idx, &mut self.del, i)
+                Self::shift_remove_index(
+                    self.map_pairs,
+                    &mut self.prev_removed_idx,
+                    &mut self.del,
+                    i,
+                )
             })
             .collect()
     }
@@ -256,7 +265,6 @@ where
                 // all the items we needed items
                 let del = inner.del;
                 let orig_len = inner.orig_len;
-                let map = &mut *inner.map;
 
                 let prev_removed_idx = inner
                     .prev_removed_idx
@@ -277,19 +285,19 @@ where
                         //  * dst+tail_len are all valid to be written to,
                         //    they may however overlap with src+tail_len
                         //  * after copy the elements at new empty slots will never be read,
-                        let pairs_start = map.pairs.as_mut_ptr();
+                        let pairs_start = inner.map_pairs.as_mut_ptr();
                         let src = pairs_start.add(prev_removed_idx + 1) as *const Bucket<K, V>;
                         let dst = pairs_start.add(prev_removed_idx + 1 - del);
                         ptr::copy(src, dst, tail_len);
                     }
                 }
 
-                unsafe { map.pairs.set_len(orig_len - del) }
-                mem::swap(&mut inner.indices_table, &mut map.indices);
-                map.debug_assert_invariants();
+                unsafe { inner.map_pairs.set_len(orig_len - del) }
+                mem::swap(&mut inner.indices_table, inner.map_indices);
+                //map.debug_assert_invariants();
 
-                if inner.rebuild_table && !map.indices.is_empty() {
-                    map.rebuild_hash_table();
+                if inner.rebuild_table && !inner.map_indices.is_empty() {
+                    IndexMultimapCore::rebuild_hash_table_core(inner.map_pairs, inner.map_indices);
                 }
             }
         }
@@ -310,7 +318,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let items_iter = self.indices_to_remove.clone().map(|i| {
             assert!(i < self.orig_len);
-            let bucket = unsafe { &*self.map.pairs.as_ptr().add(i) };
+            let bucket = unsafe { &*self.map_pairs.as_ptr().add(i) };
             (i, &bucket.key, &bucket.value)
         });
         if cfg!(feature = "test_debug") {
@@ -375,7 +383,11 @@ where
     * on construction we must take ownership of map.indices
       and leave an empty table in it's place
     --- */
-    map: &'a mut IndexMultimapCore<K, V>,
+    // we cannot have &'a mut IndexMultimapCore directly because then
+    // OccupiedEntry couldn't create this struct. It's fine if we deconstruct it.
+    map_pairs: &'a mut Vec<Bucket<K, V>>,
+    map_indices: &'a mut IndicesTable,
+
     indices_table: IndicesTable,
     /// The original length of `map.pairs` prior to removing.
     orig_len: usize,
@@ -406,39 +418,33 @@ where
         K: Eq,
     {
         let eq = equivalent(key, &map.pairs);
-        match map.indices.remove_entry(hash.get(), eq) {
-            Some(indices) => Some(unsafe { Self::new_unchecked(map, indices) }),
-            None => None,
+        match map.indices.find_entry(hash.get(), eq) {
+            Ok(indices) => {
+                let indices = indices.remove().0;
+                Some(unsafe { Self::new_unchecked(&mut map.indices, &mut map.pairs, indices) })
+            }
+            Err(_) => None,
         }
     }
-
-    /// # Safety
-    ///
-    /// * `bucket` must be alive and from the `map`
-    pub(super) unsafe fn new_raw(
-        map: &'a mut IndexMultimapCore<K, V>,
-        bucket: IndicesBucket,
-    ) -> Self {
-        unsafe {
-            let (indices, _) = map.indices.remove(bucket);
-            Self::new_unchecked(map, indices)
-        }
-    }
-
     /// # Safety
     ///
     /// See the comment in the type definition for safety.
-    unsafe fn new_unchecked(map: &'a mut IndexMultimapCore<K, V>, indices: Indices) -> Self {
+    pub(super) unsafe fn new_unchecked(
+        map_indices: &'a mut IndicesTable,
+        map_pairs: &'a mut Vec<Bucket<K, V>>,
+        indices: Indices,
+    ) -> Self {
         debug_assert!(!indices.is_empty());
-        debug_assert!(*indices.last().unwrap() < map.pairs.len());
+        debug_assert!(*indices.last().unwrap() < map_pairs.len());
 
-        let orig_len = map.pairs.len();
-        unsafe { map.pairs.set_len(0) };
-        let indices_table = mem::take(&mut map.indices);
+        let orig_len = map_pairs.len();
+        unsafe { map_pairs.set_len(0) };
+        let indices_table = mem::take(map_indices);
         let indices_len = indices.len();
         let last = *indices.last().unwrap();
         Self {
-            map,
+            map_indices,
+            map_pairs,
             indices_table,
             orig_len,
             indices_to_remove: indices,
@@ -463,7 +469,7 @@ where
             // * `index` must be in bounds for map.pairs buffer
             // * map.pairs[index] must be valid for reads and writes
             // * remove will never be read again => we give ownership away
-            let ptr = self.map.pairs.as_mut_ptr();
+            let ptr = self.map_pairs.as_mut_ptr();
             let remove = ptr.add(index);
             let Bucket { key, value, .. } = ptr::read(remove);
 
@@ -592,13 +598,13 @@ where
                 let inner = &mut *self.0;
                 inner.for_each(drop);
                 // Only way to get here is if we managed to drop all the items we needed to remove
-                let map = &mut *inner.map;
                 unsafe {
-                    map.pairs
+                    inner
+                        .map_pairs
                         .set_len(inner.orig_len - inner.indices_to_remove.len())
                 }
-                mem::swap(&mut inner.indices_table, &mut map.indices);
-                map.debug_assert_invariants();
+                mem::swap(&mut inner.indices_table, &mut inner.map_indices);
+                //map.debug_assert_invariants();
             }
         }
 
@@ -619,7 +625,7 @@ where
         let items_iter = self.iter_forward.clone().map(|i| {
             let i = self.indices_to_remove[i];
             assert!(i < self.orig_len);
-            let bucket = unsafe { &*self.map.pairs.as_ptr().add(i) };
+            let bucket = unsafe { &*self.map_pairs.as_ptr().add(i) };
             (i, &bucket.key, &bucket.value)
         });
         if cfg!(feature = "test_debug") {
@@ -710,7 +716,7 @@ where
         K: Eq,
     {
         let range = simplify_range(range, map.pairs.len());
-        map.erase_indices(range.start, range.end);
+        unsafe { map.erase_indices(range.start, range.end) };
 
         let indices_table = mem::take(&mut map.indices);
         let len = map.pairs.len();
@@ -972,7 +978,7 @@ pub mod rayon {
             R: ops::RangeBounds<usize>,
         {
             let range = simplify_range(range, map.pairs.len());
-            map.erase_indices(range.start, range.end);
+            unsafe { map.erase_indices(range.start, range.end) };
 
             let indices = mem::take(&mut map.indices);
             let pairs = mem::take(&mut map.pairs);

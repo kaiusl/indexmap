@@ -20,6 +20,7 @@ pub use self::subsets::{
 
 use ::alloc::vec::Vec;
 use ::core::{cmp, fmt, ops};
+use hashbrown::hash_table;
 
 use ::equivalent::Equivalent;
 
@@ -32,8 +33,7 @@ mod indices;
 mod remove_iter;
 mod subsets;
 
-type IndicesBucket = hashbrown::raw::Bucket<Indices>;
-type IndicesTable = hashbrown::raw::RawTable<Indices>;
+type IndicesTable = hashbrown::hash_table::HashTable<Indices>;
 
 /// Core of the map that does not depend on S
 pub(super) struct IndexMultimapCore<K, V> {
@@ -78,14 +78,16 @@ fn insert_bulk_no_grow<K, V>(
 {
     let current_num_pairs = current_pairs.len();
     debug_assert_eq!(
-        // SAFETY: we have mutable reference to the table and buckets don't escape
-        unsafe { indices_table.iter().map(|a| a.as_ref().as_slice().len()) }.sum::<usize>(),
+        indices_table
+            .iter()
+            .map(|a| a.as_ref().len())
+            .sum::<usize>(),
         current_num_pairs,
         "mismatch in the number of current pairs"
     );
 
     for (pair_index, pair) in (current_num_pairs..).zip(new_pairs) {
-        match indices_table.get_mut(pair.hash.get(), |indices| {
+        match indices_table.find_mut(pair.hash.get(), |indices| {
             let i = indices[0];
             if i < current_num_pairs {
                 current_pairs[i].key == pair.key
@@ -95,23 +97,13 @@ fn insert_bulk_no_grow<K, V>(
         }) {
             Some(indices) => indices.push(pair_index),
             None => {
-                // Need to check every time as we don't know how many unique keys are in the `new_pairs`
-                // Cannot use `new_pairs.len()` as regular IndexMap does.
-                assert!(indices_table.capacity() > indices_table.len());
-                // SAFETY: we asserted that sufficient capacity exists for this pair and that this pair is not in the table
                 let indices = Indices::one(pair_index);
-                unsafe {
-                    indices_table.insert_no_grow(pair.hash.get(), indices);
-                }
+                indices_table.insert_unique(pair.hash.get(), indices, |_| {
+                    panic!("we know that there is enough capacity, hasher should never be called")
+                });
             }
         }
     }
-}
-
-#[inline]
-/// Binds the mutable borrow of T to the borrow of bucket.
-unsafe fn bucket_as_mut(bucket: &mut IndicesBucket) -> &mut Indices {
-    unsafe { bucket.as_mut() }
 }
 
 #[inline]
@@ -126,18 +118,16 @@ fn erase_index(table: &mut IndicesTable, hash: HashValue, index: usize) {
         }
         Err(_) => false,
     };
-    match table.find(hash.get(), eq_index) {
-        Some(mut bucket) => {
-            // SAFETY: we have &mut to table and thus to the bucket
-            let indices = unsafe { bucket_as_mut(&mut bucket) };
+    match table.find_entry(hash.get(), eq_index) {
+        Ok(mut entry) => {
+            let indices = entry.get_mut();
             if indices.len() == 1 {
-                // SAFETY: the bucket cannot escape as &mut to indices is dropped
-                unsafe { table.erase(bucket) };
+                entry.remove();
             } else {
                 indices.remove(index_in_indices.expect("expected to find index"));
             }
         }
-        None => unreachable!("pair for index not found"),
+        Err(_) => unreachable!("pair for index not found"),
     }
 }
 
@@ -148,19 +138,17 @@ fn erase_index(table: &mut IndicesTable, hash: HashValue, index: usize) {
 /// need to remove must be in the last position.
 #[inline]
 fn erase_index_last(table: &mut IndicesTable, hash: HashValue, index: usize) {
-    match table.find(hash.get(), eq_index_last(index)) {
-        Some(mut bucket) => {
-            // SAFETY: we have &mut to table and thus to the bucket
-            let indices = unsafe { bucket_as_mut(&mut bucket) };
+    match table.find_entry(hash.get(), eq_index_last(index)) {
+        Ok(mut entry) => {
+            let indices = entry.get_mut();
             debug_assert_eq!(*indices.last().unwrap(), index);
             if indices.len() == 1 {
-                // SAFETY: the bucket cannot escape as &mut to indices is dropped
-                unsafe { table.erase(bucket) };
+                entry.remove();
             } else {
                 indices.pop();
             }
         }
-        None => unreachable!("pair for index not found"),
+        Err(_) => unreachable!("pair for index not found"),
     }
 }
 
@@ -169,7 +157,7 @@ fn update_index(table: &mut IndicesTable, hash: HashValue, old: usize, new: usiz
     // Index to `old` in the indices
     let mut olds_index: usize = 0;
     let indices = table
-        .get_mut(hash.get(), |indices| match indices.binary_search(&old) {
+        .find_mut(hash.get(), |indices| match indices.binary_search(&old) {
             Ok(i) => {
                 olds_index = i;
                 true
@@ -190,7 +178,7 @@ fn update_index(table: &mut IndicesTable, hash: HashValue, old: usize, new: usiz
 fn update_index_last(table: &mut IndicesTable, hash: HashValue, old: usize, new: usize) {
     // Index to `old` in the indices
     let indices = table
-        .get_mut(hash.get(), eq_index_last(old))
+        .find_mut(hash.get(), eq_index_last(old))
         .expect("index not found");
     indices.replace(indices.len() - 1, new);
 }
@@ -235,7 +223,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         K: Eq,
     {
         let mut index_count = 0; // Count the total number of indices in self.indices
-        let index_iter = unsafe { self.indices.iter().map(|indices| indices.as_ref()) };
+        let index_iter = self.indices.iter();
         let mut seen_indices = crate::IndexSet::with_capacity(index_iter.len());
         for indices in index_iter {
             index_count += indices.len();
@@ -287,7 +275,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         // equals the number of pairs in self.paris and all of the indices in
         // self.indices are unique then there must be an index for each pair
         for (i, Bucket { hash, .. }) in self.pairs.iter().enumerate() {
-            let indices = self.indices.get(hash.get(), eq_index(i));
+            let indices = self.indices.find(hash.get(), eq_index(i));
             assert!(
                 indices.is_some(),
                 "expected a pair to have a matching entry in indices table"
@@ -374,8 +362,6 @@ impl<K, V> IndexMultimapCore<K, V> {
 }
 
 impl<K, V> IndexMultimapCore<K, V> {
-    /// The maximum capacity before the `entries` allocation would exceed `isize::MAX`.
-    //const MAX_ENTRIES_CAPACITY: usize = (isize::MAX as usize) / mem::size_of::<Bucket<K, V>>();
     #[inline]
     pub(super) const fn new() -> Self {
         IndexMultimapCore {
@@ -492,8 +478,7 @@ impl<K, V> IndexMultimapCore<K, V> {
 
     pub(super) fn shrink_to_fit(&mut self) {
         self.shrink_to(0);
-        // SAFETY: we own the RawTable and don't let the bucket's escape
-        unsafe { self.indices.iter().for_each(|a| a.as_mut().shrink_to_fit()) };
+        self.indices.iter_mut().for_each(|a| a.shrink_to_fit());
     }
 
     /// Return the index in `entries` where an equivalent key can be found
@@ -504,7 +489,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         let eq = equivalent(key, &self.pairs);
         let indices = self
             .indices
-            .get(hash.get(), eq)
+            .find(hash.get(), eq)
             .map(|i| i.as_slice())
             .unwrap_or_default();
         if cfg!(debug_assertions) && !indices.is_empty() {
@@ -519,7 +504,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         Q: ?Sized + Equivalent<K>,
     {
         let eq = equivalent(key, &self.pairs);
-        if let Some(indices) = self.indices.get(hash.get(), eq) {
+        if let Some(indices) = self.indices.find(hash.get(), eq) {
             self.debug_assert_indices(indices);
             // SAFETY: we only store in bounds indices (it's one of our invariants)
             unsafe { Subset::from_slice_unchecked(&self.pairs, indices) }
@@ -533,7 +518,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         Q: ?Sized + Equivalent<K>,
     {
         let eq = equivalent(key, &self.pairs);
-        if let Some(indices) = self.indices.get(hash.get(), eq) {
+        if let Some(indices) = self.indices.find(hash.get(), eq) {
             self.debug_assert_indices(indices);
             // SAFETY: we only store in bounds indices (it's one of our invariants)
             unsafe { SubsetMut::from_slice_unchecked(&mut self.pairs, indices.as_unique_slice()) }
@@ -550,24 +535,9 @@ impl<K, V> IndexMultimapCore<K, V> {
     }
 
     fn indices_mut(&mut self) -> impl Iterator<Item = &mut Indices> {
-        // SAFETY: we're not letting any of the buckets escape this function,
-        // only the item references that are appropriately bound to `&mut self`.
-        unsafe { self.indices.iter().map(|bucket| bucket.as_mut()) }
+        self.indices.iter_mut()
     }
 
-    /// Return the raw bucket for the given index
-    ///
-    /// # Panics
-    ///
-    /// * If `index` is out of bounds for `self.pairs`
-    fn find_index(&self, index: usize) -> IndicesBucket {
-        // We'll get a "nice" bounds-check from indexing `self.pairs`,
-        // and then we expect to find it in the table as well.
-        let hash = self.pairs[index].hash.get();
-        self.indices
-            .find(hash, |i| i.contains(&index))
-            .expect("index not found")
-    }
 
     /// Appends a new entry to the existing key, or insert the key.
     pub(super) fn insert_append_full(&mut self, hash: HashValue, key: K, value: V) -> usize
@@ -576,14 +546,14 @@ impl<K, V> IndexMultimapCore<K, V> {
     {
         let i = self.pairs.len();
         let eq = equivalent(&key, &self.pairs);
-        match self.indices.get_mut(hash.get(), eq) {
+        match self.indices.find_mut(hash.get(), eq) {
             Some(indices) => {
                 // Cannot panic as none of the entries in `self.indices` can contain `i`
                 indices.push(i);
             }
             None => {
                 self.indices
-                    .insert(hash.get(), Indices::one(i), get_hash(&self.pairs));
+                    .insert_unique(hash.get(), Indices::one(i), get_hash(&self.pairs));
             }
         }
         self.pairs.push(Bucket { hash, key, value });
@@ -592,15 +562,20 @@ impl<K, V> IndexMultimapCore<K, V> {
 
     /// Append a key-value pair, *without* checking whether it already exists,
     /// and return the pair's new index.
-    fn push(&mut self, hash: HashValue, key: K, value: V) -> (usize, IndicesBucket) {
+    fn push(
+        &mut self,
+        hash: HashValue,
+        key: K,
+        value: V,
+    ) -> (usize, hash_table::OccupiedEntry<'_, Indices>) {
         let i = self.pairs.len();
-        let bucket = self
+        let entry = self
             .indices
-            .insert(hash.get(), Indices::one(i), get_hash(&self.pairs));
+            .insert_unique(hash.get(), Indices::one(i), get_hash(&self.pairs));
         self.pairs.push(Bucket { hash, key, value });
-        #[allow(unsafe_code)]
-        self.debug_assert_indices(unsafe { bucket.as_ref() });
-        (i, bucket)
+        //#[allow(unsafe_code)]
+        //self.debug_assert_indices(bucket.get());
+        (i, entry)
     }
 
     pub(super) fn reverse(&mut self)
@@ -791,7 +766,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         K: Eq,
     {
         if len < self.len_pairs() {
-            self.erase_indices(len, self.pairs.len());
+            unsafe { self.erase_indices(len, self.pairs.len()) };
             self.pairs.truncate(len);
             self.debug_assert_invariants();
         }
@@ -815,7 +790,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         assert!(at <= self.pairs.len());
         let unique_keys = self.len_keys();
 
-        self.erase_indices(at, self.pairs.len());
+        unsafe { self.erase_indices(at, self.pairs.len()) };
         let pairs = self.pairs.split_off(at);
 
         // TODO: We are most likely over allocating here.
@@ -874,33 +849,38 @@ impl<K, V> IndexMultimapCore<K, V> {
         // SAFETY: Can't take two `get_mut` references from one table, so we
         // must use raw buckets to do the swap. This is still safe because we
         // are locally sure they won't dangle, and we write them individually.
-        unsafe {
-            let raw_bucket_a = self.find_index(a);
-            let raw_bucket_b = self.find_index(b);
-            if core::ptr::eq(raw_bucket_a.as_ptr(), raw_bucket_b.as_ptr()) {
-                // both indices belong to the same entry,
-                // if we swap entries indices are still correct
-                // nothing to do
-            } else {
-                let indices_a = raw_bucket_a.as_mut();
-                let index_a = indices_a
-                    .iter()
-                    .position(|&i| i == a)
-                    .expect("index not found");
 
-                let indices_b = raw_bucket_b.as_mut();
-                let index_b = indices_b
-                    .iter()
-                    .position(|&i| i == b)
-                    .expect("index not found");
-                // Cannot panic because:
-                //   * indices contains only in bound indices
-                //   * new index can exist in the same indices if a and b belong
-                //     to the same entry, but we checked for that above
-                indices_a.replace(index_a, b);
-                indices_b.replace(index_b, a);
-            }
+        let a_item = &self.pairs[a];
+        let b_item = &self.pairs[b];
+        let a_indices = self
+            .indices
+            .find_mut(a_item.hash.get(), equivalent(&a_item.key, &self.pairs))
+            .unwrap();
+        if a_indices.iter().any(|&i| i == b) {
+            // both indices belong to the same entry,
+            // if we swap entries indices are still correct
+            // nothing to do
+        } else {
+            let index_a = a_indices
+                .iter()
+                .position(|&i| i == a)
+                .expect("index not found");
+
+            a_indices.replace(index_a, b);
+
+            let b_indices = self
+                .indices
+                .find_mut(b_item.hash.get(), equivalent(&b_item.key, &self.pairs))
+                .unwrap();
+
+            let index_b = b_indices
+                .iter()
+                .position(|&i| i == b)
+                .expect("index not found");
+
+            b_indices.replace(index_b, a);
         }
+
         self.pairs.swap(a, b);
 
         self.debug_assert_invariants();
@@ -910,7 +890,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     ///
     /// All of these items should still be at their original location in `entries`.
     /// This is used by `drain`, which will let `Vec::drain` do the work on `entries`.
-    fn erase_indices(&mut self, start: usize, end: usize)
+    unsafe fn erase_indices(&mut self, start: usize, end: usize)
     where
         K: Eq,
     {
@@ -919,7 +899,7 @@ impl<K, V> IndexMultimapCore<K, V> {
 
         let erased = erased_pairs.len();
         let shifted = shifted_pairs.len();
-        let half_capacity = self.indices.buckets() / 2;
+        let half_capacity = self.indices.capacity() / 2;
 
         // Use a heuristic between different strategies
         if erased == 0 {
@@ -948,29 +928,27 @@ impl<K, V> IndexMultimapCore<K, V> {
             }
         } else {
             // Sweep the whole table for adjustments
-            self.erase_indices_sweep(start, end);
+            unsafe { self.erase_indices_sweep(start, end) };
         }
     }
 
     /// Sweep the whole table to erase indices start..end
-    fn erase_indices_sweep(&mut self, start: usize, end: usize) {
-        // SAFETY: we're not letting any of the buckets escape this function
-        unsafe {
-            let offset = end - start;
-            for mut bucket in self.indices.iter() {
-                let indices = bucket_as_mut(&mut bucket);
-                // SAFETY:
-                //  a) we remove all the indices in range start..end,
-                //     thus any starting index >= end turned into
-                //     index in range start..end will be unique.
-                //     Now as we use constant offset
-                //     and self.indices as whole also contains only unique indices,
-                //     means that the resulting indices will be unique
-                //  b) retain preserves the order and using constant offset
-                //     cannot change the order
-                //  d) above points together ensure that individual set
-                //     of indices remain unique and sorted and the whole
-                //     indices table will also contain unique indices
+    unsafe fn erase_indices_sweep(&mut self, start: usize, end: usize) {
+        let offset = end - start;
+        self.indices.retain(|indices| {
+            // SAFETY:
+            //  a) we remove all the indices in range start..end,
+            //     thus any starting index >= end turned into
+            //     index in range start..end will be unique.
+            //     Now as we use constant offset
+            //     and self.indices as whole also contains only unique indices,
+            //     means that the resulting indices will be unique
+            //  b) retain preserves the order and using constant offset
+            //     cannot change the order
+            //  d) above points together ensure that individual set
+            //     of indices remain unique and sorted and the whole
+            //     indices table will also contain unique indices
+            unsafe {
                 indices.retain_mut(|i| {
                     if *i >= end {
                         *i -= offset;
@@ -978,12 +956,10 @@ impl<K, V> IndexMultimapCore<K, V> {
                     } else {
                         *i < start
                     }
-                });
-                if indices.len() == 0 {
-                    self.indices.erase(bucket);
-                }
-            }
-        }
+                })
+            };
+            !indices.is_empty()
+        });
     }
 
     /// # Panics
@@ -994,8 +970,15 @@ impl<K, V> IndexMultimapCore<K, V> {
     where
         K: Eq,
     {
-        self.indices.clear();
-        insert_bulk_no_grow(&mut self.indices, &[], &self.pairs);
+        Self::rebuild_hash_table_core(&self.pairs, &mut self.indices);
+    }
+
+    fn rebuild_hash_table_core(pairs: &[Bucket<K, V>], indices_table: &mut IndicesTable)
+    where
+        K: Eq,
+    {
+        indices_table.clear();
+        insert_bulk_no_grow(indices_table, &[], pairs);
     }
 
     /// Decrements indexes by variable amount determined by how many ranges have been before it,
@@ -1010,12 +993,20 @@ impl<K, V> IndexMultimapCore<K, V> {
     ///     indices [5, 6], get decremented by 2
     ///     indices [8, ...] get decremented by 3
     unsafe fn decrement_indices_batched(&mut self, indices: &Indices) {
-        match self.len_keys() {
+        unsafe { Self::decrement_indices_batched_core(&self.pairs, &mut self.indices, indices) };
+    }
+
+    unsafe fn decrement_indices_batched_core(
+        pairs: &[Bucket<K, V>],
+        indices_table: &mut IndicesTable,
+        indices: &Indices,
+    ) {
+        match indices_table.len() {
             0 => {}
             1 => {
                 // if there is only 1 key left in the map,
                 // then the indices must be sequential 0..len
-                for indices in self.indices_mut() {
+                for indices in indices_table {
                     // don't use self.pairs.len() because values
                     // to be removed may not be removed yet
                     let len = indices.len();
@@ -1029,8 +1020,10 @@ impl<K, V> IndexMultimapCore<K, V> {
                 // fastest if removing only one index
                 // Shift the tail after the last item
                 let i = *indices.last().unwrap();
-                if i < self.pairs.len() {
-                    unsafe { self.decrement_indices(i + 1, self.pairs.len(), 1) };
+                if i < pairs.len() {
+                    unsafe {
+                        Self::decrement_indices_core(pairs, indices_table, i + 1, pairs.len(), 1)
+                    };
                 }
             }
             _ => {
@@ -1039,7 +1032,7 @@ impl<K, V> IndexMultimapCore<K, V> {
                 let first = *indices.first().unwrap();
                 let last = *indices.last().unwrap();
 
-                for indices_in_map in self.indices_mut() {
+                for indices_in_map in indices_table {
                     for i in unsafe { indices_in_map.as_mut_slice() } {
                         if *i < first {
                             continue;
@@ -1060,11 +1053,21 @@ impl<K, V> IndexMultimapCore<K, V> {
     /// The index `start - amount` should not exist in `self.indices`.
     /// All entries should still be in their original positions.
     unsafe fn decrement_indices(&mut self, start: usize, end: usize, amount: usize) {
+        unsafe { Self::decrement_indices_core(&self.pairs, &mut self.indices, start, end, amount) };
+    }
+
+    unsafe fn decrement_indices_core(
+        pairs: &[Bucket<K, V>],
+        indices_table: &mut IndicesTable,
+        start: usize,
+        end: usize,
+        amount: usize,
+    ) {
         // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
-        let shifted_pairs = &self.pairs[start..end];
-        if shifted_pairs.len() > self.indices.buckets() / 2 {
+        let shifted_pairs = &pairs[start..end];
+        if shifted_pairs.len() > indices_table.len() / 2 {
             // Shift all indices in range.
-            for indices in self.indices_mut() {
+            for indices in indices_table {
                 for i in unsafe { indices.as_mut_slice() } {
                     if *i >= end {
                         // early break as we go past end and our indices are sorted
@@ -1077,7 +1080,7 @@ impl<K, V> IndexMultimapCore<K, V> {
         } else {
             // Find each entry in range to shift its index.
             for (i, entry) in (start..end).zip(shifted_pairs) {
-                update_index(&mut self.indices, entry.hash, i, i - amount);
+                update_index(indices_table, entry.hash, i, i - amount);
             }
         }
     }
@@ -1089,7 +1092,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     unsafe fn increment_indices(&mut self, start: usize, end: usize) {
         // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
         let shifted_pairs = &self.pairs[start..end];
-        if shifted_pairs.len() > self.indices.buckets() / 2 {
+        if shifted_pairs.len() > self.indices.len() / 2 {
             // Shift all indices in range.
             for indices in self.indices_mut() {
                 for i in unsafe { indices.as_mut_slice() } {
@@ -1120,8 +1123,7 @@ where
     }
 
     fn clone_from(&mut self, other: &Self) {
-        let hasher = get_hash(&other.pairs);
-        self.indices.clone_from_with_hasher(&other.indices, hasher);
+        self.indices.clone_from(&other.indices);
         if self.pairs.capacity() < other.pairs.len() {
             let additional = other.pairs.len() - self.pairs.len();
             self.pairs.reserve(additional);
@@ -1155,14 +1157,11 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Use more readable output - each bucket is always one line
         // SAFETY: we're not letting any of the buckets escape this function
-        let indices = unsafe { self.0.indices.iter().map(|bucket| bucket.as_ref()) };
+        let indices = self.0.indices.iter();
         let mut list = f.debug_map();
         for i in indices {
             let key = self.0.pairs[i[0]].key_ref();
-            list.entry(
-                &format_args!("{key:?}"),
-                &format_args!("{:?}", i.as_slice()),
-            );
+            list.entry(&format_args!("{key:?}"), &format_args!("{:?}", i));
         }
         list.finish()
     }
