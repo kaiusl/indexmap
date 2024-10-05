@@ -11,9 +11,7 @@ use super::{
     SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
 };
 use crate::multimap::core::IndicesTable;
-use crate::util::{
-    check_unique_and_in_bounds, try_simplify_range, DebugIterAsList, DebugIterAsNumberedCompactList,
-};
+use crate::util::{DebugIterAsList, DebugIterAsNumberedCompactList};
 use crate::{Bucket, HashValue, TryReserveError};
 
 /// Entry for an existing key-value pair or a vacant location to
@@ -569,13 +567,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     ///
     /// [len]: Self::len
     pub fn nth(&self, n: usize) -> Option<(usize, &K, &V)> {
-        match self.indices().get(n) {
-            Some(&index) => {
-                let Bucket { key, value, .. } = &self.pairs[index];
-                Some((index, key, value))
-            }
-            None => None,
-        }
+        self.as_subset().nth(n)
     }
 
     /// Returns a mutable reference to the `n`th pair in this subset or [`None`]
@@ -583,13 +575,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     ///
     /// [len]: Self::len
     pub fn nth_mut(&mut self, n: usize) -> Option<(usize, &K, &mut V)> {
-        match self.indices().get(n) {
-            Some(&index) => {
-                let Bucket { key, value, .. } = &mut self.pairs[index];
-                Some((index, key, value))
-            }
-            None => None,
-        }
+        self.as_subset_mut().into_nth_mut(n)
     }
 
     /// Converts `self` into a long lived mutable reference to the `n`th pair in
@@ -597,55 +583,37 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     ///
     /// [len]: Self::len
     pub fn into_nth(self, n: usize) -> Option<(usize, &'a K, &'a mut V)> {
-        match self.indices().get(n) {
-            Some(&index) => {
-                let Bucket { key, value, .. } = &mut self.pairs[index];
-                Some((index, key, value))
-            }
-            None => None,
-        }
+        self.into_subset_mut().into_nth_mut(n)
     }
 
     /// Return a reference to the first pair in this entry.
     pub fn first(&self) -> (usize, &K, &V) {
-        let index = self.indices()[0];
-        let Bucket { key, value, .. } = &self.pairs[index];
-        (index, key, value)
+        self.as_subset().first().unwrap()
     }
 
     /// Return a mutable reference to the first pair in this entry.
     pub fn first_mut(&mut self) -> (usize, &K, &mut V) {
-        let index = self.indices()[0];
-        let Bucket { key, value, .. } = &mut self.pairs[index];
-        (index, key, value)
+        self.as_subset_mut().into_first_mut().unwrap()
     }
 
     /// Converts `self` into a long lived mutable reference to the first pair in this entry.
     pub fn into_first(self) -> (usize, &'a K, &'a mut V) {
-        let index = self.indices()[0];
-        let Bucket { key, value, .. } = &mut self.pairs[index];
-        (index, key, value)
+        self.into_subset_mut().into_first_mut().unwrap()
     }
 
     /// Returns a reference to the last pair in this entry.
     pub fn last(&self) -> (usize, &K, &V) {
-        let index = *self.indices().last().unwrap();
-        let Bucket { key, value, .. } = &self.pairs[index];
-        (index, key, value)
+        self.as_subset().last().unwrap()
     }
 
     /// Returns a mutable reference to the last pair in this entry.
     pub fn last_mut(&mut self) -> (usize, &K, &mut V) {
-        let index = *self.indices().last().unwrap();
-        let Bucket { key, value, .. } = &mut self.pairs[index];
-        (index, key, value)
+        self.as_subset_mut().into_last_mut().unwrap()
     }
 
     /// Converts `self` into a long lived mutable reference to the last pair in this entry.
     pub fn into_last(self) -> (usize, &'a K, &'a mut V) {
-        let index = *self.indices().last().unwrap();
-        let Bucket { key, value, .. } = &mut self.pairs[index];
-        (index, key, value)
+        self.into_subset_mut().into_last_mut().unwrap()
     }
 
     /// Returns a immutable subset of key-value pairs in the given range of indices.
@@ -657,12 +625,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     where
         R: ops::RangeBounds<usize>,
     {
-        let indices = self.indices();
-        let range = try_simplify_range(range, indices.len())?;
-        match indices.get(range) {
-            Some(indices) => Some(Subset::new(self.pairs, indices)),
-            None => None,
-        }
+        self.as_subset().get_range(range)
     }
 
     /// Returns a mutable subset of key-value pairs in the given range of indices.
@@ -674,11 +637,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     where
         R: ops::RangeBounds<usize>,
     {
-        let indices = self.indices_entry.get().as_unique_slice();
-        match indices.get_range(range) {
-            Some(indices) => Some(SubsetMut::new(self.pairs, indices)),
-            None => None,
-        }
+        self.as_subset_mut().into_range(range)
     }
 
     /// Converts `self` into a mutable subset of key-value pairs in the given range of indices.
@@ -690,11 +649,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     where
         R: ops::RangeBounds<usize>,
     {
-        let indices = self.indices_entry.into_mut().as_unique_slice();
-        match indices.get_range(range) {
-            Some(indices) => Some(SubsetMut::new(self.pairs, indices)),
-            None => None,
-        }
+        self.into_subset_mut().into_range(range)
     }
 
     /// Returns mutable references to many items at once or [`None`] if any index
@@ -703,7 +658,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         &mut self,
         indices: [usize; N],
     ) -> Option<[(usize, &K, &mut V); N]> {
-        unsafe { Self::get_many_mut_core(self.pairs, self.indices_entry.get(), indices) }
+        self.as_subset_mut().into_many_mut(indices)
     }
 
     /// Returns mutable references to many items at once or [`None`] if any index
@@ -712,27 +667,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         self,
         indices: [usize; N],
     ) -> Option<[(usize, &'a K, &'a mut V); N]> {
-        unsafe { Self::get_many_mut_core(self.pairs, self.indices_entry.into_mut(), indices) }
-    }
-
-    #[inline]
-    unsafe fn get_many_mut_core<'b, const N: usize>(
-        pairs: &'b mut [Bucket<K, V>],
-        subset_indices: &[usize],
-        get_indices: [usize; N],
-    ) -> Option<[(usize, &'b K, &'b mut V); N]> {
-        let pairs_len = pairs.len();
-        if !check_unique_and_in_bounds(&get_indices, subset_indices.len()) {
-            return None;
-        }
-
-        let pairs = pairs.as_mut_ptr();
-        Some(get_indices.map(|i| {
-            let i = unsafe { *subset_indices.get_unchecked(i) };
-            debug_assert!(i < pairs_len, "index out of bounds");
-            let Bucket { ref key, value, .. } = unsafe { &mut *pairs.add(i) };
-            (i, key, value)
-        }))
+        self.into_subset_mut().into_many_mut(indices)
     }
 
     /// Remove all the key-value pairs for this entry and return an iterator
