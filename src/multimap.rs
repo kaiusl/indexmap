@@ -23,8 +23,8 @@
 //! [`Eq`]: ::core::cmp::Eq
 
 pub use self::core::{
-    Drain, Entry, EntryIndices, OccupiedEntry, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
-    SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
+    Drain, Entry, EntryIndices, IndexedEntry, OccupiedEntry, ShiftRemove, Subset, SubsetIter,
+    SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
 };
 
 use ::alloc::boxed::Box;
@@ -951,6 +951,16 @@ impl<K, V, S> IndexMultimap<K, V, S> {
     pub fn get_index_mut(&mut self, index: usize) -> Option<(&K, &mut V)> {
         self.core.as_mut_pairs().get_mut(index).map(Bucket::ref_mut)
     }
+
+    /// Get an entry in the map by index for in-place manipulation.
+    ///
+    /// Valid indices are <code>0 <= index < self.[len_pairs]\()</code>.
+    ///
+    /// Computes in **O(1)** time.
+    pub fn get_index_entry(&mut self, index: usize) -> Option<IndexedEntry<'_, K, V>> {
+        IndexedEntry::new(&mut self.core, index)
+    }
+
     /// Return a subset of key-value pairs corresponding to the key at the given `index`.
     ///
     /// If the `index` is out of bounds, then the returned subset is empty.

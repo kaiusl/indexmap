@@ -2,6 +2,7 @@
 
 use ::alloc::vec::Vec;
 use ::core::{fmt, ops, ptr};
+use core::{cmp, mem};
 
 use hashbrown::hash_table;
 
@@ -378,6 +379,29 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
             indices_entry: entry,
             hash,
             key,
+        }
+    }
+
+    pub(super) fn new_by_index(map: &'a mut IndexMultimapCore<K, V>, index: usize) -> Option<Self>
+    where
+        K: Eq,
+    {
+        let pairs = &mut map.pairs;
+        let bucket = pairs.get(index);
+        match bucket {
+            Some(bucket) => {
+                let eq = equivalent(&bucket.key, pairs);
+                let entry = map.indices.entry(bucket.hash.get(), eq, get_hash(pairs));
+                match entry {
+                    hash_table::Entry::Occupied(entry) => {
+                        Some(OccupiedEntry::new(pairs, entry, bucket.hash, None))
+                    }
+                    hash_table::Entry::Vacant(_) => {
+                        unreachable!()
+                    }
+                }
+            }
+            _ => None,
         }
     }
 
@@ -1021,5 +1045,191 @@ where
             s.field("pairs", &DebugIterAsList::new(self.iter()));
         }
         s.finish()
+    }
+}
+
+/// A view into an occupied entry in an [`IndexMutlimap`][crate::IndexMultimap] obtained by index.
+///
+/// This `struct` is created from the [`get_index_entry`][crate::IndexMultimap::get_index_entry] method.
+
+pub struct IndexedEntry<'a, K, V> {
+    map: &'a mut IndexMultimapCore<K, V>,
+    index: usize,
+}
+
+impl<'a, K, V> IndexedEntry<'a, K, V> {
+    pub(in crate::multimap) fn new(
+        map: &'a mut IndexMultimapCore<K, V>,
+        index: usize,
+    ) -> Option<Self> {
+        if index < map.len_pairs() {
+            Some(Self { map, index })
+        } else {
+            None
+        }
+    }
+
+    /// Return the index of the key-value pair
+    #[inline]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Gets a reference to the entry's key in the map.
+    pub fn key(&self) -> &K {
+        &self.map.pairs[self.index].key
+    }
+
+    /// Gets a reference to the entry's value in the map.
+    pub fn value(&self) -> &V {
+        &self.map.pairs[self.index].value
+    }
+
+    /// Gets a mutable reference to the entry's value in the map.
+    ///
+    /// If you need a reference which may outlive the destruction of the
+    /// `IndexedEntry` value, see [`into_value_mut`][Self::into_value_mut].
+    pub fn value_mut(&mut self) -> &mut V {
+        &mut self.map.pairs[self.index].value
+    }
+
+    /// Converts into a mutable reference to the entry's value in the map,
+    /// with a lifetime bound to the map itself.
+    pub fn into_value_mut(self) -> &'a mut V {
+        &mut self.map.pairs[self.index].value
+    }
+
+    /// Gets a reference to the entry's key and value in the map.
+    pub fn get(&self) -> (usize, &K, &V) {
+        let bucket = &self.map.pairs[self.index];
+        (self.index, &bucket.key, &bucket.value)
+    }
+
+    /// Gets a mutable reference to the entry's key and value in the map.
+    ///
+    /// If you need a reference which may outlive the destruction of the
+    /// `IndexedEntry` value, see [`into_mut`][Self::into_mut].
+    pub fn get_mut(&mut self) -> (usize, &K, &mut V) {
+        let bucket = &mut self.map.pairs[self.index];
+        (self.index, &bucket.key, &mut bucket.value)
+    }
+
+    /// Converts into a mutable reference to the entry's key and value in the map,
+    pub fn into_mut(self) -> (usize, &'a K, &'a mut V) {
+        let bucket = &mut self.map.pairs[self.index];
+        (self.index, &bucket.key, &mut bucket.value)
+    }
+
+    /// Gets a subset of all the pairs in the map with the equivalent key to this entry.
+    pub fn get_all(&self) -> Subset<'_, K, V>
+    where
+        K: Eq,
+    {
+        self.map.get_all_by_index(self.index)
+    }
+
+    /// Gets a mutable subset of all the pairs in the map with the equivalent key to this entry.
+    pub fn get_all_mut(&mut self) -> SubsetMut<'_, K, V>
+    where
+        K: Eq,
+    {
+        self.map.get_all_mut_by_index(self.index)
+    }
+
+    /// Gets a mutable subset of all the pairs in the map with the equivalent key to this entry.
+    pub fn into_all_mut(self) -> SubsetMut<'a, K, V>
+    where
+        K: Eq,
+    {
+        self.map.get_all_mut_by_index(self.index)
+    }
+
+    /// Convert into an occupied entry.
+    pub fn into_occupied_entry(self) -> OccupiedEntry<'a, K, V>
+    where
+        K: Eq,
+    {
+        OccupiedEntry::new_by_index(self.map, self.index).unwrap()
+    }
+
+    /// Sets the value of the entry to `value`, and returns the entry's old value.
+    pub fn insert(&mut self, value: V) -> V {
+        mem::replace(self.value_mut(), value)
+    }
+
+    /// Remove and return the key, value pair stored in the map for this entry
+    ///
+    /// Like [`Vec::swap_remove`][crate::Vec::swap_remove], the pair is removed by swapping it with
+    /// the last element of the map and popping it off.
+    /// **This perturbs the position of what used to be the last element!**
+    ///
+    /// Computes in **O(1)** time (average).
+    pub fn swap_remove(self) -> (K, V)
+    where
+        K: cmp::Eq,
+    {
+        self.map.swap_remove_index(self.index).unwrap()
+    }
+
+    /// Remove and return the key, value pair stored in the map for this entry
+    ///
+    /// Like [`Vec::remove`][crate::Vec::remove], the pair is removed by shifting all of the
+    /// elements that follow it, preserving their relative order.
+    /// **This perturbs the index of all of those elements!**
+    ///
+    /// Computes in **O(n)** time (average).
+    pub fn shift_remove(self) -> (K, V)
+    where
+        K: cmp::Eq,
+    {
+        self.map.shift_remove_index(self.index).unwrap()
+    }
+
+    /// Moves the position of the entry to a new index
+    /// by shifting all other entries in-between.
+    ///
+    /// This is equivalent to [`IndexMultimap::move_index`]
+    /// coming `from` the current [`.index()`][Self::index].
+    ///
+    /// * If `self.index() < to`, the other pairs will shift down while the targeted pair moves up.
+    /// * If `self.index() > to`, the other pairs will shift up while the targeted pair moves down.
+    ///
+    /// ***Panics*** if `to` is out of bounds.
+    ///
+    /// Computes in **O(n)** time (average).
+    ///
+    /// [`IndexMultimap::move_index`]: crate::IndexMultimap::move_index
+    pub fn move_index(self, to: usize)
+    where
+        K: cmp::Eq,
+    {
+        self.map.move_index(self.index, to);
+    }
+
+    /// Swaps the position of entry with another.
+    ///
+    /// This is equivalent to [`IndexMultimap::swap_indices`]
+    /// with the current [`.index()`][Self::index] as one of the two being swapped.
+    ///
+    /// ***Panics*** if the `other` index is out of bounds.
+    ///
+    /// Computes in **O(1)** time (average).
+    ///
+    /// [`IndexMultimap::swap_indices`]: crate::IndexMultimap::swap_indices
+    pub fn swap_indices(self, other: usize)
+    where
+        K: cmp::Eq,
+    {
+        self.map.swap_indices(self.index, other);
+    }
+}
+
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for IndexedEntry<'_, K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IndexedEntry")
+            .field("index", &self.index)
+            .field("key", self.key())
+            .field("value", self.value())
+            .finish()
     }
 }

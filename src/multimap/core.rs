@@ -9,7 +9,7 @@
 //!
 //! However, we should probably not let this show in the public API or docs.
 
-pub use self::entry::{Entry, EntryIndices, OccupiedEntry, VacantEntry};
+pub use self::entry::{Entry, EntryIndices, IndexedEntry, OccupiedEntry, VacantEntry};
 #[cfg(feature = "rayon")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 pub use self::remove_iter::rayon::ParDrain;
@@ -486,10 +486,8 @@ impl<K, V> IndexMultimapCore<K, V> {
     where
         Q: ?Sized + Equivalent<K>,
     {
-        let eq = equivalent(key, &self.pairs);
         let indices = self
-            .indices
-            .find(hash.get(), eq)
+            .get_indices_of_core(hash, key)
             .map(|i| i.as_slice())
             .unwrap_or_default();
         if cfg!(debug_assertions) && !indices.is_empty() {
@@ -497,6 +495,14 @@ impl<K, V> IndexMultimapCore<K, V> {
         }
 
         indices
+    }
+
+    pub(super) fn get_indices_of_core<Q>(&self, hash: HashValue, key: &Q) -> Option<&Indices>
+    where
+        Q: ?Sized + Equivalent<K>,
+    {
+        let eq = equivalent(key, &self.pairs);
+        self.indices.find(hash.get(), eq)
     }
 
     pub(super) fn get<Q>(&self, hash: HashValue, key: &Q) -> Subset<'_, K, V>
@@ -559,7 +565,6 @@ impl<K, V> IndexMultimapCore<K, V> {
     fn indices_mut(&mut self) -> impl Iterator<Item = &mut Indices> {
         self.indices.iter_mut()
     }
-
 
     /// Appends a new entry to the existing key, or insert the key.
     pub(super) fn insert_append_full(&mut self, hash: HashValue, key: K, value: V) -> usize
