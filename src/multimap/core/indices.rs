@@ -211,13 +211,26 @@ impl ops::Deref for Indices {
     }
 }
 
+/// Marker trait for types that do not have interior mutability.
+pub(crate) unsafe trait NoInteriorMutability {}
+
+unsafe impl NoInteriorMutability for usize {}
+
+unsafe impl<T> NoInteriorMutability for &T where T: NoInteriorMutability {}
+
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct UniqueSlice<T> {
+pub(crate) struct UniqueSlice<T>
+where
+    T: NoInteriorMutability,
+{
     inner: [T],
 }
 
-impl<T> ops::Deref for UniqueSlice<T> {
+impl<T> ops::Deref for UniqueSlice<T>
+where
+    T: NoInteriorMutability,
+{
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -225,14 +238,25 @@ impl<T> ops::Deref for UniqueSlice<T> {
     }
 }
 
-impl<'a, T> Default for &'a UniqueSlice<T> {
+impl<'a, T> Default for &'a UniqueSlice<T>
+where
+    T: NoInteriorMutability,
+{
     fn default() -> Self {
         // SAFETY: empty slice is unique
         unsafe { UniqueSlice::from_slice_unchecked(&[]) }
     }
 }
 
-impl<T> UniqueSlice<T> {
+impl<T> UniqueSlice<T>
+where
+    T: NoInteriorMutability,
+{
+    pub(crate) fn empty<'a>() -> &'a Self {
+        // SAFETY: empty slice is unique
+        unsafe { Self::from_slice_unchecked(&[]) }
+    }
+
     /// # Safety
     ///
     /// * provided `slice` must contain unique items
@@ -288,6 +312,7 @@ impl<T> UniqueSlice<T> {
     pub(crate) fn split_first(&self) -> Option<(&T, &Self)> {
         match self.inner.split_first() {
             Some((first, tail)) => {
+                // SAFETY: if self was unique, then self without first item is also unique
                 Some((first, unsafe { UniqueSlice::from_slice_unchecked(tail) }))
             }
             None => None,
@@ -297,13 +322,17 @@ impl<T> UniqueSlice<T> {
     /// Returns the last and all the rest of the elements of the slice, or None if it is empty
     pub(crate) fn split_last(&self) -> Option<(&T, &Self)> {
         match self.inner.split_last() {
+            // SAFETY: if self was unique, then self without last item is also unique
             Some((last, head)) => Some((last, unsafe { UniqueSlice::from_slice_unchecked(head) })),
             None => None,
         }
     }
 }
 
-impl<'a, T> IntoIterator for &'a UniqueSlice<T> {
+impl<'a, T> IntoIterator for &'a UniqueSlice<T>
+where
+    T: NoInteriorMutability,
+{
     type Item = &'a T;
     type IntoIter = UniqueIter<slice::Iter<'a, T>>;
 
