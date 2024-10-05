@@ -951,6 +951,29 @@ impl<K, V, S> IndexMultimap<K, V, S> {
     pub fn get_index_mut(&mut self, index: usize) -> Option<(&K, &mut V)> {
         self.core.as_mut_pairs().get_mut(index).map(Bucket::ref_mut)
     }
+    /// Return a subset of key-value pairs corresponding to the key at the given `index`.
+    ///
+    /// If the `index` is out of bounds, then the returned subset is empty.
+    ///
+    /// Computes in **O(1)** time (average).
+    pub fn get_index_all(&self, index: usize) -> Subset<'_, K, V>
+    where
+        K: Eq,
+    {
+        self.core.get_all_by_index(index)
+    }
+
+    /// Return a mutable subset of key-value pairs corresponding to the key at the given `index`.
+    ///
+    /// If the `index` is out of bounds, then the returned subset is empty.
+    ///
+    /// Computes in **O(1)** time (average).
+    pub fn get_index_all_mut(&mut self, index: usize) -> SubsetMut<'_, K, V>
+    where
+        K: Eq,
+    {
+        self.core.get_all_mut_by_index(index)
+    }
 
     /// Returns a slice of key-value pairs in the given range of indices.
     ///

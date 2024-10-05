@@ -525,6 +525,30 @@ impl<K, V> IndexMultimapCore<K, V> {
         }
     }
 
+    pub(super) fn get_all_by_index(&self, index: usize) -> Subset<'_, K, V>
+    where
+        K: Eq,
+    {
+        let bucket = &self.pairs[index];
+        self.get(bucket.hash, &bucket.key)
+    }
+
+    pub(super) fn get_all_mut_by_index(&mut self, index: usize) -> SubsetMut<'_, K, V>
+    where
+        K: Eq,
+    {
+        let bucket = &self.pairs[index];
+        let hash = bucket.hash;
+        let key = &bucket.key;
+        let eq = equivalent(key, &self.pairs);
+        if let Some(indices) = self.indices.find(hash.get(), eq) {
+            self.debug_assert_indices(indices);
+            SubsetMut::new(&mut self.pairs, indices.as_unique_slice())
+        } else {
+            SubsetMut::empty()
+        }
+    }
+
     pub(super) fn entry(&mut self, hash: HashValue, key: K) -> Entry<'_, K, V>
     where
         K: Eq,
