@@ -36,10 +36,10 @@ impl<'a, K, V> Entry<'a, K, V> {
         let entry = map.indices.entry(hash.get(), eq, get_hash(pairs));
         match entry {
             hash_table::Entry::Occupied(entry) => {
-                Entry::Occupied(unsafe { OccupiedEntry::new(pairs, entry, hash, Some(key)) })
+                Entry::Occupied(OccupiedEntry::new(pairs, entry, hash, Some(key)))
             }
             hash_table::Entry::Vacant(entry) => {
-                Entry::Vacant(unsafe { VacantEntry::new(pairs, entry, hash, key) })
+                Entry::Vacant(VacantEntry::new(pairs, entry, hash, key))
             }
         }
     }
@@ -247,7 +247,7 @@ pub struct VacantEntry<'a, K, V> {
 
 impl<'a, K, V> VacantEntry<'a, K, V> {
     #[inline]
-    unsafe fn new(
+    fn new(
         pairs: &'a mut Vec<Bucket<K, V>>,
         indices_entry: hash_table::VacantEntry<'a, Indices>,
         hash: HashValue,
@@ -305,7 +305,7 @@ impl<'a, K, V> VacantEntry<'a, K, V> {
         //     self.map.debug_assert_indices(indices.as_slice());
         // }
 
-        unsafe { OccupiedEntry::new(self.pairs, entry, self.hash, None) }
+        OccupiedEntry::new(self.pairs, entry, self.hash, None)
     }
 
     /// Inserts the values from `iter` using the entry's key into the map.
@@ -328,9 +328,12 @@ impl<'a, K, V> VacantEntry<'a, K, V> {
             let indices = Indices::from_range(start_len_pairs..self.pairs.len());
             let bucket = self.indices_entry.insert(indices);
 
-            Entry::Occupied(unsafe {
-                OccupiedEntry::new(self.pairs, bucket, self.hash, Some(self.key))
-            })
+            Entry::Occupied(OccupiedEntry::new(
+                self.pairs,
+                bucket,
+                self.hash,
+                Some(self.key),
+            ))
         } else {
             Entry::Vacant(self)
         }
@@ -366,7 +369,7 @@ pub struct OccupiedEntry<'a, K, V> {
 
 impl<'a, K, V> OccupiedEntry<'a, K, V> {
     #[inline]
-    unsafe fn new(
+    fn new(
         pairs: &'a mut Vec<Bucket<K, V>>,
         entry: hash_table::OccupiedEntry<'a, Indices>,
         hash: HashValue,
@@ -948,7 +951,7 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
                 Some(key) => {
                     let eq = equivalent(key, self.pairs);
                     let indices = indices_table.find_entry(self.hash.get(), eq).unwrap();
-                    Some(unsafe { OccupiedEntry::new(self.pairs, indices, self.hash, self.key) })
+                    Some(OccupiedEntry::new(self.pairs, indices, self.hash, self.key))
                 }
                 None => None,
             }
