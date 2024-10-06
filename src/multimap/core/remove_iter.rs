@@ -6,7 +6,10 @@ use ::core::{fmt, mem, ops, ptr, slice};
 use std::vec::Vec;
 
 use super::indices::UniqueSortedIter;
-use super::{equivalent, update_index_last, IndexMultimapCore, Indices, IndicesTable};
+use super::{
+    equivalent, update_index_last, IndexMultimapCore, IndexMultimapCoreRefMut, Indices,
+    IndicesTable,
+};
 use crate::map::Slice;
 use crate::util::{debug_iter_as_list, simplify_range, DebugIterAsNumberedCompactList};
 use crate::{Bucket, Equivalent, HashValue};
@@ -57,8 +60,7 @@ where
     --- */
     // we cannot have &'a mut IndexMultimapCore directly because then
     // OccupiedEntry couldn't create this struct. It's fine if we deconstruct it.
-    map_pairs: &'a mut Vec<Bucket<K, V>>,
-    map_indices: &'a mut IndicesTable,
+    map: IndexMultimapCoreRefMut<'a, K, V>,
     /// map.indices we took ownership of
     indices_table: IndicesTable,
     /// The index of pair that was removed previously.
@@ -89,7 +91,7 @@ where
         match map.indices.find_entry(hash.get(), eq) {
             Ok(indices) => {
                 let indices = indices.remove().0;
-                Some(unsafe { Self::new_unchecked(&mut map.indices, &mut map.pairs, indices) })
+                Some(unsafe { Self::new_unchecked(map.as_ref_mut(), indices) })
             }
             Err(_) => None,
         }
@@ -99,25 +101,23 @@ where
     ///
     /// See the comment in the type definition for safety.
     pub(super) unsafe fn new_unchecked(
-        map_indices: &'a mut IndicesTable,
-        map_pairs: &'a mut Vec<Bucket<K, V>>,
+        mut map: IndexMultimapCoreRefMut<'a, K, V>,
         indices: Indices,
     ) -> Self {
-        debug_assert!(indices.is_empty() || *indices.last().unwrap() < map_pairs.len());
+        debug_assert!(indices.is_empty() || *indices.last().unwrap() < map.len_pairs());
         // If we are removing a lot if items, then at some point it becomes more
         // efficient to rebuild the table, rather than update all the indices
-        let rebuild_table = map_pairs.len() / indices.len() < 25;
-        if !rebuild_table && !map_indices.is_empty() {
+        let rebuild_table = map.len_pairs() / indices.len() < 25;
+        if !rebuild_table && !map.indices.is_empty() {
             unsafe {
-                IndexMultimapCore::decrement_indices_batched_core(map_pairs, map_indices, &indices)
+                map.decrement_indices_batched(&indices);
             };
         }
-        let old_len = map_pairs.len();
-        unsafe { map_pairs.set_len(0) };
-        let indices_table = mem::take(map_indices);
+        let old_len = map.len_pairs();
+        unsafe { map.pairs.set_len(0) };
+        let indices_table = mem::take(map.indices);
         Self {
-            map_indices,
-            map_pairs,
+            map,
             indices_table,
             prev_removed_idx: None,
             del: 0,
@@ -201,7 +201,7 @@ where
         match self.indices_to_remove.next() {
             Some(i) => Some(unsafe {
                 Self::shift_remove_index(
-                    self.map_pairs,
+                    self.map.pairs,
                     &mut self.prev_removed_idx,
                     &mut self.del,
                     i,
@@ -222,7 +222,7 @@ where
         (&mut self.indices_to_remove)
             .map(|i| unsafe {
                 Self::shift_remove_index(
-                    self.map_pairs,
+                    self.map.pairs,
                     &mut self.prev_removed_idx,
                     &mut self.del,
                     i,
@@ -285,19 +285,19 @@ where
                         //  * dst+tail_len are all valid to be written to,
                         //    they may however overlap with src+tail_len
                         //  * after copy the elements at new empty slots will never be read,
-                        let pairs_start = inner.map_pairs.as_mut_ptr();
+                        let pairs_start = inner.map.pairs.as_mut_ptr();
                         let src = pairs_start.add(prev_removed_idx + 1) as *const Bucket<K, V>;
                         let dst = pairs_start.add(prev_removed_idx + 1 - del);
                         ptr::copy(src, dst, tail_len);
                     }
                 }
 
-                unsafe { inner.map_pairs.set_len(orig_len - del) }
-                mem::swap(&mut inner.indices_table, inner.map_indices);
+                unsafe { inner.map.pairs.set_len(orig_len - del) }
+                mem::swap(&mut inner.indices_table, inner.map.indices);
                 //map.debug_assert_invariants();
 
-                if inner.rebuild_table && !inner.map_indices.is_empty() {
-                    IndexMultimapCore::rebuild_hash_table_core(inner.map_pairs, inner.map_indices);
+                if inner.rebuild_table && !inner.map.indices.is_empty() {
+                    inner.map.rebuild_hash_table();
                 }
             }
         }
@@ -318,7 +318,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let items_iter = self.indices_to_remove.clone().map(|i| {
             assert!(i < self.orig_len);
-            let bucket = unsafe { &*self.map_pairs.as_ptr().add(i) };
+            let bucket = unsafe { &*self.map.pairs.as_ptr().add(i) };
             (i, &bucket.key, &bucket.value)
         });
         if cfg!(feature = "test_debug") {
@@ -385,8 +385,7 @@ where
     --- */
     // we cannot have &'a mut IndexMultimapCore directly because then
     // OccupiedEntry couldn't create this struct. It's fine if we deconstruct it.
-    map_pairs: &'a mut Vec<Bucket<K, V>>,
-    map_indices: &'a mut IndicesTable,
+    map: IndexMultimapCoreRefMut<'a, K, V>,
 
     indices_table: IndicesTable,
     /// The original length of `map.pairs` prior to removing.
@@ -421,7 +420,7 @@ where
         match map.indices.find_entry(hash.get(), eq) {
             Ok(indices) => {
                 let indices = indices.remove().0;
-                Some(unsafe { Self::new_unchecked(&mut map.indices, &mut map.pairs, indices) })
+                Some(unsafe { Self::new_unchecked(map.as_ref_mut(), indices) })
             }
             Err(_) => None,
         }
@@ -430,21 +429,19 @@ where
     ///
     /// See the comment in the type definition for safety.
     pub(super) unsafe fn new_unchecked(
-        map_indices: &'a mut IndicesTable,
-        map_pairs: &'a mut Vec<Bucket<K, V>>,
+        map: IndexMultimapCoreRefMut<'a, K, V>,
         indices: Indices,
     ) -> Self {
         debug_assert!(!indices.is_empty());
-        debug_assert!(*indices.last().unwrap() < map_pairs.len());
+        debug_assert!(*indices.last().unwrap() < map.len_pairs());
 
-        let orig_len = map_pairs.len();
-        unsafe { map_pairs.set_len(0) };
-        let indices_table = mem::take(map_indices);
+        let orig_len = map.len_pairs();
+        unsafe { map.pairs.set_len(0) };
+        let indices_table = mem::take(map.indices);
         let indices_len = indices.len();
         let last = *indices.last().unwrap();
         Self {
-            map_indices,
-            map_pairs,
+            map,
             indices_table,
             orig_len,
             indices_to_remove: indices,
@@ -469,7 +466,7 @@ where
             // * `index` must be in bounds for map.pairs buffer
             // * map.pairs[index] must be valid for reads and writes
             // * remove will never be read again => we give ownership away
-            let ptr = self.map_pairs.as_mut_ptr();
+            let ptr = self.map.pairs.as_mut_ptr();
             let remove = ptr.add(index);
             let Bucket { key, value, .. } = ptr::read(remove);
 
@@ -600,10 +597,10 @@ where
                 // Only way to get here is if we managed to drop all the items we needed to remove
                 unsafe {
                     inner
-                        .map_pairs
+                        .map.pairs
                         .set_len(inner.orig_len - inner.indices_to_remove.len())
                 }
-                mem::swap(&mut inner.indices_table, &mut inner.map_indices);
+                mem::swap(&mut inner.indices_table, &mut inner.map.indices);
                 //map.debug_assert_invariants();
             }
         }
@@ -625,7 +622,7 @@ where
         let items_iter = self.iter_forward.clone().map(|i| {
             let i = self.indices_to_remove[i];
             assert!(i < self.orig_len);
-            let bucket = unsafe { &*self.map_pairs.as_ptr().add(i) };
+            let bucket = unsafe { &*self.map.pairs.as_ptr().add(i) };
             (i, &bucket.key, &bucket.value)
         });
         if cfg!(feature = "test_debug") {

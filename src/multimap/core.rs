@@ -63,6 +63,16 @@ pub(super) struct IndexMultimapCore<K, V> {
     pairs: Vec<Bucket<K, V>>,
 }
 
+pub(super) struct IndexMultimapCoreRef<'a, K, V> {
+    indices: &'a IndicesTable,
+    pairs: &'a Vec<Bucket<K, V>>,
+}
+
+pub(super) struct IndexMultimapCoreRefMut<'a, K, V> {
+    indices: &'a mut IndicesTable,
+    pairs: &'a mut Vec<Bucket<K, V>>,
+}
+
 /// Inserts multiple pairs into a raw table without reallocating.
 ///
 /// # Panics
@@ -213,151 +223,16 @@ fn eq_index_last(index: usize) -> impl Fn(&Indices) -> bool {
 
 impl<K, V> IndexMultimapCore<K, V> {
     #[inline(always)]
-    #[cfg(any(not(debug_assertions), not(feature = "more_debug_assertions")))]
-    fn debug_assert_invariants(&self) {}
-
-    #[cfg(all(debug_assertions, feature = "std", feature = "more_debug_assertions"))]
-    #[track_caller]
     fn debug_assert_invariants(&self)
     where
         K: Eq,
     {
-        let mut index_count = 0; // Count the total number of indices in self.indices
-        let index_iter = self.indices.iter();
-        let mut seen_indices = crate::IndexSet::with_capacity(index_iter.len());
-        for indices in index_iter {
-            index_count += indices.len();
-            assert!(!indices.is_empty(), "found empty indices");
-            assert!(crate::util::is_sorted(indices), "found unsorted indices");
-            assert!(
-                indices.last().unwrap() < &self.pairs.len(),
-                "found out of bound index for entries in indices"
-            );
-            seen_indices.reserve(indices.len());
-
-            let Bucket { hash, key, .. } = &self.pairs[*indices.first().unwrap()];
-            // Probably redundant check, if for every entry in self.indices
-            // all of those indices point to pairs with equivalent keys and
-            // the indices are all unique and the number of indices matches the
-            // number of pairs, then there must be exactly indices.len() pairs
-            // with given key in self.pairs.
-            let count = self.pairs.iter().filter(|b| b.key_ref() == key).count();
-            assert_eq!(
-                count,
-                indices.len(),
-                "indices do not contain indices to all of the pairs with this key"
-            );
-            for i in indices.as_slice() {
-                assert!(seen_indices.insert(i), "found duplicate index in `indices`");
-                let Bucket {
-                    hash: hash2,
-                    key: key2,
-                    ..
-                } = &self.pairs[*i];
-                assert_eq!(
-                    hash, hash2,
-                    "indices of single entry point to different hashes"
-                );
-                assert!(
-                    key == key2,
-                    "indices of single entry point to different keys"
-                );
-            }
-        }
-
-        assert_eq!(
-            self.pairs.len(),
-            index_count,
-            "mismatch between pairs and indices count"
-        );
-
-        // This is probably unnecessary, if the number of indices in self.indices
-        // equals the number of pairs in self.paris and all of the indices in
-        // self.indices are unique then there must be an index for each pair
-        for (i, Bucket { hash, .. }) in self.pairs.iter().enumerate() {
-            let indices = self.indices.find(hash.get(), eq_index(i));
-            assert!(
-                indices.is_some(),
-                "expected a pair to have a matching entry in indices table"
-            );
-        }
-    }
-
-    #[cfg(all(
-        debug_assertions,
-        not(feature = "std"),
-        feature = "more_debug_assertions"
-    ))]
-    #[track_caller]
-    fn debug_assert_invariants(&self)
-    where
-        K: Eq,
-    {
-        let mut index_count = 0;
-        let index_iter = unsafe { self.indices.iter().map(|indices| indices.as_ref()) };
-        let mut seen_indices = ::alloc::collections::BTreeSet::new();
-        for indices in index_iter {
-            index_count += indices.len();
-            assert!(!indices.is_empty(), "found empty indices");
-            assert!(crate::util::is_sorted(indices), "found unsorted indices");
-            assert!(
-                indices.last().unwrap() < &self.pairs.len(),
-                "found out of bound index for entries in indices"
-            );
-
-            let Bucket { hash, key, .. } = &self.pairs[*indices.first().unwrap()];
-            let count = self.pairs.iter().filter(|b| b.key_ref() == key).count();
-            assert_eq!(
-                count,
-                indices.len(),
-                "indices do not contain indices to all of the pairs with this key"
-            );
-            for i in indices.as_slice() {
-                assert!(seen_indices.insert(i), "found duplicate index in `indices`");
-                let Bucket {
-                    hash: hash2,
-                    key: key2,
-                    ..
-                } = &self.pairs[*i];
-                assert_eq!(
-                    hash, hash2,
-                    "indices of single entry point to different hashes"
-                );
-                assert!(
-                    key == key2,
-                    "indices of single entry point to different keys"
-                );
-            }
-        }
-
-        assert_eq!(
-            self.pairs.len(),
-            index_count,
-            "mismatch between pairs and indices count"
-        );
-
-        // This is probably unnecessary, if the number of indices in self.indices
-        // equals the number of pairs in self.paris and all of the indices in
-        // self.indices are unique then there must be an index for each pair in self.pairs.
-        for (i, Bucket { hash, .. }) in self.pairs.iter().enumerate() {
-            let indices = self.indices.get(hash.get(), eq_index(i));
-            assert!(
-                indices.is_some(),
-                "expected a pair to have a matching entry in indices table"
-            );
-        }
+        self.as_ref().debug_assert_invariants();
     }
 
     #[inline(always)]
-    #[cfg(any(not(debug_assertions), not(feature = "more_debug_assertions")))]
-    fn debug_assert_indices(&self, _indices: &[usize]) {}
-
-    #[cfg(all(debug_assertions, feature = "more_debug_assertions"))]
-    #[track_caller]
     fn debug_assert_indices(&self, indices: &[usize]) {
-        assert!(crate::util::is_sorted_and_unique(indices));
-        assert!(!indices.is_empty());
-        assert!(indices.last().unwrap_or(&0) < &self.pairs.len());
+        self.as_ref().debug_assert_indices(indices);
     }
 }
 
@@ -509,13 +384,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     where
         Q: ?Sized + Equivalent<K>,
     {
-        let eq = equivalent(key, &self.pairs);
-        if let Some(indices) = self.indices.find(hash.get(), eq) {
-            self.debug_assert_indices(indices);
-            Subset::new(&self.pairs, indices)
-        } else {
-            Subset::empty()
-        }
+        self.as_ref().get(hash, key)
     }
 
     pub(super) fn get_mut<Q>(&mut self, hash: HashValue, key: &Q) -> SubsetMut<'_, K, V>
@@ -709,17 +578,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     where
         K: Eq,
     {
-        match self.pairs.get(index) {
-            Some(pair) => {
-                erase_index(&mut self.indices, pair.hash, index);
-                unsafe { self.decrement_indices(index + 1, self.pairs.len(), 1) };
-                // Use Vec::remove to actually remove the entry.
-                let Bucket { key, value, .. } = self.pairs.remove(index);
-                self.debug_assert_invariants();
-                Some((key, value))
-            }
-            None => None,
-        }
+        self.as_ref_mut().shift_remove_index(index)
     }
 
     /// Remove an entry by swapping it with the last
@@ -742,26 +601,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     where
         K: Eq,
     {
-        match self.pairs.get(index) {
-            Some(entry) => {
-                erase_index(&mut self.indices, entry.hash, index);
-                // use swap_remove, but then we need to update the index that points
-                // to the other entry that has to move
-                let removed_pair = self.pairs.swap_remove(index);
-
-                // correct index that points to the entry that had to swap places
-                if let Some(moved_pair) = self.pairs.get(index) {
-                    // was not last element
-                    // examine new element in `index` and find it in indices
-                    let last = self.pairs.len();
-                    update_index_last(&mut self.indices, moved_pair.hash, last, index);
-                }
-
-                self.debug_assert_invariants();
-                Some((removed_pair.key, removed_pair.value))
-            }
-            None => None,
-        }
+        self.as_ref_mut().swap_remove_index(index)
     }
 
     pub(super) fn retain_in_order<F>(&mut self, mut keep: F)
@@ -997,15 +837,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     where
         K: Eq,
     {
-        Self::rebuild_hash_table_core(&self.pairs, &mut self.indices);
-    }
-
-    fn rebuild_hash_table_core(pairs: &[Bucket<K, V>], indices_table: &mut IndicesTable)
-    where
-        K: Eq,
-    {
-        indices_table.clear();
-        insert_bulk_no_grow(indices_table, &[], pairs);
+        self.as_ref_mut().rebuild_hash_table();
     }
 
     /// Decrements indexes by variable amount determined by how many ranges have been before it,
@@ -1020,59 +852,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     ///     indices [5, 6], get decremented by 2
     ///     indices [8, ...] get decremented by 3
     unsafe fn decrement_indices_batched(&mut self, indices: &Indices) {
-        unsafe { Self::decrement_indices_batched_core(&self.pairs, &mut self.indices, indices) };
-    }
-
-    unsafe fn decrement_indices_batched_core(
-        pairs: &[Bucket<K, V>],
-        indices_table: &mut IndicesTable,
-        indices: &Indices,
-    ) {
-        match indices_table.len() {
-            0 => {}
-            1 => {
-                // if there is only 1 key left in the map,
-                // then the indices must be sequential 0..len
-                for indices in indices_table {
-                    // don't use self.pairs.len() because values
-                    // to be removed may not be removed yet
-                    let len = indices.len();
-                    indices.clear();
-                    unsafe {
-                        indices.extend(0..len);
-                    }
-                }
-            }
-            _ if indices.len() == 1 => {
-                // fastest if removing only one index
-                // Shift the tail after the last item
-                let i = *indices.last().unwrap();
-                if i < pairs.len() {
-                    unsafe {
-                        Self::decrement_indices_core(pairs, indices_table, i + 1, pairs.len(), 1)
-                    };
-                }
-            }
-            _ => {
-                // if removing more than 1 index it's faster to iterate over indices in the map once
-                // and loop over removed indices multiple times, rather then other way around.
-                let first = *indices.first().unwrap();
-                let last = *indices.last().unwrap();
-
-                for indices_in_map in indices_table {
-                    for i in unsafe { indices_in_map.as_mut_slice() } {
-                        if *i < first {
-                            continue;
-                        } else if *i > last {
-                            *i -= indices.len();
-                        } else {
-                            let offset = indices.partition_point(|a| *a < *i);
-                            *i -= offset;
-                        }
-                    }
-                }
-            }
-        }
+        unsafe { self.as_ref_mut().decrement_indices_batched(indices) };
     }
 
     /// Decrement all indices in the range `start..end` by `amount`.
@@ -1080,36 +860,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     /// The index `start - amount` should not exist in `self.indices`.
     /// All entries should still be in their original positions.
     unsafe fn decrement_indices(&mut self, start: usize, end: usize, amount: usize) {
-        unsafe { Self::decrement_indices_core(&self.pairs, &mut self.indices, start, end, amount) };
-    }
-
-    unsafe fn decrement_indices_core(
-        pairs: &[Bucket<K, V>],
-        indices_table: &mut IndicesTable,
-        start: usize,
-        end: usize,
-        amount: usize,
-    ) {
-        // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
-        let shifted_pairs = &pairs[start..end];
-        if shifted_pairs.len() > indices_table.len() / 2 {
-            // Shift all indices in range.
-            for indices in indices_table {
-                for i in unsafe { indices.as_mut_slice() } {
-                    if *i >= end {
-                        // early break as we go past end and our indices are sorted
-                        break;
-                    } else if start <= *i {
-                        *i -= amount;
-                    }
-                }
-            }
-        } else {
-            // Find each entry in range to shift its index.
-            for (i, entry) in (start..end).zip(shifted_pairs) {
-                update_index(indices_table, entry.hash, i, i - amount);
-            }
-        }
+        unsafe { self.as_ref_mut().decrement_indices(start, end, amount) };
     }
 
     /// Increment all indices in the range `start..end`.
@@ -1117,24 +868,15 @@ impl<K, V> IndexMultimapCore<K, V> {
     /// The index `end` should not exist in `self.indices`.
     /// All entries should still be in their original positions.
     unsafe fn increment_indices(&mut self, start: usize, end: usize) {
-        // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
-        let shifted_pairs = &self.pairs[start..end];
-        if shifted_pairs.len() > self.indices.len() / 2 {
-            // Shift all indices in range.
-            for indices in self.indices_mut() {
-                for i in unsafe { indices.as_mut_slice() } {
-                    if start <= *i && *i < end {
-                        *i += 1;
-                    }
-                }
-            }
-        } else {
-            // Find each entry in range to shift its index, updated in reverse so
-            // we never have duplicated indices that might have a hash collision.
-            for (i, entry) in (start..end).zip(shifted_pairs).rev() {
-                update_index(&mut self.indices, entry.hash, i, i + 1);
-            }
-        }
+        unsafe { self.as_ref_mut().increment_indices(start, end) };
+    }
+
+    pub(super) fn as_ref_mut(&mut self) -> IndexMultimapCoreRefMut<'_, K, V> {
+        IndexMultimapCoreRefMut::new(self)
+    }
+
+    pub(super) fn as_ref(&self) -> IndexMultimapCoreRef<'_, K, V> {
+        IndexMultimapCoreRef::new(self)
     }
 }
 
@@ -1191,6 +933,526 @@ where
             list.entry(&format_args!("{key:?}"), &format_args!("{:?}", i));
         }
         list.finish()
+    }
+}
+
+impl<'a, K, V> IndexMultimapCoreRef<'a, K, V> {
+    fn new(map: &'a IndexMultimapCore<K, V>) -> Self {
+        let indices = &map.indices;
+        let pairs = &map.pairs;
+        unsafe { Self::new_unchecked(indices, pairs) }
+    }
+
+    /// # Safety
+    ///
+    /// * `indices` and `pairs` must be from the same `IndexMultimapCore`
+    unsafe fn new_unchecked(indices: &'a IndicesTable, pairs: &'a Vec<Bucket<K, V>>) -> Self {
+        Self { indices, pairs }
+    }
+
+    #[inline]
+    pub(super) fn len_keys(&self) -> usize {
+        self.indices.len()
+    }
+
+    #[inline]
+    pub(super) fn len_pairs(&self) -> usize {
+        self.pairs.len()
+    }
+
+    #[inline]
+    pub(super) fn capacity_keys(&self) -> usize {
+        self.indices.capacity()
+    }
+
+    #[inline]
+    pub(super) fn capacity_pairs(&self) -> usize {
+        self.pairs.capacity()
+    }
+
+    pub(super) fn get<Q>(&self, hash: HashValue, key: &Q) -> Subset<'a, K, V>
+    where
+        Q: ?Sized + Equivalent<K>,
+    {
+        let eq = equivalent(key, &self.pairs);
+        if let Some(indices) = self.indices.find(hash.get(), eq) {
+            //self.debug_assert_indices(indices);
+            Subset::new(&self.pairs, indices)
+        } else {
+            Subset::empty()
+        }
+    }
+
+    pub(super) fn get_all_by_index(&self, index: usize) -> Subset<'a, K, V>
+    where
+        K: Eq,
+    {
+        let bucket = &self.pairs[index];
+        self.get(bucket.hash, &bucket.key)
+    }
+}
+
+impl<'a, K, V> IndexMultimapCoreRef<'a, K, V> {
+    #[inline(always)]
+    #[cfg(any(not(debug_assertions), not(feature = "more_debug_assertions")))]
+    fn debug_assert_invariants(&self) {}
+
+    #[cfg(all(debug_assertions, feature = "std", feature = "more_debug_assertions"))]
+    #[track_caller]
+    fn debug_assert_invariants(&self)
+    where
+        K: Eq,
+    {
+        let mut index_count = 0; // Count the total number of indices in self.indices
+        let index_iter = self.indices.iter();
+        let mut seen_indices = crate::IndexSet::with_capacity(index_iter.len());
+        for indices in index_iter {
+            index_count += indices.len();
+            assert!(!indices.is_empty(), "found empty indices");
+            assert!(crate::util::is_sorted(indices), "found unsorted indices");
+            assert!(
+                indices.last().unwrap() < &self.pairs.len(),
+                "found out of bound index for entries in indices"
+            );
+            seen_indices.reserve(indices.len());
+
+            let Bucket { hash, key, .. } = &self.pairs[*indices.first().unwrap()];
+            // Probably redundant check, if for every entry in self.indices
+            // all of those indices point to pairs with equivalent keys and
+            // the indices are all unique and the number of indices matches the
+            // number of pairs, then there must be exactly indices.len() pairs
+            // with given key in self.pairs.
+            let count = self.pairs.iter().filter(|b| b.key_ref() == key).count();
+            assert_eq!(
+                count,
+                indices.len(),
+                "indices do not contain indices to all of the pairs with this key"
+            );
+            for i in indices.as_slice() {
+                assert!(seen_indices.insert(i), "found duplicate index in `indices`");
+                let Bucket {
+                    hash: hash2,
+                    key: key2,
+                    ..
+                } = &self.pairs[*i];
+                assert_eq!(
+                    hash, hash2,
+                    "indices of single entry point to different hashes"
+                );
+                assert!(
+                    key == key2,
+                    "indices of single entry point to different keys"
+                );
+            }
+        }
+
+        assert_eq!(
+            self.pairs.len(),
+            index_count,
+            "mismatch between pairs and indices count"
+        );
+
+        // This is probably unnecessary, if the number of indices in self.indices
+        // equals the number of pairs in self.paris and all of the indices in
+        // self.indices are unique then there must be an index for each pair
+        for (i, Bucket { hash, .. }) in self.pairs.iter().enumerate() {
+            let indices = self.indices.find(hash.get(), eq_index(i));
+            assert!(
+                indices.is_some(),
+                "expected a pair to have a matching entry in indices table"
+            );
+        }
+    }
+
+    #[cfg(all(
+        debug_assertions,
+        not(feature = "std"),
+        feature = "more_debug_assertions"
+    ))]
+    #[track_caller]
+    fn debug_assert_invariants(&self)
+    where
+        K: Eq,
+    {
+        let mut index_count = 0;
+        let index_iter = unsafe { self.indices.iter().map(|indices| indices.as_ref()) };
+        let mut seen_indices = ::alloc::collections::BTreeSet::new();
+        for indices in index_iter {
+            index_count += indices.len();
+            assert!(!indices.is_empty(), "found empty indices");
+            assert!(crate::util::is_sorted(indices), "found unsorted indices");
+            assert!(
+                indices.last().unwrap() < &self.pairs.len(),
+                "found out of bound index for entries in indices"
+            );
+
+            let Bucket { hash, key, .. } = &self.pairs[*indices.first().unwrap()];
+            let count = self.pairs.iter().filter(|b| b.key_ref() == key).count();
+            assert_eq!(
+                count,
+                indices.len(),
+                "indices do not contain indices to all of the pairs with this key"
+            );
+            for i in indices.as_slice() {
+                assert!(seen_indices.insert(i), "found duplicate index in `indices`");
+                let Bucket {
+                    hash: hash2,
+                    key: key2,
+                    ..
+                } = &self.pairs[*i];
+                assert_eq!(
+                    hash, hash2,
+                    "indices of single entry point to different hashes"
+                );
+                assert!(
+                    key == key2,
+                    "indices of single entry point to different keys"
+                );
+            }
+        }
+
+        assert_eq!(
+            self.pairs.len(),
+            index_count,
+            "mismatch between pairs and indices count"
+        );
+
+        // This is probably unnecessary, if the number of indices in self.indices
+        // equals the number of pairs in self.paris and all of the indices in
+        // self.indices are unique then there must be an index for each pair in self.pairs.
+        for (i, Bucket { hash, .. }) in self.pairs.iter().enumerate() {
+            let indices = self.indices.get(hash.get(), eq_index(i));
+            assert!(
+                indices.is_some(),
+                "expected a pair to have a matching entry in indices table"
+            );
+        }
+    }
+
+    #[inline(always)]
+    #[cfg(any(not(debug_assertions), not(feature = "more_debug_assertions")))]
+    fn debug_assert_indices(&self, _indices: &[usize]) {}
+
+    #[cfg(all(debug_assertions, feature = "more_debug_assertions"))]
+    #[track_caller]
+    fn debug_assert_indices(&self, indices: &[usize]) {
+        assert!(crate::util::is_sorted_and_unique(indices));
+        assert!(!indices.is_empty());
+        assert!(indices.last().unwrap_or(&0) < &self.pairs.len());
+    }
+}
+
+impl<'a, K, V> IndexMultimapCoreRefMut<'a, K, V> {
+    fn new(map: &'a mut IndexMultimapCore<K, V>) -> Self {
+        let indices = &mut map.indices;
+        let pairs = &mut map.pairs;
+        unsafe { Self::new_unchecked(indices, pairs) }
+    }
+
+    /// # Safety
+    ///
+    /// * `indices` and `pairs` must be from the same `IndexMultimapCore`
+    unsafe fn new_unchecked(
+        indices: &'a mut IndicesTable,
+        pairs: &'a mut Vec<Bucket<K, V>>,
+    ) -> Self {
+        Self { indices, pairs }
+    }
+
+    #[inline]
+    pub(super) fn len_keys(&self) -> usize {
+        self.as_ref().len_keys()
+    }
+
+    #[inline]
+    pub(super) fn len_pairs(&self) -> usize {
+        self.as_ref().len_pairs()
+    }
+
+    #[inline]
+    pub(super) fn capacity_keys(&self) -> usize {
+        self.as_ref().capacity_keys()
+    }
+
+    #[inline]
+    pub(super) fn capacity_pairs(&self) -> usize {
+        self.as_ref().capacity_pairs()
+    }
+
+    #[inline(always)]
+    fn reborrow(&mut self) -> IndexMultimapCoreRefMut<'_, K, V> {
+        unsafe { IndexMultimapCoreRefMut::new_unchecked(self.indices, self.pairs) }
+    }
+
+    fn as_ref(&self) -> IndexMultimapCoreRef<'_, K, V> {
+        unsafe { IndexMultimapCoreRef::new_unchecked(self.indices, self.pairs) }
+    }
+
+    pub(super) fn get_all_mut_by_index(&mut self, index: usize) -> SubsetMut<'_, K, V>
+    where
+        K: Eq,
+    {
+        self.reborrow().into_all_mut_by_index(index)
+    }
+
+    pub(super) fn into_all_mut_by_index(self, index: usize) -> SubsetMut<'a, K, V>
+    where
+        K: Eq,
+    {
+        let bucket = &self.pairs[index];
+        let hash = bucket.hash;
+        let key = &bucket.key;
+        let eq = equivalent(key, &self.pairs);
+        if let Some(indices) = self.indices.find(hash.get(), eq) {
+            self.as_ref().debug_assert_indices(indices);
+            SubsetMut::new(self.pairs, indices.as_unique_slice())
+        } else {
+            SubsetMut::empty()
+        }
+    }
+
+    fn indices_mut(&mut self) -> impl Iterator<Item = &mut Indices> {
+        self.indices.iter_mut()
+    }
+
+    /// Remove an entry by shifting all entries that follow it
+    pub(super) fn shift_remove_index(&mut self, index: usize) -> Option<(K, V)>
+    where
+        K: Eq,
+    {
+        match self.pairs.get(index) {
+            Some(pair) => {
+                erase_index(&mut self.indices, pair.hash, index);
+                unsafe { self.decrement_indices(index + 1, self.pairs.len(), 1) };
+                // Use Vec::remove to actually remove the entry.
+                let Bucket { key, value, .. } = self.pairs.remove(index);
+                self.as_ref().debug_assert_invariants();
+                Some((key, value))
+            }
+            None => None,
+        }
+    }
+
+    /// Remove an entry by swapping it with the last
+    pub(super) fn swap_remove_index(&mut self, index: usize) -> Option<(K, V)>
+    where
+        K: Eq,
+    {
+        match self.pairs.get(index) {
+            Some(entry) => {
+                erase_index(&mut self.indices, entry.hash, index);
+                // use swap_remove, but then we need to update the index that points
+                // to the other entry that has to move
+                let removed_pair = self.pairs.swap_remove(index);
+
+                // correct index that points to the entry that had to swap places
+                if let Some(moved_pair) = self.pairs.get(index) {
+                    // was not last element
+                    // examine new element in `index` and find it in indices
+                    let last = self.pairs.len();
+                    update_index_last(&mut self.indices, moved_pair.hash, last, index);
+                }
+
+                self.as_ref().debug_assert_invariants();
+                Some((removed_pair.key, removed_pair.value))
+            }
+            None => None,
+        }
+    }
+
+    pub(super) fn move_index(&mut self, from: usize, to: usize)
+    where
+        K: Eq,
+    {
+        if from == to {
+            return;
+        }
+
+        let from_hash = self.pairs[from].hash;
+        // Use a sentinel index so other indices don't collide.
+        update_index(&mut self.indices, from_hash, from, usize::MAX);
+
+        // Update all other indices and rotate the entry positions.
+        #[allow(clippy::comparison_chain)]
+        if from < to {
+            unsafe { self.decrement_indices(from + 1, to + 1, 1) };
+            self.pairs[from..=to].rotate_left(1);
+        } else if to < from {
+            unsafe { self.increment_indices(to, from) };
+            self.pairs[to..=from].rotate_right(1);
+        }
+
+        // Change the sentinel index to its final position.
+        update_index_last(&mut self.indices, from_hash, usize::MAX, to);
+        self.as_ref().debug_assert_invariants();
+    }
+
+    pub(super) fn swap_indices(&mut self, a: usize, b: usize)
+    where
+        K: Eq,
+    {
+        if a == b {
+            return;
+        }
+        // SAFETY: Can't take two `get_mut` references from one table, so we
+        // must use raw buckets to do the swap. This is still safe because we
+        // are locally sure they won't dangle, and we write them individually.
+
+        let a_item = &self.pairs[a];
+        let b_item = &self.pairs[b];
+        let a_indices = self
+            .indices
+            .find_mut(a_item.hash.get(), equivalent(&a_item.key, &self.pairs))
+            .unwrap();
+        if a_indices.iter().any(|&i| i == b) {
+            // both indices belong to the same entry,
+            // if we swap entries indices are still correct
+            // nothing to do
+        } else {
+            let index_a = a_indices
+                .iter()
+                .position(|&i| i == a)
+                .expect("index not found");
+
+            a_indices.replace(index_a, b);
+
+            let b_indices = self
+                .indices
+                .find_mut(b_item.hash.get(), equivalent(&b_item.key, &self.pairs))
+                .unwrap();
+
+            let index_b = b_indices
+                .iter()
+                .position(|&i| i == b)
+                .expect("index not found");
+
+            b_indices.replace(index_b, a);
+        }
+
+        self.pairs.swap(a, b);
+
+        self.as_ref().debug_assert_invariants();
+    }
+
+    fn rebuild_hash_table(&mut self)
+    where
+        K: Eq,
+    {
+        self.indices.clear();
+        insert_bulk_no_grow(self.indices, &[], self.pairs);
+    }
+
+    /// Decrements indexes by variable amount determined by how many ranges have been before it,
+    /// (eg how many items were removed before it).
+    ///
+    /// * Indices need to be sorted in increasing order and be unique.
+    ///
+    /// Say we need to remove indices [2, 4, 7]
+    /// then
+    ///     indices [0, 1], don't get decremented
+    ///     indices [3] get decremented by 1
+    ///     indices [5, 6], get decremented by 2
+    ///     indices [8, ...] get decremented by 3
+    unsafe fn decrement_indices_batched(&mut self, indices: &Indices) {
+        let pairs: &[Bucket<K, V>] = &self.pairs;
+        let indices_table: &mut IndicesTable = &mut self.indices;
+        match indices_table.len() {
+            0 => {}
+            1 => {
+                // if there is only 1 key left in the map,
+                // then the indices must be sequential 0..len
+                for indices in indices_table {
+                    // don't use self.pairs.len() because values
+                    // to be removed may not be removed yet
+                    let len = indices.len();
+                    indices.clear();
+                    unsafe {
+                        indices.extend(0..len);
+                    }
+                }
+            }
+            _ if indices.len() == 1 => {
+                // fastest if removing only one index
+                // Shift the tail after the last item
+                let i = *indices.last().unwrap();
+                if i < pairs.len() {
+                    unsafe { self.decrement_indices(i + 1, pairs.len(), 1) };
+                }
+            }
+            _ => {
+                // if removing more than 1 index it's faster to iterate over indices in the map once
+                // and loop over removed indices multiple times, rather then other way around.
+                let first = *indices.first().unwrap();
+                let last = *indices.last().unwrap();
+
+                for indices_in_map in indices_table {
+                    for i in unsafe { indices_in_map.as_mut_slice() } {
+                        if *i < first {
+                            continue;
+                        } else if *i > last {
+                            *i -= indices.len();
+                        } else {
+                            let offset = indices.partition_point(|a| *a < *i);
+                            *i -= offset;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Decrement all indices in the range `start..end` by `amount`.
+    ///
+    /// The index `start - amount` should not exist in `self.indices`.
+    /// All entries should still be in their original positions.
+    unsafe fn decrement_indices(&mut self, start: usize, end: usize, amount: usize) {
+        let pairs: &[Bucket<K, V>] = &self.pairs;
+        let indices_table: &mut IndicesTable = &mut self.indices;
+        // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
+        let shifted_pairs = &pairs[start..end];
+        if shifted_pairs.len() > indices_table.len() / 2 {
+            // Shift all indices in range.
+            for indices in indices_table {
+                for i in unsafe { indices.as_mut_slice() } {
+                    if *i >= end {
+                        // early break as we go past end and our indices are sorted
+                        break;
+                    } else if start <= *i {
+                        *i -= amount;
+                    }
+                }
+            }
+        } else {
+            // Find each entry in range to shift its index.
+            for (i, entry) in (start..end).zip(shifted_pairs) {
+                update_index(indices_table, entry.hash, i, i - amount);
+            }
+        }
+    }
+
+    /// Increment all indices in the range `start..end`.
+    ///
+    /// The index `end` should not exist in `self.indices`.
+    /// All entries should still be in their original positions.
+    unsafe fn increment_indices(&mut self, start: usize, end: usize) {
+        // Use a heuristic between a full sweep vs. a `find()` for every shifted item.
+        let shifted_pairs = &self.pairs[start..end];
+        if shifted_pairs.len() > self.indices.len() / 2 {
+            // Shift all indices in range.
+            for indices in self.indices_mut() {
+                for i in unsafe { indices.as_mut_slice() } {
+                    if start <= *i && *i < end {
+                        *i += 1;
+                    }
+                }
+            }
+        } else {
+            // Find each entry in range to shift its index, updated in reverse so
+            // we never have duplicated indices that might have a hash collision.
+            for (i, entry) in (start..end).zip(shifted_pairs).rev() {
+                update_index(&mut self.indices, entry.hash, i, i + 1);
+            }
+        }
     }
 }
 

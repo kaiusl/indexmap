@@ -8,8 +8,8 @@ use hashbrown::hash_table;
 
 use super::indices::Indices;
 use super::{
-    equivalent, get_hash, IndexMultimapCore, ShiftRemove, Subset, SubsetIter, SubsetIterMut,
-    SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
+    equivalent, get_hash, IndexMultimapCore, IndexMultimapCoreRefMut, ShiftRemove, Subset,
+    SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
 };
 use crate::multimap::core::IndicesTable;
 use crate::util::{DebugIterAsList, DebugIterAsNumberedCompactList};
@@ -382,11 +382,11 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         }
     }
 
-    pub(super) fn new_by_index(map: &'a mut IndexMultimapCore<K, V>, index: usize) -> Option<Self>
+    pub(super) fn new_by_index(map: IndexMultimapCoreRefMut<'a, K, V>, index: usize) -> Option<Self>
     where
         K: Eq,
     {
-        let pairs = &mut map.pairs;
+        let pairs = map.pairs;
         let bucket = pairs.get(index);
         match bucket {
             Some(bucket) => {
@@ -722,7 +722,9 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     {
         let (indices, entry) = self.indices_entry.remove();
         let indices_table = entry.into_table();
-        unsafe { SwapRemove::new_unchecked(indices_table, self.pairs, indices) }
+
+        let map = unsafe { IndexMultimapCoreRefMut::new_unchecked(indices_table, self.pairs) };
+        unsafe { SwapRemove::new_unchecked(map, indices) }
     }
 
     /// Remove all the key-value pairs for this entry and
@@ -753,7 +755,8 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     {
         let (indices, entry) = self.indices_entry.remove();
         let indices_table = entry.into_table();
-        unsafe { ShiftRemove::new_unchecked(indices_table, self.pairs, indices) }
+        let map = unsafe { IndexMultimapCoreRefMut::new_unchecked(indices_table, self.pairs) };
+        unsafe { ShiftRemove::new_unchecked(map, indices) }
     }
 
     /// Retains only the elements specified by the predicate in this entry.
@@ -817,7 +820,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
                     };
 
                     // Step 3: Rebuild the hash table
-                    IndexMultimapCore::rebuild_hash_table_core(self.pairs, indices_table);
+                    let mut map = unsafe {
+                        IndexMultimapCoreRefMut::new_unchecked(indices_table, self.pairs)
+                    };
+                    map.rebuild_hash_table();
                 }
 
                 self.is_dropped = true;
@@ -988,6 +994,13 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         let indices = self.indices_entry.into_mut();
         SubsetMut::new(self.pairs, indices.as_unique_slice())
     }
+
+    fn into_ref_mut_map(self) -> IndexMultimapCoreRefMut<'a, K, V> {
+        // SAFETY: self was created from a valid map, we can convert it back
+        unsafe {
+            IndexMultimapCoreRefMut::new_unchecked(self.indices_entry.into_table(), self.pairs)
+        }
+    }
 }
 
 impl<'a, K, V> IntoIterator for &'a OccupiedEntry<'_, K, V> {
@@ -1053,13 +1066,13 @@ where
 /// This `struct` is created from the [`get_index_entry`][crate::IndexMultimap::get_index_entry] method.
 
 pub struct IndexedEntry<'a, K, V> {
-    map: &'a mut IndexMultimapCore<K, V>,
+    map: IndexMultimapCoreRefMut<'a, K, V>,
     index: usize,
 }
 
 impl<'a, K, V> IndexedEntry<'a, K, V> {
     pub(in crate::multimap) fn new(
-        map: &'a mut IndexMultimapCore<K, V>,
+        map: IndexMultimapCoreRefMut<'a, K, V>,
         index: usize,
     ) -> Option<Self> {
         if index < map.len_pairs() {
@@ -1125,7 +1138,7 @@ impl<'a, K, V> IndexedEntry<'a, K, V> {
     where
         K: Eq,
     {
-        self.map.get_all_by_index(self.index)
+        self.map.as_ref().get_all_by_index(self.index)
     }
 
     /// Gets a mutable subset of all the pairs in the map with the equivalent key to this entry.
@@ -1141,7 +1154,7 @@ impl<'a, K, V> IndexedEntry<'a, K, V> {
     where
         K: Eq,
     {
-        self.map.get_all_mut_by_index(self.index)
+        self.map.into_all_mut_by_index(self.index)
     }
 
     /// Convert into an occupied entry.
@@ -1164,7 +1177,7 @@ impl<'a, K, V> IndexedEntry<'a, K, V> {
     /// **This perturbs the position of what used to be the last element!**
     ///
     /// Computes in **O(1)** time (average).
-    pub fn swap_remove(self) -> (K, V)
+    pub fn swap_remove(mut self) -> (K, V)
     where
         K: cmp::Eq,
     {
@@ -1178,7 +1191,7 @@ impl<'a, K, V> IndexedEntry<'a, K, V> {
     /// **This perturbs the index of all of those elements!**
     ///
     /// Computes in **O(n)** time (average).
-    pub fn shift_remove(self) -> (K, V)
+    pub fn shift_remove(mut self) -> (K, V)
     where
         K: cmp::Eq,
     {
@@ -1199,7 +1212,7 @@ impl<'a, K, V> IndexedEntry<'a, K, V> {
     /// Computes in **O(n)** time (average).
     ///
     /// [`IndexMultimap::move_index`]: crate::IndexMultimap::move_index
-    pub fn move_index(self, to: usize)
+    pub fn move_index(mut self, to: usize)
     where
         K: cmp::Eq,
     {
@@ -1216,7 +1229,7 @@ impl<'a, K, V> IndexedEntry<'a, K, V> {
     /// Computes in **O(1)** time (average).
     ///
     /// [`IndexMultimap::swap_indices`]: crate::IndexMultimap::swap_indices
-    pub fn swap_indices(self, other: usize)
+    pub fn swap_indices(mut self, other: usize)
     where
         K: cmp::Eq,
     {

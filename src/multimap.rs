@@ -958,7 +958,7 @@ impl<K, V, S> IndexMultimap<K, V, S> {
     ///
     /// Computes in **O(1)** time.
     pub fn get_index_entry(&mut self, index: usize) -> Option<IndexedEntry<'_, K, V>> {
-        IndexedEntry::new(&mut self.core, index)
+        IndexedEntry::new(self.core.as_ref_mut(), index)
     }
 
     /// Return a subset of key-value pairs corresponding to the key at the given `index`.
