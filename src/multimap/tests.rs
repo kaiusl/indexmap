@@ -2153,6 +2153,189 @@ fn occupied_entry_key() {
 }
 
 #[test]
+fn indexed_entry_get() {
+    let insert = [
+        (0, 1),
+        (4, 41),
+        (4, 42),
+        (5, 51),
+        (5, 52),
+        (4, 43),
+        (8, 81),
+        (4, 44),
+    ];
+    let mut map = IndexMultimapVec::new();
+    map.extend(insert);
+
+    let e = map.get_index_entry(map.len_pairs());
+    assert!(e.is_none());
+
+    let mut e = map.get_index_entry(0).unwrap();
+    assert_eq!(e.get(), (0, &0, &1));
+    assert_eq!(e.get_mut(), (0, &0, &mut 1));
+    assert_eq!(e.key(), &0);
+    assert_eq!(e.value(), &1);
+    assert_eq!(e.value_mut(), &mut 1);
+    assert_eq!(e.index(), 0);
+    assert_eq!(e.into_mut(), (0, &0, &mut 1));
+
+    let mut e = map.get_index_entry(2).unwrap();
+    assert_eq!(e.get(), (2, &4, &42));
+
+    let get_all = e.get_all();
+    check_subentries(
+        &get_all,
+        &[(1, &4, &41), (2, &4, &42), (5, &4, &43), (7, &4, &44)],
+    );
+
+    let expected = &[
+        (1, &4, &mut 41),
+        (2, &4, &mut 42),
+        (5, &4, &mut 43),
+        (7, &4, &mut 44),
+    ];
+    let mut get_all_mut = e.get_all_mut();
+    check_subentries_mut(&mut get_all_mut, expected);
+    let mut into_all_mut = e.into_all_mut();
+    check_subentries_mut(&mut into_all_mut, expected);
+
+    let e = map.get_index_entry(3).unwrap().into_occupied_entry();
+    check_subentries(&e.as_subset(), &[(3, &5, &51), (4, &5, &52)]);
+}
+
+#[test]
+fn indexed_entry_insert() {
+    let mut insert = [
+        (0, 1),
+        (4, 41),
+        (4, 42),
+        (5, 51),
+        (5, 52),
+        (4, 43),
+        (8, 81),
+        (4, 44),
+    ];
+    let mut map = IndexMultimapVec::new();
+    map.extend(insert);
+
+    let mut e = map.get_index_entry(3).unwrap();
+    assert_eq!(e.insert(55), 51);
+
+    insert[3].1 = 55;
+    assert_map_eq(&map, &insert);
+}
+
+#[test]
+fn indexed_entry_remove() {
+    let mut insert = vec![
+        (0, 1),
+        (4, 41),
+        (4, 42),
+        (5, 51),
+        (5, 52),
+        (4, 43),
+        (8, 81),
+        (4, 44),
+    ];
+    let mut map = IndexMultimapVec::new();
+    map.extend(insert.iter().cloned());
+
+    let e = map.get_index_entry(3).unwrap();
+    assert_eq!(e.swap_remove(), (5, 51));
+
+    insert.swap_remove(3);
+    assert_map_eq(&map, &insert);
+
+    let e = map.get_index_entry(3).unwrap();
+    assert_eq!(e.shift_remove(), (4, 44));
+
+    insert.remove(3);
+    assert_map_eq(&map, &insert);
+}
+
+#[test]
+fn indexed_entry_move_index() {
+    let mut insert = vec![
+        (0, 1),
+        (4, 41),
+        (4, 42),
+        (5, 51),
+        (5, 52),
+        (4, 43),
+        (8, 81),
+        (4, 44),
+    ];
+    let mut map = IndexMultimapVec::new();
+    map.extend(insert.iter().cloned());
+
+    let e = map.get_index_entry(3).unwrap();
+    e.move_index(0);
+
+    let v = insert.remove(3);
+    insert.insert(0, v);
+    assert_map_eq(&map, &insert);
+
+    let e = map.get_index_entry(3).unwrap();
+    e.move_index(1);
+
+    let v = insert.remove(3);
+    insert.insert(1, v);
+    assert_map_eq(&map, &insert);
+
+    let e = map.get_index_entry(3).unwrap();
+    e.move_index(insert.len() - 1);
+
+    let v = insert.remove(3);
+    insert.push(v);
+    assert_map_eq(&map, &insert);
+
+    assert_panics_w_msg(
+        || map.get_index_entry(3).unwrap().move_index(insert.len()),
+        "index out of bounds",
+    );
+}
+
+#[test]
+fn indexed_entry_swap_indices() {
+    let mut insert = vec![
+        (0, 1),
+        (4, 41),
+        (4, 42),
+        (5, 51),
+        (5, 52),
+        (4, 43),
+        (8, 81),
+        (4, 44),
+    ];
+    let mut map = IndexMultimapVec::new();
+    map.extend(insert.iter().cloned());
+
+    let e = map.get_index_entry(3).unwrap();
+    e.swap_indices(0);
+
+    insert.swap(0, 3);
+    assert_map_eq(&map, &insert);
+
+    let e = map.get_index_entry(3).unwrap();
+    e.swap_indices(1);
+
+    insert.swap(1, 3);
+    assert_map_eq(&map, &insert);
+
+    let e = map.get_index_entry(3).unwrap();
+    let other = insert.len() - 1;
+    e.swap_indices(other);
+
+    insert.swap(other, 3);
+    assert_map_eq(&map, &insert);
+
+    assert_panics_w_msg(
+        || map.get_index_entry(3).unwrap().swap_indices(insert.len()),
+        "index out of bounds",
+    );
+}
+
+#[test]
 fn iter() {
     let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
     let map: IndexMultimapVec<_, _> = vec.clone().into_iter().collect();
