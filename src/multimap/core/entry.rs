@@ -610,6 +610,20 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         self.into_subset_mut().into_nth_mut(n)
     }
 
+    /// Converts `self` into a indexed entry to the `n`th pair in
+    ///  this subset or [`Err(self)`] if <code>n >= self.[len]\()</code>
+    /// so that the entry could be reused.
+    ///
+    /// [len]: Self::len
+    pub fn into_nth_entry(self, n: usize) -> Result<IndexedEntry<'a, K, V>, Self> {
+        let Some(&index) = self.indices().get(n) else {
+            return Err(self);
+        };
+        let table = self.indices_entry.into_table();
+        let map = unsafe { IndexMultimapCoreRefMut::new_unchecked(table, self.pairs) };
+        Ok(IndexedEntry::new(map, index).unwrap())
+    }
+
     /// Return a reference to the first pair in this entry.
     pub fn first(&self) -> (usize, &K, &V) {
         self.as_subset().first().unwrap()
@@ -625,6 +639,13 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         self.into_subset_mut().into_first_mut().unwrap()
     }
 
+    /// Converts `self` into a indexed entry to the first pair in this entry.
+    pub fn into_first_entry(self) -> IndexedEntry<'a, K, V> {
+        let index = *self.indices().first().unwrap();
+        let map = self.into_ref_mut_map();
+        IndexedEntry::new(map, index).unwrap()
+    }
+
     /// Returns a reference to the last pair in this entry.
     pub fn last(&self) -> (usize, &K, &V) {
         self.as_subset().last().unwrap()
@@ -638,6 +659,13 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Converts `self` into a long lived mutable reference to the last pair in this entry.
     pub fn into_last(self) -> (usize, &'a K, &'a mut V) {
         self.into_subset_mut().into_last_mut().unwrap()
+    }
+
+    /// Converts `self` into a indexed entry to the last pair in this entry.
+    pub fn into_last_entry(self) -> IndexedEntry<'a, K, V> {
+        let index = *self.indices().last().unwrap();
+        let map = self.into_ref_mut_map();
+        IndexedEntry::new(map, index).unwrap()
     }
 
     /// Returns a immutable subset of key-value pairs in the given range of indices.
