@@ -112,6 +112,19 @@ quickcheck_limit! {
         true
     }
 
+    fn insert_at(insert: Vec<u32>, indices: Vec<usize>) -> bool {
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for (&key, &index) in insert.iter().zip(indices.iter()) {
+            let index = index % (vec.len() + 1);
+            map.insert_at(index, key, map.len_pairs() as u32);
+            vec.insert(index, (key, vec.len() as u32));
+        }
+
+        itertools::assert_equal(vec.iter().map(|(a, b)| (a, b)), map.iter());
+        true
+    }
+
     fn pop(insert: Vec<u8>) -> bool {
         let mut map = IndexMultimap::new();
         for &key in &insert {
@@ -233,6 +246,56 @@ quickcheck_limit! {
         map.len_keys() == remaining.len()
         && remaining.iter().all(|k| map.get(k).len() == *counts.get(k).unwrap())
         && remove.iter().all(|k| map.get(k).first().is_none())
+    }
+
+    fn swap_index(insert: Vec<u8>, indices: Vec<usize>) -> TestResult {
+        if insert.is_empty() || indices.is_empty() {
+            return TestResult::discard()
+        }
+
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for &key in insert.iter() {
+            map.insert_append(key, map.len_pairs() as u32);
+            vec.push((key, vec.len() as u32));
+        }
+
+        for indices in indices.windows(2) {
+            let (start, end) = (indices[0], indices[1]);
+            let a = start % map.len_pairs();
+            let b = end % map.len_pairs();
+
+            map.swap_indices(a, b);
+            vec.swap(a, b);
+        }
+
+        itertools::assert_equal(vec.iter().map(|(a, b)| (a, b)), map.iter());
+        TestResult::passed()
+    }
+    fn move_index(insert: Vec<u8>, indices: Vec<usize>) -> TestResult {
+        if insert.is_empty() || indices.is_empty() {
+            return TestResult::discard()
+         }
+
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for &key in insert.iter() {
+            map.insert_append(key, map.len_pairs() as u32);
+            vec.push((key, vec.len() as u32));
+        }
+
+        for indices in indices.chunks_exact(2) {
+            let (start, end) = (indices[0], indices[1]);
+            let a = start % map.len_pairs();
+            let b = end % map.len_pairs();
+
+            map.move_index(a, b);
+            let v = vec.remove(a);
+            vec.insert(b, v);
+        }
+
+        itertools::assert_equal(vec.iter().map(|(a, b)| (a, b)), map.iter());
+        TestResult::passed()
     }
 
     fn indexing(insert: Vec<u8>) -> bool {
