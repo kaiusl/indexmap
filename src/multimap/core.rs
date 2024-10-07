@@ -20,6 +20,7 @@ pub use self::subsets::{
 
 use ::alloc::vec::Vec;
 use ::core::{cmp, fmt, ops};
+use core::panic;
 use hashbrown::hash_table;
 
 use ::equivalent::Equivalent;
@@ -1320,6 +1321,10 @@ impl<'a, K, V> IndexMultimapCoreRefMut<'a, K, V> {
     {
         if from == to {
             return;
+        }
+
+        if from >= self.pairs.len() || to >= self.pairs.len() {
+            panic!("index out of bounds");
         }
 
         let from_hash = self.pairs[from].hash;
