@@ -1331,15 +1331,8 @@ impl<'a, K, V> IndexMultimapCoreRefMut<'a, K, V> {
                 },
             ) {
                 [Some(a_indices), Some(b_indices)] => {
-                    let index_a = a_indices
-                        .iter()
-                        .position(|&i| i == a)
-                        .expect("index not found");
-
-                    let index_b = b_indices
-                        .iter()
-                        .position(|&i| i == b)
-                        .expect("index not found");
+                    let index_a = a_indices.binary_search(&a).expect("index not found");
+                    let index_b = b_indices.binary_search(&b).expect("index not found");
 
                     a_indices.replace(index_a, b);
                     b_indices.replace(index_b, a);
