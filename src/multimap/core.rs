@@ -726,47 +726,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     where
         K: Eq,
     {
-        if a == b {
-            return;
-        }
-        // SAFETY: Can't take two `get_mut` references from one table, so we
-        // must use raw buckets to do the swap. This is still safe because we
-        // are locally sure they won't dangle, and we write them individually.
-
-        let a_item = &self.pairs[a];
-        let b_item = &self.pairs[b];
-        let a_indices = self
-            .indices
-            .find_mut(a_item.hash.get(), equivalent(&a_item.key, &self.pairs))
-            .unwrap();
-        if a_indices.iter().any(|&i| i == b) {
-            // both indices belong to the same entry,
-            // if we swap entries indices are still correct
-            // nothing to do
-        } else {
-            let index_a = a_indices
-                .iter()
-                .position(|&i| i == a)
-                .expect("index not found");
-
-            a_indices.replace(index_a, b);
-
-            let b_indices = self
-                .indices
-                .find_mut(b_item.hash.get(), equivalent(&b_item.key, &self.pairs))
-                .unwrap();
-
-            let index_b = b_indices
-                .iter()
-                .position(|&i| i == b)
-                .expect("index not found");
-
-            b_indices.replace(index_b, a);
-        }
-
-        self.pairs.swap(a, b);
-
-        self.debug_assert_invariants();
+        self.as_ref_mut().swap_indices(a, b);
     }
 
     /// Erase `start..end` from `indices`, and shift `end..` indices down to `start..`
@@ -1353,39 +1313,39 @@ impl<'a, K, V> IndexMultimapCoreRefMut<'a, K, V> {
         if a == b {
             return;
         }
-        // SAFETY: Can't take two `get_mut` references from one table, so we
-        // must use raw buckets to do the swap. This is still safe because we
-        // are locally sure they won't dangle, and we write them individually.
 
         let a_item = &self.pairs[a];
         let b_item = &self.pairs[b];
-        let a_indices = self
-            .indices
-            .find_mut(a_item.hash.get(), equivalent(&a_item.key, &self.pairs))
-            .unwrap();
-        if a_indices.iter().any(|&i| i == b) {
+
+        if a_item.hash.get() == b_item.hash.get() && a_item.key == b_item.key {
             // both indices belong to the same entry,
             // if we swap entries indices are still correct
             // nothing to do
         } else {
-            let index_a = a_indices
-                .iter()
-                .position(|&i| i == a)
-                .expect("index not found");
+            match self.indices.get_many_mut(
+                [a_item.hash.get(), b_item.hash.get()],
+                |i, k| match i {
+                    0 => self.pairs[k[0]].key == a_item.key,
+                    1 => self.pairs[k[0]].key == b_item.key,
+                    _ => unreachable!(),
+                },
+            ) {
+                [Some(a_indices), Some(b_indices)] => {
+                    let index_a = a_indices
+                        .iter()
+                        .position(|&i| i == a)
+                        .expect("index not found");
 
-            a_indices.replace(index_a, b);
+                    let index_b = b_indices
+                        .iter()
+                        .position(|&i| i == b)
+                        .expect("index not found");
 
-            let b_indices = self
-                .indices
-                .find_mut(b_item.hash.get(), equivalent(&b_item.key, &self.pairs))
-                .unwrap();
-
-            let index_b = b_indices
-                .iter()
-                .position(|&i| i == b)
-                .expect("index not found");
-
-            b_indices.replace(index_b, a);
+                    a_indices.replace(index_a, b);
+                    b_indices.replace(index_b, a);
+                }
+                _ => unreachable!(),
+            }
         }
 
         self.pairs.swap(a, b);
