@@ -119,6 +119,63 @@ fn insert_append() {
 }
 
 #[test]
+fn insert_at() {
+    let mut insert = vec![
+        (0, 0),
+        (4, 41),
+        (4, 42),
+        (3, 3),
+        (5, 51),
+        (4, 43),
+        (5, 52),
+        (5, 53),
+    ];
+    let mut map = IndexMultimapVec::from_iter(insert.iter().cloned());
+    assert_map_eq(&map, &insert);
+
+    assert!(map.insert_at(insert.len() + 1, 1, 1).is_none());
+
+    let (i, entry) = map.insert_at(0, 1, 11).unwrap();
+    assert_eq!(i, 0);
+    check_subentries(&entry.as_subset(), &[(0, &1, &11)]);
+    insert.insert(0, (1, 11));
+    assert_map_eq(&map, &insert);
+
+    let (i, entry) = map.insert_at(3, 4, 44).unwrap();
+    assert_eq!(i, 1);
+    check_subentries(
+        &entry.as_subset(),
+        &[(2, &4, &41), (3, &4, &44), (4, &4, &42), (7, &4, &43)],
+    );
+    insert.insert(3, (4, 44));
+    assert_map_eq(&map, &insert);
+
+    let index = insert.len();
+    assert_eq!(index, 10);
+    let (i, entry) = map.insert_at(index, 5, 55).unwrap();
+    assert_eq!(i, 3);
+    check_subentries(
+        &entry.as_subset(),
+        &[(6, &5, &51), (8, &5, &52), (9, &5, &53), (10, &5, &55)],
+    );
+    insert.insert(10, (5, 55));
+    assert_map_eq(&map, &insert);
+}
+
+#[test]
+fn insert_at_table_must_alloc() {
+    let mut map = IndexMultimapVec::new();
+
+    map.insert_at(0, 1, 11).unwrap();
+    map.insert_at(0, 2, 11).unwrap();
+    map.insert_at(1, 3, 11).unwrap();
+    // next call will reallocate the table, and must rehash the keys,
+    // there was an issue where the indices in table and pairs indices were offset by one,
+    // causing the index to be wrong and rehashing to fail
+    map.insert_at(1, 4, 11).unwrap();
+}
+
+#[test]
 fn extend() {
     let mut map = IndexMultimapVec::new();
     map.extend(vec![(&1, &2), (&3, &4)]);

@@ -102,6 +102,12 @@ impl Indices {
         self.inner.push(v);
     }
 
+    pub(crate) fn insert_sorted(&mut self, v: usize) -> usize {
+        let index = self.inner.partition_point(|&x| x < v);
+        self.inner.insert(index, v);
+        index
+    }
+
     #[inline]
     pub(crate) fn remove(&mut self, index: usize) -> usize {
         // SAFETY: inner.remove preserves the order

@@ -2,7 +2,7 @@
 
 use ::alloc::vec::Vec;
 use ::core::{fmt, ops, ptr};
-use core::{cmp, mem};
+use core::{cmp, mem, usize};
 
 use hashbrown::hash_table;
 
@@ -275,22 +275,15 @@ impl<'a, K, V> VacantEntry<'a, K, V> {
         self.pairs.len()
     }
 
-    /// Inserts the entry's key and the given value into the map,
+    /// Inserts the entry's key and the given value into the map, last in order,
     /// and returns a mutable reference to the value.
     pub fn insert(self, value: V) -> (usize, &'a K, &'a mut V) {
-        let i = self.pairs.len();
-        let _ = self.indices_entry.insert(Indices::one(i));
-
-        self.pairs.push(Bucket {
-            hash: self.hash,
-            key: self.key,
-            value,
-        });
-        let entry = self.pairs.last_mut().unwrap();
-        (i, &entry.key, &mut entry.value)
+        self.insert_entry(value).into_first()
     }
 
-    fn insert_entry(self, value: V) -> OccupiedEntry<'a, K, V> {
+    /// Inserts the entry's key and the given value into the map, last in order,
+    /// and returns a occupied entry containing the value.
+    pub fn insert_entry(self, value: V) -> OccupiedEntry<'a, K, V> {
         let i = self.pairs.len();
         let entry = self.indices_entry.insert(Indices::one(i));
         self.pairs.push(Bucket {
@@ -368,7 +361,7 @@ pub struct OccupiedEntry<'a, K, V> {
 
 impl<'a, K, V> OccupiedEntry<'a, K, V> {
     #[inline]
-    fn new(
+    pub(super) fn new(
         pairs: &'a mut Vec<Bucket<K, V>>,
         entry: hash_table::OccupiedEntry<'a, Indices>,
         hash: HashValue,

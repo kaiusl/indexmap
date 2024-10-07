@@ -483,7 +483,7 @@ where
     /// Insert a key-value pair in the map, last in order.
     ///
     /// If an equivalent key already exists in the map, the new key-value pair
-    /// is added behind the equivalent entry.
+    /// is added to the equivalent entry.
     ///
     /// If no equivalent key existed in the map, the new key-value pair is
     /// inserted as a new entry.
@@ -497,6 +497,38 @@ where
     pub fn insert_append(&mut self, key: K, value: V) -> usize {
         let hash = self.hash(&key);
         self.core.insert_append_full(hash, key, value)
+    }
+
+    /// Insert a key-value pair in the map at given `index`.
+    ///
+    /// If an equivalent key already exists in the map, the new key-value pair
+    /// is added to the equivalent entry.
+    ///
+    /// If no equivalent key existed in the map, the new key-value pair is
+    /// inserted as a new entry.
+    ///
+    /// Returns <code>[Some]\(\(index, occupied_entry))</code> if insertion was successful, where
+    /// the `index` is the index of the inserted value in the returned `occupied_entry`.
+    /// Then it can be access as `occupied_entry[index]` or through other indexing methods.
+    ///
+    /// If the index is out of bounds, returns [`None`].
+    /// Valid indices are <code>0..=self.[len_pairs]\()</code> (inclusive).
+    ///
+    /// Computes in **O(n)** time (amortized average).
+    ///
+    /// See also [`entry`] method if you you want to insert *or* modify
+    /// the corresponding key-value pair.
+    ///
+    /// [`entry`]: Self::entry
+    /// [len_pairs]: Self::len_pairs
+    pub fn insert_at(
+        &mut self,
+        index: usize,
+        key: K,
+        value: V,
+    ) -> Option<(usize, OccupiedEntry<'_, K, V>)> {
+        let hash = self.hash(&key);
+        self.core.insert_at(index, hash, key, value)
     }
 
     /// Get the given key’s corresponding entry in the map for insertion and/or

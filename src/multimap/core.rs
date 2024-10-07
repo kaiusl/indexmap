@@ -456,6 +456,21 @@ impl<K, V> IndexMultimapCore<K, V> {
         i
     }
 
+    pub(super) fn insert_at(
+        &mut self,
+        index: usize,
+        hash: HashValue,
+        key: K,
+        value: V,
+    ) -> Option<(usize, OccupiedEntry<'_, K, V>)>
+    where
+        K: Eq,
+    {
+        self.as_ref_mut()
+            .insert_at_into(index, hash, key, value)
+            .ok()
+    }
+
     /// Append a key-value pair, *without* checking whether it already exists,
     /// and return the pair's new index.
     fn push(
@@ -1213,6 +1228,45 @@ impl<'a, K, V> IndexMultimapCoreRefMut<'a, K, V> {
 
     fn indices_mut(&mut self) -> impl Iterator<Item = &mut Indices> {
         self.indices.iter_mut()
+    }
+
+    pub(super) fn insert_at_into(
+        mut self,
+        index: usize,
+        hash: HashValue,
+        key: K,
+        value: V,
+    ) -> Result<(usize, OccupiedEntry<'a, K, V>), Self>
+    where
+        K: Eq,
+    {
+        if index > self.pairs.len() {
+            return Err(self);
+        }
+
+        // this needs to be the first thing we do
+        unsafe { self.increment_indices(index, self.len_pairs()) };
+
+        let bucket = Bucket { hash, key, value };
+        self.pairs.insert(index, bucket);
+
+        // need to insert the pair first, so that the indices match up
+        let key = &self.pairs[index].key;
+        let indices = self.indices.entry(
+            hash.get(),
+            equivalent(key, &self.pairs),
+            get_hash(&self.pairs),
+        );
+
+        let (index, entry) = match indices {
+            hash_table::Entry::Occupied(mut entry) => {
+                let index = entry.get_mut().insert_sorted(index);
+                (index, entry)
+            }
+            hash_table::Entry::Vacant(entry) => (0, entry.insert(Indices::one(index))),
+        };
+
+        Ok((index, OccupiedEntry::new(self.pairs, entry, hash, None)))
     }
 
     /// Remove an entry by shifting all entries that follow it
