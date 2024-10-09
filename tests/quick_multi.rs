@@ -15,7 +15,7 @@ use std::collections::hash_map::Entry as HEntry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::ops::{Bound, Deref};
+use std::ops::{self, Bound, Deref};
 
 use indexmap::multimap::{Entry as OEntry, Subset};
 
@@ -72,13 +72,119 @@ macro_rules! quickcheck_limit {
     )
 }
 
+struct TestKeyRemoveResult {
+    success: bool,
+    map: IndexMultimap<u8, ()>,
+    remaining: HashSet<u8>,
+}
+
+fn test_key_remove(
+    insert: &[u8],
+    remove: &[u8],
+    op: impl Fn(&mut IndexMultimap<u8, ()>, u8),
+) -> TestKeyRemoveResult {
+    let mut map = IndexMultimap::new();
+    for &key in insert {
+        map.insert_append(key, ());
+    }
+    for &key in remove {
+        op(&mut map, key);
+    }
+    let remaining = &set(insert) - &set(remove);
+
+    // Number of pairs we expect to see in the map for every key
+    let mut counts = HashMap::new();
+    for r in remaining.iter() {
+        let count = insert.iter().filter(|i| *i == r).count();
+        counts.insert(r, count);
+    }
+
+    let success = map.len_keys() == remaining.len()
+        && remaining
+            .iter()
+            .all(|k| map.get(k).len() == *counts.get(k).unwrap())
+        && remove.iter().all(|k| map.get(k).first().is_none());
+
+    TestKeyRemoveResult {
+        success,
+        map,
+        remaining,
+    }
+}
+
+fn test_key_remove_keep_order(
+    insert: &[u8],
+    remove: &[u8],
+    op: impl Fn(&mut IndexMultimap<u8, ()>, u8),
+) -> TestKeyRemoveResult {
+    let result = test_key_remove(&insert, &remove, op);
+    if !result.success {
+        return result;
+    }
+
+    let map = result.map;
+    let remaining = result.remaining;
+
+    // Check that order is preserved after removals
+    let mut iter = map.keys();
+    for &key in insert.iter() {
+        if remaining.contains(&key) {
+            assert_eq!(Some(&key), iter.next());
+        }
+    }
+
+    TestKeyRemoveResult {
+        success: true,
+        map,
+        remaining,
+    }
+}
+
+fn test_index_remove(
+    insert: &[u8],
+    indices: &[usize],
+    op: impl Fn(&mut IndexMultimap<u8, usize>, usize) -> Option<(u8, usize)>,
+    vec_op: impl Fn(&mut Vec<(u8, usize)>, usize) -> (u8, usize),
+) -> TestResult {
+    if indices.is_empty() {
+        return TestResult::discard();
+    }
+
+    let mut map = IndexMultimap::new();
+    let mut vec = Vec::new();
+    for &key in insert.iter() {
+        map.insert_append(key, map.len_pairs());
+        vec.push((key, vec.len()));
+    }
+
+    for i in indices {
+        let i = i % (map.len_pairs() + 5);
+
+        let res = op(&mut map, i);
+        let expected = if i < vec.len() {
+            Some(vec_op(&mut vec, i))
+        } else {
+            None
+        };
+
+        assert_eq!(res, expected);
+
+        check_map(&map, &vec);
+    }
+
+    TestResult::passed()
+}
+
 quickcheck_limit! {
     fn contains(insert: Vec<u32>) -> bool {
         let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
         for &key in &insert {
             map.insert_append(key, ());
+            vec.push((key, ()));
         }
-        insert.iter().all(|&key| map.get(&key).first().is_some())
+
+        check_map(&map, &vec)
     }
 
     fn contains_not(insert: Vec<u8>, not: Vec<u8>) -> bool {
@@ -106,9 +212,9 @@ quickcheck_limit! {
     fn insertion_order(insert: Vec<u32>) -> bool {
         let mut map = IndexMultimap::new();
         for &key in &insert {
-            map.insert_append(key, ());
+            map.insert_append(key, map.len_pairs());
         }
-        itertools::assert_equal(insert.iter(), map.keys());
+        itertools::assert_equal(insert.iter().enumerate().map(|(i, k)| (k, i)), map.iter().map(|(k, v)| (k, *v)));
         true
     }
 
@@ -117,12 +223,29 @@ quickcheck_limit! {
         let mut vec = Vec::new();
         for (&key, &index) in insert.iter().zip(indices.iter()) {
             let index = index % (vec.len() + 1);
-            map.insert_at(index, key, map.len_pairs() as u32);
-            vec.insert(index, (key, vec.len() as u32));
+            map.insert_at(index, key, map.len_pairs());
+            vec.insert(index, (key, vec.len()));
         }
 
-        itertools::assert_equal(vec.iter().map(|(a, b)| (a, b)), map.iter());
-        true
+        check_map(&map, &vec)
+    }
+
+    fn reverse(insert: Vec<u32>) -> bool {
+        if insert.is_empty() {
+            return true;
+        }
+
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for key in &insert {
+            map.insert_append(key, map.len_pairs());
+            vec.push((key, vec.len()));
+        }
+
+        map.reverse();
+        vec.reverse();
+
+        check_map(&map, &vec)
     }
 
     fn pop(insert: Vec<u8>) -> bool {
@@ -197,55 +320,38 @@ quickcheck_limit! {
     }
 
     fn shift_remove(insert: Vec<u8>, remove: Vec<u8>) -> bool {
-        let mut map = IndexMultimap::new();
-        for &key in &insert {
-            map.insert_append(key, ());
-        }
-        for &key in &remove {
-            map.shift_remove(&key);
-        }
-        let remaining = &set(&insert) - &set(&remove);
-
-        // Check that order is preserved after removals
-        let mut iter = map.keys();
-        for &key in insert.iter() {
-            if remaining.contains(&key) {
-                assert_eq!(Some(&key), iter.next());
-            }
-        }
-
-        // Number of pairs we expect to see in the map for every key
-        let mut counts = HashMap::new();
-        for r in remaining.iter() {
-            let count = insert.iter().filter(|i| *i == r).count();
-            counts.insert(r, count);
-        }
-
-        map.len_keys() == remaining.len()
-        && remaining.iter().all(|k| map.get(k).len() == *counts.get(k).unwrap())
-        && remove.iter().all(|k| map.get(k).first().is_none())
+        test_key_remove_keep_order(&insert, &remove, |map, key| { map.shift_remove(&key); }).success
     }
 
     fn swap_remove(insert: Vec<u8>, remove: Vec<u8>) -> bool {
-        let mut map = IndexMultimap::new();
-        for &key in &insert {
-            map.insert_append(key, ());
-        }
-        for &key in &remove {
-            map.swap_remove(&key);
-        }
-        let remaining = &set(&insert) - &set(&remove);
+        test_key_remove(&insert, &remove, |map, key| { map.swap_remove(&key); }).success
+    }
 
-        // Number of pairs we expect to see in the map for every key
-        let mut counts = HashMap::new();
-        for r in remaining.iter() {
-            let count = insert.iter().filter(|i| *i == r).count();
-            counts.insert(r, count);
-        }
+    fn entry_swap_remove(insert: Vec<u8>, remove: Vec<u8>) -> bool {
+        test_key_remove(&insert, &remove, |map, key| match map.entry(key) {
+            OEntry::Occupied(e) => {
+                e.swap_remove();
+            }
+            OEntry::Vacant(_) => {},
+        }).success
+    }
 
-        map.len_keys() == remaining.len()
-        && remaining.iter().all(|k| map.get(k).len() == *counts.get(k).unwrap())
-        && remove.iter().all(|k| map.get(k).first().is_none())
+    fn entry_shift_remove(insert: Vec<u8>, remove: Vec<u8>) -> bool {
+        test_key_remove_keep_order(&insert, &remove, |map, key| match map.entry(key) {
+            OEntry::Occupied(e) => {
+                e.shift_remove();
+            }
+            OEntry::Vacant(_) => {},
+        }).success
+    }
+
+    fn shift_remove_index(insert: Vec<u8>, indices: Vec<usize>) -> TestResult {
+        test_index_remove(&insert, &indices, |map, i| map.shift_remove_index(i), |vec, i| vec.remove(i) )
+    }
+
+
+    fn swap_remove_index(insert: Vec<u8>, indices: Vec<usize>) -> TestResult {
+        test_index_remove(&insert, &indices, |map, i| map.swap_remove_index(i), |vec, i| vec.swap_remove(i) )
     }
 
     fn swap_index(insert: Vec<u8>, indices: Vec<usize>) -> TestResult {
@@ -256,8 +362,8 @@ quickcheck_limit! {
         let mut map = IndexMultimap::new();
         let mut vec = Vec::new();
         for &key in insert.iter() {
-            map.insert_append(key, map.len_pairs() as u32);
-            vec.push((key, vec.len() as u32));
+            map.insert_append(key, map.len_pairs());
+            vec.push((key, vec.len()));
         }
 
         for indices in indices.windows(2) {
@@ -267,11 +373,14 @@ quickcheck_limit! {
 
             map.swap_indices(a, b);
             vec.swap(a, b);
+
+            check_map(&map, &vec);
         }
 
-        itertools::assert_equal(vec.iter().map(|(a, b)| (a, b)), map.iter());
+
         TestResult::passed()
     }
+
     fn move_index(insert: Vec<u8>, indices: Vec<usize>) -> TestResult {
         if insert.is_empty() || indices.is_empty() {
             return TestResult::discard()
@@ -280,8 +389,8 @@ quickcheck_limit! {
         let mut map = IndexMultimap::new();
         let mut vec = Vec::new();
         for &key in insert.iter() {
-            map.insert_append(key, map.len_pairs() as u32);
-            vec.push((key, vec.len() as u32));
+            map.insert_append(key, map.len_pairs());
+            vec.push((key, vec.len()));
         }
 
         for indices in indices.chunks_exact(2) {
@@ -292,30 +401,131 @@ quickcheck_limit! {
             map.move_index(a, b);
             let v = vec.remove(a);
             vec.insert(b, v);
+
+            check_map(&map, &vec);
         }
 
-        itertools::assert_equal(vec.iter().map(|(a, b)| (a, b)), map.iter());
+        TestResult::passed()
+    }
+
+    fn truncate(insert: Vec<u8>, indices: Vec<usize>) -> TestResult {
+        if insert.is_empty() || indices.is_empty() {
+            return TestResult::discard();
+        }
+
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for &key in insert.iter() {
+            map.insert_append(key, map.len_pairs());
+            vec.push((key, vec.len()));
+        }
+
+        for index in indices {
+            if map.is_empty() {
+                break;
+            }
+
+            let index = index % (map.len_pairs() + 5);
+
+            map.truncate(index);
+            vec.truncate(index);
+
+            check_map(&map, &vec);
+        }
+
+        TestResult::passed()
+    }
+
+    fn split_off(insert: Vec<u8>, indices: Vec<usize>) -> TestResult {
+        if insert.is_empty() || indices.is_empty() {
+            return TestResult::discard();
+        }
+
+
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for &key in insert.iter() {
+            map.insert_append(key, map.len_pairs());
+            vec.push((key, vec.len()));
+        }
+
+        for index in indices {
+            if map.is_empty() {
+                break;
+            }
+
+            let index = index % (map.len_pairs() + 1);
+
+            let right = map.split_off(index);
+            let expected_right = vec.split_off(index);
+
+            check_map(&map, &vec);
+            check_map(&right, &expected_right);
+        }
+
         TestResult::passed()
     }
 
     fn indexing(insert: Vec<u8>) -> bool {
-        let mut map: IndexMultimap<_, _> = insert.clone().into_iter().map(|x| (x, x)).collect();
-        let set: IndexSet<_> = map.keys().copied().collect();
-        assert_eq!(map.len_keys(), set.len());
-
-        for (i, &key) in insert.iter().enumerate() {
-            assert_eq!(map.get_index(i), Some((&key, &key)));
-            assert_eq!(map[i], key);
-
-            *map.get_index_mut(i).unwrap().1 >>= 1;
-            map[i] <<= 1;
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for &key in insert.iter() {
+            map.insert_append(key, map.len_pairs());
+            vec.push((key, vec.len()));
         }
 
-        insert.iter().enumerate().all(|(i, &key)| {
-            let value = key & !1;
-            let items = map.get(&key).into_iter().map(|(_, _, v)| v).collect::<Vec<_>>();
-            items.contains(&&value) && map[i] == value
-        })
+
+        for (i, &key) in insert.iter().enumerate() {
+            assert_eq!(map.get_index(i), Some((&key, &i)));
+            assert_eq!(map[i], i);
+
+            *map.get_index_mut(i).unwrap().1 += map.len_pairs();
+            vec[i].1 += vec.len();
+        }
+
+        check_map(&map, &vec);
+        true
+    }
+
+    fn entry_insert(insert: Vec<u8>) -> bool {
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for &key in insert.iter() {
+            let value = map.len_pairs();
+            // vacant on first this key
+            map.entry(key).insert_append(value);
+            vec.push((key, value));
+
+            // definitely occupied
+            map.entry(key).insert_append(value+1);
+            vec.push((key, value + 1));
+        }
+
+
+        check_map(&map, &vec);
+
+
+        true
+    }
+
+
+    fn entry_insert_many(insert: Vec<u8>) -> bool {
+        let mut map = IndexMultimap::new();
+        let mut vec = Vec::new();
+        for &key in insert.iter() {
+            let value = map.len_pairs();
+            // vacant on first this key
+            map.entry(key).insert_append_many([]).insert_append_many([value, value + 1]).insert_append_many([value + 2, value + 3]);
+            vec.push((key, value));
+            vec.push((key, value + 1));
+            vec.push((key, value + 2));
+            vec.push((key, value + 3));
+        }
+
+
+        check_map(&map, &vec);
+
+        true
     }
 
 
@@ -431,7 +641,7 @@ where
     result
 }
 
-// Checks that the map yield given items in the given order by index and by key
+/// Checks that the map yield given items in the given order by index and by key
 fn check_map<K, V>(map: &IndexMultimap<K, V>, expected: &[(K, V)]) -> bool
 where
     K: core::fmt::Debug + Eq + std::hash::Hash,
@@ -440,7 +650,6 @@ where
     let mut result = map.len_pairs() == expected.len();
     result &= itertools::equal(map.iter(), expected.iter().map(|(k, v)| (k, v)));
     for (index, (key, val)) in expected.iter().enumerate() {
-        result &= &map[index] == val;
         result &= map.get_index(index) == Some((key, val));
 
         let expected_items = expected
@@ -450,6 +659,10 @@ where
             .map(|(i, (k, v))| (i, k, v));
 
         result &= itertools::equal(map.get(key).iter(), expected_items);
+
+        if !result {
+            break;
+        }
     }
     result
 }
@@ -647,25 +860,6 @@ quickcheck_limit! {
         let mut map = IndexMultimap::from_iter(keyvals.to_vec());
         map.sort_by_cached_key(|&k, _| std::cmp::Reverse(k));
         assert_sorted_by_key(map, |t| std::cmp::Reverse(t.0));
-    }
-
-    fn reverse(keyvals: Large<Vec<(i8, i8)>>) -> () {
-        let mut map = IndexMultimap::from_iter(keyvals.to_vec());
-        let mut answer = keyvals.0;
-        answer.reverse();
-
-        // perform the work
-        map.reverse();
-
-        // check it contains all the values it should
-        for &(key, val) in &answer {
-            let mut it = map.get(&key).into_iter().map(|(_, _, v)| v);
-            assert!(it.contains(&val));
-        }
-
-        // check the order
-        let mapv = Vec::from_iter(map);
-        assert_eq!(answer, mapv);
     }
 }
 
