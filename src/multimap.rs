@@ -692,6 +692,19 @@ where
         self.core.retain_in_order(move |k, v| keep(k, v));
     }
 
+    /// Sort the map's key-value pairs by the default ordering of the keys.
+    ///
+    /// See [`sort_by`] for details.
+    ///
+    /// [`sort_by`]: Self::sort_by
+    pub fn sort_keys(&mut self)
+    where
+        K: Ord
+    {
+        self.core.sort_keys()
+    }
+
+
     /// Sort the map's key-value pairs in place using the comparison
     /// function `cmp`.
     ///

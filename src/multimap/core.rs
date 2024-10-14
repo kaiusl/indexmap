@@ -512,6 +512,16 @@ impl<K, V> IndexMultimapCore<K, V> {
         self.debug_assert_invariants();
     }
 
+    pub(super) fn sort_keys(&mut self)
+    where
+        K: Ord,
+    {
+        self.pairs
+            .sort_by(move |a, b| K::cmp(&a.key, &b.key));
+        self.rebuild_hash_table();
+        self.debug_assert_invariants();
+    }
+
     pub(super) fn sort_by<F>(&mut self, mut cmp: F)
     where
         F: FnMut(&K, &V, &K, &V) -> cmp::Ordering,
