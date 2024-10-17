@@ -22,23 +22,21 @@
 //! [`Hash`]: ::core::hash::Hash
 //! [`Eq`]: ::core::cmp::Eq
 
-pub use self::core::{
-    Drain, Entry, EntryIndices, IndexedEntry, OccupiedEntry, ShiftRemove, Subset, SubsetIter,
-    SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
-};
-
 use ::alloc::boxed::Box;
 use ::alloc::vec::Vec;
 use ::core::cmp::Ordering;
 use ::core::fmt;
 use ::core::hash::{BuildHasher, Hash, Hasher};
 use ::core::ops::{self, Index, IndexMut, RangeBounds};
+use ::equivalent::Equivalent;
 #[cfg(feature = "std")]
 use ::std::collections::hash_map::RandomState;
 
-use ::equivalent::Equivalent;
-
 use self::core::IndexMultimapCore;
+pub use self::core::{
+    Drain, Entry, EntryIndices, IndexedEntry, OccupiedEntry, ShiftRemove, Subset, SubsetIter,
+    SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove, VacantEntry,
+};
 #[cfg(feature = "rayon")]
 use self::rayon::{IntoParIter, ParKeys, ParValues, ParValuesMut};
 use crate::map::{IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Slice, Values, ValuesMut};
@@ -699,11 +697,10 @@ where
     /// [`sort_by`]: Self::sort_by
     pub fn sort_keys(&mut self)
     where
-        K: Ord
+        K: Ord,
     {
         self.core.sort_keys()
     }
-
 
     /// Sort the map's key-value pairs in place using the comparison
     /// function `cmp`.
@@ -1597,7 +1594,6 @@ mod rayon_trait_impls {
     use ::alloc::vec::Vec;
     use ::core::hash::{BuildHasher, Hash};
     use ::core::ops::RangeBounds;
-
     use ::rayon::prelude::{
         FromParallelIterator, IntoParallelIterator, ParallelDrainRange, ParallelExtend,
     };

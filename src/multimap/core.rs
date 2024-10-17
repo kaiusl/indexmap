@@ -9,7 +9,13 @@
 //!
 //! However, we should probably not let this show in the public API or docs.
 
+use ::alloc::vec::Vec;
+use ::core::{cmp, fmt, ops, panic};
+use ::equivalent::Equivalent;
+use ::hashbrown::hash_table;
+
 pub use self::entry::{Entry, EntryIndices, IndexedEntry, OccupiedEntry, VacantEntry};
+use self::indices::Indices;
 #[cfg(feature = "rayon")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 pub use self::remove_iter::rayon::ParDrain;
@@ -17,15 +23,6 @@ pub use self::remove_iter::{Drain, ShiftRemove, SwapRemove};
 pub use self::subsets::{
     Subset, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut,
 };
-
-use ::alloc::vec::Vec;
-use ::core::{cmp, fmt, ops};
-use core::panic;
-use hashbrown::hash_table;
-
-use ::equivalent::Equivalent;
-
-use self::indices::Indices;
 use crate::util::DebugIterAsNumberedCompactList;
 use crate::{Bucket, HashValue, TryReserveError};
 
@@ -516,8 +513,7 @@ impl<K, V> IndexMultimapCore<K, V> {
     where
         K: Ord,
     {
-        self.pairs
-            .sort_by(move |a, b| K::cmp(&a.key, &b.key));
+        self.pairs.sort_by(move |a, b| K::cmp(&a.key, &b.key));
         self.rebuild_hash_table();
         self.debug_assert_invariants();
     }

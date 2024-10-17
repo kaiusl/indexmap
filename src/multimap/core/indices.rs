@@ -1,13 +1,11 @@
 #![allow(unsafe_code)]
 #![warn(clippy::missing_safety_doc)]
 
-pub(super) use self::iterators::{UniqueIter, UniqueSortedIter};
-
-use ::alloc::vec;
 use ::alloc::vec::Vec;
 use ::core::ops::{Range, RangeBounds};
 use ::core::{mem, ops, slice};
 
+pub(super) use self::iterators::{UniqueIter, UniqueSortedIter};
 use crate::util::{is_sorted_and_unique, try_simplify_range};
 use crate::TryReserveError;
 

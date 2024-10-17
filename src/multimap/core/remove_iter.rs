@@ -1,9 +1,9 @@
 #![allow(unsafe_code)]
 
+use ::alloc::vec::Vec;
 use ::core::iter::FusedIterator;
 use ::core::ptr::NonNull;
 use ::core::{fmt, mem, ops, ptr, slice};
-use std::vec::Vec;
 
 use super::indices::UniqueSortedIter;
 use super::{
@@ -597,7 +597,8 @@ where
                 // Only way to get here is if we managed to drop all the items we needed to remove
                 unsafe {
                     inner
-                        .map.pairs
+                        .map
+                        .pairs
                         .set_len(inner.orig_len - inner.indices_to_remove.len())
                 }
                 mem::swap(&mut inner.indices_table, &mut inner.map.indices);
@@ -906,7 +907,6 @@ pub mod rayon {
     use ::alloc::vec::Vec;
     use ::core::iter;
     use ::core::ops::Range;
-
     use ::rayon::iter::plumbing::{Consumer, Producer, ProducerCallback, UnindexedConsumer};
     use ::rayon::prelude::{IndexedParallelIterator, ParallelIterator};
 

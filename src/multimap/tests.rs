@@ -3097,13 +3097,12 @@ fn test_partition_point() {
 mod rayon {
     use ::core::panic::AssertUnwindSafe;
     use ::core::sync::atomic::AtomicU32;
-    use ::std::panic::catch_unwind;
-    use ::std::string::String;
-
     use ::rayon::prelude::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
         IntoParallelRefMutIterator, ParallelDrainRange, ParallelExtend, ParallelIterator,
     };
+    use ::std::panic::catch_unwind;
+    use ::std::string::String;
 
     use super::*;
     use crate::multimap::tests::assert_map_eq;

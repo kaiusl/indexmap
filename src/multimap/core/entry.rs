@@ -1,17 +1,14 @@
 #![allow(unsafe_code)]
 
 use ::alloc::vec::Vec;
-use ::core::{fmt, ops, ptr};
-use core::{cmp, mem, usize};
+use ::core::{cmp, fmt, mem, ops, ptr, usize};
+use ::hashbrown::hash_table;
 
-use hashbrown::hash_table;
-
-use super::indices::Indices;
 use super::{
-    equivalent, get_hash, IndexMultimapCore, IndexMultimapCoreRefMut, ShiftRemove, Subset,
-    SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues, SubsetValuesMut, SwapRemove,
+    equivalent, get_hash, IndexMultimapCore, IndexMultimapCoreRefMut, Indices, IndicesTable,
+    ShiftRemove, Subset, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
+    SubsetValuesMut, SwapRemove,
 };
-use crate::multimap::core::IndicesTable;
 use crate::util::{DebugIterAsList, DebugIterAsNumberedCompactList};
 use crate::{Bucket, HashValue, TryReserveError};
 

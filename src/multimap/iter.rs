@@ -1,7 +1,6 @@
 #[cfg(feature = "rayon")]
 pub(crate) mod rayon {
     use ::core::fmt;
-
     use ::rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
     use ::rayon::prelude::*;
 
