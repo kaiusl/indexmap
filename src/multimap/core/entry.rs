@@ -9,6 +9,7 @@ use super::{
     ShiftRemove, Subset, SubsetIter, SubsetIterMut, SubsetKeys, SubsetMut, SubsetValues,
     SubsetValuesMut, SwapRemove,
 };
+use crate::multimap::core::indices::UniqueSortedIter;
 use crate::util::{DebugIterAsList, DebugIterAsNumberedCompactList};
 use crate::{Bucket, HashValue, TryReserveError};
 
@@ -504,12 +505,11 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
         let indices = self.indices_entry.get_mut();
         debug_assert!(*indices.last().unwrap() < start_len_pairs);
-        // SAFETY: indices is from map, if map has `start_len_pairs` then the
+        // cannot panic: indices is from map, if map has `start_len_pairs` then the
         // maximum index that could be in `indices` is `start_len_pairs - 1`,
         // thus the range below is guaranteed to yield larger values than currently
         // in the indices
-        // A range will also yield unique items in sorted order.
-        unsafe { indices.extend(start_len_pairs..self.pairs.len()) };
+        indices.extend(UniqueSortedIter::from_range(start_len_pairs..self.pairs.len()));
 
         //self.map.debug_assert_invariants();
     }

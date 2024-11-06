@@ -1384,9 +1384,7 @@ impl<'a, K, V> IndexMultimapCoreRefMut<'a, K, V> {
                     // to be removed may not be removed yet
                     let len = indices.len();
                     indices.clear();
-                    unsafe {
-                        indices.extend(0..len);
-                    }
+                    indices.extend(UniqueSortedIter::from_range(0..len));
                 }
             }
             _ if indices.len() == 1 => {

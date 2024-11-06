@@ -184,11 +184,34 @@ impl Indices {
         old
     }
 
+    /// # Panics
+    ///
+    /// 1. if the new capacity exceeds [`isize::MAX`] bytes.
+    /// 2. if any item in `iter` is smaller than `self.last()`
+    pub(crate) fn extend<T>(&mut self, mut iter: UniqueSortedIter<T>)
+    where
+        T: Iterator<Item = usize>,
+    {
+        let Some(first_new) = iter.next() else {
+            return;
+        };
+
+        self.push(first_new);
+
+        // SAFETY: self.push checks if first element in iter is unique and larger than anything else in self
+        //   and iter is UniqueSortedIter which means that all of the following items are OK to push to self
+        unsafe { self.extend_unchecked(iter) };
+    }
+
     /// # Safety
     ///
-    /// * iter must yield indices larger than anything currently in `self` (larger than self.last())
+    /// * `iter` must yield indices larger than anything currently in `self` (larger than `self.last()``)
     ///   and they must be sorted and unique
-    pub(crate) unsafe fn extend<T>(&mut self, iter: T)
+    ///
+    /// # Panics
+    ///
+    /// 1. if the new capacity exceeds [`isize::MAX`] bytes.
+    pub(crate) unsafe fn extend_unchecked<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = usize>,
     {
@@ -347,6 +370,7 @@ where
 
 mod iterators {
     use ::core::iter::FusedIterator;
+    use core::ops::Range;
 
     /// Implements all methods of [`Iterator`] trait by forwarding to an inner iterator.
     ///
@@ -687,8 +711,15 @@ mod iterators {
         /// # Safety
         ///
         /// * items yielded by `ìter` must be unique and sorted
-        pub(super) unsafe fn new_unchecked(iter: Inner) -> Self {
+        pub(crate) unsafe fn new_unchecked(iter: Inner) -> Self {
             UniqueSortedIter { inner: iter }
+        }
+    }
+
+    impl UniqueSortedIter<Range<usize>> {
+        pub(crate) fn from_range(range: Range<usize>) -> Self {
+            // SAFETY: range is always unique and sorted
+            unsafe { UniqueSortedIter::new_unchecked(range) }
         }
     }
 
@@ -703,7 +734,7 @@ mod iterators {
         /// # Safety
         ///
         /// * items yielded by `ìter` must be unique
-        pub(super) unsafe fn new_unchecked(iter: Inner) -> Self {
+        pub(crate) unsafe fn new_unchecked(iter: Inner) -> Self {
             UniqueIter { inner: iter }
         }
     }
