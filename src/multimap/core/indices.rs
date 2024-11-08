@@ -11,7 +11,7 @@ use crate::TryReserveError;
 
 /// Unique and sorted set of indices
 #[derive(Debug, Clone)]
-pub(super) struct Indices {
+pub(crate) struct Indices {
     // INVARIANTS
     //  * `inner` is unique and sorted
     inner: Vec<usize>,
@@ -31,12 +31,20 @@ impl Indices {
     }
 
     /// Reserve capacity for `additional` more key-value pairs.
+    ///
+    /// # Panics
+    ///
+    /// 1. if the new capacity exceeds [`isize::MAX`] bytes.
     #[inline]
     pub(super) fn reserve(&mut self, additional: usize) {
         self.inner.reserve(additional)
     }
 
     /// Reserve capacity for `additional` more key-value pairs, without over-allocating.
+    ///
+    /// # Panics
+    ///
+    /// 1. if the new capacity exceeds [`isize::MAX`] bytes.
     #[inline]
     pub(super) fn reserve_exact(&mut self, additional: usize) {
         self.inner.reserve_exact(additional)
@@ -76,6 +84,7 @@ impl Indices {
     pub(super) fn shrink_to_fit(&mut self) {
         self.inner.shrink_to_fit()
     }
+
     #[inline]
     pub(crate) fn as_unique_slice(&self) -> &UniqueSlice<usize> {
         unsafe { UniqueSlice::from_slice_unchecked(self.as_slice()) }
@@ -91,6 +100,10 @@ impl Indices {
         &mut self.inner
     }
 
+    /// # Panics
+    ///
+    /// 1. if `v` is smaller than any other value in the `self`
+    /// 2. if the new capacity exceeds [`isize::MAX`] bytes.
     #[inline]
     pub(crate) fn push(&mut self, v: usize) {
         assert!(
@@ -106,6 +119,9 @@ impl Indices {
         index
     }
 
+    /// # Panics
+    ///
+    /// 1. if `index`` is out of bounds.
     #[inline]
     pub(crate) fn remove(&mut self, index: usize) -> usize {
         // SAFETY: inner.remove preserves the order
@@ -154,8 +170,8 @@ impl Indices {
     ///
     /// # Panics
     ///
-    /// * If `new` already exists. It would violate the uniqueness guarantee of indices.
-    /// * If `old_index` is out of bounds for self
+    /// 1. If `new` already exists. It would violate the uniqueness guarantee of indices.
+    /// 2. If `old_index` is out of bounds for `self``
     pub(crate) fn replace(&mut self, old_index: usize, new: usize) -> usize {
         if self.len() == 1 {
             return mem::replace(&mut self.inner[old_index], new);
